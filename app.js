@@ -53,7 +53,7 @@
     });
 
     // Handle login
-    form.addEventListener('submit', async function (e) {
+    document.getElementById('loginSubmit').addEventListener('click', async function (e) {
       e.preventDefault();
       var val = input.value.trim();
       if (!val) {
