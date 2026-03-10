@@ -41,7 +41,7 @@
     </div>
     <h2 class="login-title">TRVE Booking Hub</h2>
     <p class="login-subtitle">The Rift Valley Explorer &mdash; Employee Access</p>
-    <form id="loginForm" autocomplete="off" novalidate method="post">
+    <form id="loginForm" autocomplete="off" novalidate method="post" onsubmit="return false;">
       <div class="login-field">
         <label class="form-label" for="loginPassword">Password</label>
         <div class="login-input-wrap">
@@ -55,7 +55,7 @@
         </div>
         <span class="form-error hidden" id="loginError">Incorrect password. Please try again.</span>
       </div>
-      <button type="submit" class="btn btn-primary btn-lg w-full login-btn" id="loginSubmit">
+      <button type="button" class="btn btn-primary btn-lg w-full login-btn" id="loginSubmit" btn-primary btn-lg w-full login-btn" id="loginSubmit">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M6 2h5.5A1.5 1.5 0 0113 3.5v9a1.5 1.5 0 01-1.5 1.5H6M6 8h7M10 5l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
