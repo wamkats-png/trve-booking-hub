@@ -1,0 +1,31 @@
+# Runtime artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Database & data directory (created at runtime)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Test cache
+.pytest_cache/
+tests/__pycache__/
+
+# Environment
+.env
+*.env
+config.js
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
