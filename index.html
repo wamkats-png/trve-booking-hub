@@ -179,7 +179,30 @@
         <span class="nav-label">Tasks</span>
       </div>
 
+      <div class="nav-item" data-view="calendar" role="button" tabindex="0">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <rect x="1.5" y="3" width="15" height="13.5" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M1.5 7.5h15" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M6 1.5v3M12 1.5v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M5 11h2M9 11h2M5 14h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <span class="nav-label">Trip Calendar</span>
+      </div>
+
       <div class="nav-section-label" style="margin-top: 8px;">Finance</div>
+
+      <div class="nav-item" data-view="permit-slots" role="button" tabindex="0">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <circle cx="9" cy="9" r="7.5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M9 5v4l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M5.5 2.5l-2 2M12.5 2.5l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <span class="nav-label">Permit Slots</span>
+      </div>
 
       <div class="nav-item" data-view="pricing" role="button" tabindex="0">
         <span class="nav-icon">
@@ -1021,6 +1044,122 @@
         <div class="card">
           <div style="overflow-x:auto" id="tasksTableContainer">
             <div style="padding:var(--space-8);text-align:center;color:var(--text-muted);font-size:var(--text-sm)">Loading tasks…</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CALENDAR VIEW -->
+      <section class="view" id="view-calendar" aria-label="Trip Calendar">
+        <div class="view-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3)">
+          <div>
+            <h1 class="view-title">Trip Calendar</h1>
+            <p class="view-subtitle">Booking timeline by travel dates &middot; Low-season months (Apr / May / Nov) highlighted</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:var(--space-2)">
+            <button class="btn btn-secondary btn-sm" id="calPrevBtn">&#8592; Prev</button>
+            <span id="calMonthLabel" style="min-width:130px;text-align:center;font-weight:600;font-size:var(--text-base)">—</span>
+            <button class="btn btn-secondary btn-sm" id="calNextBtn">Next &#8594;</button>
+            <button class="btn btn-ghost btn-sm" id="calTodayBtn">Today</button>
+          </div>
+        </div>
+
+        <!-- Status legend -->
+        <div style="display:flex;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-4);font-size:var(--text-xs)">
+          <span class="cal-legend" data-status="New_Inquiry">New Inquiry</span>
+          <span class="cal-legend" data-status="Active_Quote">Active Quote</span>
+          <span class="cal-legend" data-status="Confirmed">Confirmed</span>
+          <span class="cal-legend" data-status="In_Progress">In Progress</span>
+          <span class="cal-legend" data-status="Completed">Completed</span>
+          <span class="cal-legend" data-status="Cancelled">Cancelled</span>
+        </div>
+
+        <!-- Day-of-week header -->
+        <div class="cal-grid-header">
+          <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+        </div>
+
+        <!-- Calendar grid — rendered by JS -->
+        <div id="calGrid" class="cal-grid">
+          <div style="padding:var(--space-8);text-align:center;color:var(--text-muted)">Loading calendar…</div>
+        </div>
+      </section>
+
+      <!-- PERMIT SLOTS VIEW -->
+      <section class="view" id="view-permit-slots" aria-label="Permit Slots">
+        <div class="view-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3)">
+          <div>
+            <h1 class="view-title">Permit Slot Tracker</h1>
+            <p class="view-subtitle">Track gorilla &amp; chimp permit availability · UWA cap: 8 gorilla / 4 chimp per session</p>
+          </div>
+          <button class="btn btn-primary btn-sm" id="addPermitSlotBtn">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            Add Slot
+          </button>
+        </div>
+
+        <!-- Add Slot Form (hidden by default) -->
+        <div id="permitSlotForm" class="card mb-4" style="display:none">
+          <div class="card-header"><span class="card-title">New Permit Slot</span></div>
+          <div class="card-body" style="padding:var(--space-4)">
+            <div style="display:grid;grid-template-columns:1fr 2fr 1fr 1fr 1fr auto;gap:var(--space-3);align-items:end">
+              <div class="form-group mb-0">
+                <label class="form-label">Date <span class="required">*</span></label>
+                <input class="form-control" type="date" id="psDate">
+              </div>
+              <div class="form-group mb-0">
+                <label class="form-label">Permit Type <span class="required">*</span></label>
+                <select class="form-control" id="psPermitType">
+                  <option value="gorilla_tracking_uganda">Gorilla Tracking (Uganda)</option>
+                  <option value="gorilla_habituation_uganda">Gorilla Habituation (Uganda)</option>
+                  <option value="gorilla_tracking_rwanda">Gorilla Tracking (Rwanda)</option>
+                  <option value="chimp_tracking">Chimp Tracking</option>
+                  <option value="chimp_habituation">Chimp Habituation</option>
+                  <option value="golden_monkey">Golden Monkey</option>
+                </select>
+              </div>
+              <div class="form-group mb-0">
+                <label class="form-label">Habitat</label>
+                <input class="form-control" type="text" id="psHabitat" placeholder="e.g. Bwindi">
+              </div>
+              <div class="form-group mb-0">
+                <label class="form-label">Total Slots</label>
+                <input class="form-control" type="number" id="psTotalSlots" value="8" min="1" max="32">
+              </div>
+              <div class="form-group mb-0">
+                <label class="form-label">Booked</label>
+                <input class="form-control" type="number" id="psBooked" value="0" min="0">
+              </div>
+              <div style="display:flex;gap:var(--space-2)">
+                <button class="btn btn-primary btn-sm" id="psSaveBtn">Save</button>
+                <button class="btn btn-ghost btn-sm" id="psCancelBtn">Cancel</button>
+              </div>
+            </div>
+            <div class="form-group mt-3 mb-0">
+              <label class="form-label">Notes</label>
+              <input class="form-control" type="text" id="psNotes" placeholder="Optional notes" style="max-width:400px">
+            </div>
+          </div>
+        </div>
+
+        <!-- Slot Filter -->
+        <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4);align-items:center;flex-wrap:wrap">
+          <select class="form-control" id="psFilterType" style="width:auto">
+            <option value="">All permit types</option>
+            <option value="gorilla_tracking_uganda">Gorilla Tracking (Uganda)</option>
+            <option value="gorilla_habituation_uganda">Gorilla Habituation (Uganda)</option>
+            <option value="gorilla_tracking_rwanda">Gorilla Tracking (Rwanda)</option>
+            <option value="chimp_tracking">Chimp Tracking</option>
+            <option value="chimp_habituation">Chimp Habituation</option>
+            <option value="golden_monkey">Golden Monkey</option>
+          </select>
+          <input class="form-control" type="month" id="psFilterMonth" style="width:auto">
+          <button class="btn btn-secondary btn-sm" id="psFilterBtn">Filter</button>
+        </div>
+
+        <!-- Slots Table -->
+        <div class="card">
+          <div style="overflow-x:auto" id="permitSlotsTableContainer">
+            <div style="padding:var(--space-8);text-align:center;color:var(--text-muted);font-size:var(--text-sm)">Loading permit slots…</div>
           </div>
         </div>
       </section>

@@ -176,6 +176,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS permit_slots (
+    id TEXT PRIMARY KEY,
+    date TEXT NOT NULL,
+    permit_type TEXT NOT NULL,
+    habitat TEXT DEFAULT '',
+    total_slots INTEGER DEFAULT 8,
+    booked INTEGER DEFAULT 0,
+    notes TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_enquiries_booking_ref ON enquiries(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_enquiries_status ON enquiries(status);
 CREATE INDEX IF NOT EXISTS idx_lodges_name ON lodges(lodge_name);
@@ -2264,6 +2275,381 @@ def send_quotation_email(quotation_id: str, body: SendEmailRequest):
         )
 
     return {"status": "sent", "to": body.to_email, "quotation_id": q["quotation_id"]}
+
+
+# ---------------------------------------------------------------------------
+# CALENDAR — enquiries within a date range for the calendar view
+# ---------------------------------------------------------------------------
+@app.get("/api/calendar")
+def get_calendar(year: int = Query(...), month: int = Query(...)):
+    """Return enquiries whose travel window overlaps the given year/month."""
+    import calendar as _cal
+    last_day = _cal.monthrange(year, month)[1]
+    month_start = f"{year}-{month:02d}-01"
+    month_end = f"{year}-{month:02d}-{last_day:02d}"
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT id, booking_ref, client_name, status, coordinator, pax, "
+            "travel_start_date, travel_end_date, destinations_requested "
+            "FROM enquiries "
+            "WHERE travel_start_date != '' AND travel_start_date <= ? "
+            "AND (travel_end_date >= ? OR (travel_end_date = '' AND travel_start_date >= ?)) "
+            "ORDER BY travel_start_date",
+            (month_end, month_start, month_start)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# ITINERARY PDF — day-by-day branded itinerary document
+# ---------------------------------------------------------------------------
+def generate_itinerary_pdf(itinerary: dict) -> bytes:
+    """Generate a branded day-by-day TRVE itinerary PDF."""
+    from fpdf import FPDF
+
+    class TRVEItineraryPDF(FPDF):
+        def cell(self, w, h=0, text='', *args, **kwargs):
+            return super().cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
+
+        def multi_cell(self, w, h, text='', *args, **kwargs):
+            return super().multi_cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
+
+        def header(self):
+            self.set_fill_color(13, 94, 79)
+            self.rect(0, 0, 210, 28, 'F')
+            self.set_font('Helvetica', 'B', 18)
+            self.set_text_color(255, 255, 255)
+            self.set_y(6)
+            self.cell(0, 10, 'THE RIFT VALLEY EXPLORER', align='C')
+            self.set_font('Helvetica', '', 9)
+            self.set_y(16)
+            self.cell(0, 6, 'Destination Management Company  |  Uganda & East Africa', align='C')
+            self.ln(18)
+
+        def footer(self):
+            self.set_y(-20)
+            self.set_font('Helvetica', '', 7)
+            self.set_text_color(130, 130, 130)
+            self.cell(0, 4, 'The Rift Valley Explorer Ltd  |  Entebbe, Uganda  |  info@theriftvalleyexplorer.com', align='C')
+            self.ln(4)
+            self.cell(0, 4, f'Page {self.page_no()}/{{nb}}', align='C')
+
+    pdf = TRVEItineraryPDF()
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=True, margin=25)
+    pdf.add_page()
+    pdf.set_text_color(40, 40, 40)
+
+    name = itinerary.get("name", "Safari Itinerary")
+    duration = itinerary.get("duration_days", 7)
+    countries = itinerary.get("countries", [])
+    if isinstance(countries, str):
+        try: countries = json.loads(countries)
+        except: countries = [countries]
+    destinations = itinerary.get("destinations", [])
+    if isinstance(destinations, str):
+        try: destinations = json.loads(destinations)
+        except: destinations = [destinations]
+    interests = itinerary.get("interests", [])
+    if isinstance(interests, str):
+        try: interests = json.loads(interests)
+        except: interests = [interests]
+    parks = itinerary.get("parks", [])
+    if isinstance(parks, str):
+        try: parks = json.loads(parks)
+        except: parks = [parks]
+    permits = itinerary.get("permits_included", [])
+    if isinstance(permits, str):
+        try: permits = json.loads(permits)
+        except: permits = [permits]
+    budget = itinerary.get("budget_tier", "").replace("_", " ").title()
+    season = itinerary.get("season", "").replace("_", " ").title()
+    description = itinerary.get("description", "")
+    highlights = itinerary.get("highlights", "")
+
+    # Title
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.set_text_color(13, 94, 79)
+    pdf.multi_cell(0, 9, name)
+    pdf.set_draw_color(200, 150, 62)
+    pdf.set_line_width(0.6)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(5)
+
+    # Overview block
+    pdf.set_font('Helvetica', '', 10)
+    pdf.set_text_color(40, 40, 40)
+    overview = [
+        ("Duration:", f"{duration} days"),
+        ("Countries:", ", ".join(countries) if countries else "—"),
+        ("Budget Tier:", budget or "—"),
+        ("Best Season:", season or "Year Round"),
+    ]
+    for label, val in overview:
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(42, 7, label)
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 7, val, ln=True)
+    pdf.ln(3)
+
+    # Description
+    if description:
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_text_color(13, 94, 79)
+        pdf.cell(0, 8, 'Overview', ln=True)
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(60, 60, 60)
+        pdf.multi_cell(0, 6, description)
+        pdf.ln(3)
+
+    # Highlights
+    if highlights:
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_text_color(13, 94, 79)
+        pdf.cell(0, 8, 'Highlights', ln=True)
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(60, 60, 60)
+        for hl in highlights.split(','):
+            hl = hl.strip()
+            if hl:
+                pdf.cell(6, 6, '-')
+                pdf.multi_cell(0, 6, hl)
+        pdf.ln(3)
+
+    # Day-by-day itinerary
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.set_text_color(13, 94, 79)
+    pdf.cell(0, 9, 'Day-by-Day Itinerary', ln=True)
+    pdf.set_draw_color(200, 150, 62)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(4)
+
+    # Distribute destinations across days
+    num_dests = len(destinations) if destinations else 1
+    days_per_dest = max(1, duration // num_dests) if num_dests else 1
+    day = 1
+    for i, dest in enumerate(destinations or ["Safari"]):
+        days = days_per_dest if i < num_dests - 1 else (duration - day + 1)
+        day_label = f"Day {day}" if days == 1 else f"Days {day}–{day + days - 1}"
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.set_text_color(200, 150, 62)
+        pdf.cell(0, 7, f"{day_label}: {dest}", ln=True)
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(60, 60, 60)
+        # Find relevant park/activity for this destination
+        dest_lower = dest.lower()
+        activities = []
+        for p in parks:
+            if p.lower() in dest_lower or dest_lower in p.lower():
+                activities.append(f"Activities in {p}")
+        for permit_key in permits:
+            label = PERMIT_PRICES.get(permit_key, {}).get("label", "")
+            if label and any(d.lower() in dest_lower or dest_lower in d.lower() for d in [dest]):
+                activities.append(label)
+        if not activities:
+            activities = [f"Arrive {dest}, check in and settle", f"Explore {dest} and surroundings"]
+        for act in activities[:2]:
+            pdf.cell(6, 5, chr(149))
+            pdf.multi_cell(0, 5, act)
+        pdf.ln(3)
+        day += days
+        if day > duration:
+            break
+
+    # Parks & Permits section
+    if parks or permits:
+        pdf.add_page()
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.set_text_color(13, 94, 79)
+        pdf.cell(0, 9, 'Parks & Activities', ln=True)
+        pdf.set_draw_color(200, 150, 62)
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+        pdf.ln(4)
+        if parks:
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.set_text_color(40, 40, 40)
+            pdf.cell(0, 7, 'Parks & Conservancies:', ln=True)
+            pdf.set_font('Helvetica', '', 10)
+            pdf.set_text_color(60, 60, 60)
+            for p in parks:
+                pdf.cell(6, 5, '-')
+                pdf.cell(0, 5, p, ln=True)
+            pdf.ln(3)
+        if permits:
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.set_text_color(40, 40, 40)
+            pdf.cell(0, 7, 'Permits Included:', ln=True)
+            pdf.set_font('Helvetica', '', 10)
+            pdf.set_text_color(60, 60, 60)
+            for pk in permits:
+                label = PERMIT_PRICES.get(pk, {}).get("label", pk.replace("_", " ").title())
+                pdf.cell(6, 5, '-')
+                pdf.cell(0, 5, label, ln=True)
+        pdf.ln(3)
+
+    # Interests
+    if interests:
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.set_text_color(40, 40, 40)
+        pdf.cell(0, 7, 'Ideal for:', ln=True)
+        pdf.set_font('Helvetica', '', 10)
+        pdf.set_text_color(60, 60, 60)
+        interest_labels = [i.replace("_", " ").title() for i in interests]
+        pdf.multi_cell(0, 6, ", ".join(interest_labels))
+
+    out = pdf.output(dest='S')
+    return out if isinstance(out, bytes) else out.encode('latin-1')
+
+
+@app.get("/api/itineraries/{itinerary_id}/pdf")
+def get_itinerary_pdf(itinerary_id: str):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM itineraries WHERE id=?", (itinerary_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Itinerary not found")
+    itn = dict(row)
+    pdf_bytes = generate_itinerary_pdf(itn)
+    filename = f"TRVE_Itinerary_{itinerary_id}.pdf"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )
+
+
+@app.get("/api/itineraries/{itinerary_id}")
+def get_itinerary(itinerary_id: str):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM itineraries WHERE id=?", (itinerary_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Itinerary not found")
+    itn = dict(row)
+    for field in ["destinations", "countries", "interests", "permits_included", "parks", "nationality_tiers"]:
+        if isinstance(itn.get(field), str):
+            try: itn[field] = json.loads(itn[field])
+            except: pass
+    return itn
+
+
+# ---------------------------------------------------------------------------
+# PERMIT SLOT TRACKER
+# ---------------------------------------------------------------------------
+PERMIT_HABITATS = {
+    "gorilla_tracking_uganda": ["Bwindi - Buhoma", "Bwindi - Ruhija", "Bwindi - Nkuringo", "Bwindi - Rushaga", "Mgahinga"],
+    "gorilla_habituation_uganda": ["Bwindi - Nkuringo", "Bwindi - Rushaga"],
+    "gorilla_tracking_rwanda": ["Volcanoes NP - Susa", "Volcanoes NP - Amahoro", "Volcanoes NP - Umubano"],
+    "chimp_tracking": ["Kibale - Kanyanchu", "Kibale - Sebitoli", "Budongo Forest", "Kyambura Gorge"],
+    "chimp_habituation": ["Kibale - Kanyanchu"],
+}
+PERMIT_DEFAULT_MAX = {
+    "gorilla_tracking_uganda": 8, "gorilla_habituation_uganda": 4,
+    "gorilla_tracking_rwanda": 8, "chimp_tracking": 6, "chimp_habituation": 4,
+}
+
+
+class PermitSlotCreate(BaseModel):
+    date: str
+    permit_type: str
+    habitat: Optional[str] = ''
+    total_slots: Optional[int] = None
+    booked: Optional[int] = 0
+    notes: Optional[str] = ''
+
+
+class PermitSlotUpdate(BaseModel):
+    total_slots: Optional[int] = None
+    booked: Optional[int] = None
+    notes: Optional[str] = None
+
+
+@app.get("/api/permit-slots")
+def list_permit_slots(
+    date: Optional[str] = Query(None),
+    month: Optional[str] = Query(None),  # YYYY-MM
+    permit_type: Optional[str] = Query(None)
+):
+    with db_session() as conn:
+        clauses, params = [], []
+        if date:
+            clauses.append("date=?"); params.append(date)
+        if month:
+            clauses.append("date LIKE ?"); params.append(f"{month}%")
+        if permit_type:
+            clauses.append("permit_type=?"); params.append(permit_type)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            f"SELECT *, (total_slots - booked) AS available FROM permit_slots {where} ORDER BY date, permit_type",
+            params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/permit-slots", status_code=201)
+def create_permit_slot(body: PermitSlotCreate):
+    slot_id = str(uuid.uuid4())[:8]
+    total = body.total_slots or PERMIT_DEFAULT_MAX.get(body.permit_type, 8)
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO permit_slots (id, date, permit_type, habitat, total_slots, booked, notes, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (slot_id, body.date, body.permit_type, body.habitat or '',
+             total, body.booked or 0, body.notes or '', datetime.now().isoformat())
+        )
+    return {"id": slot_id, "date": body.date, "permit_type": body.permit_type,
+            "total_slots": total, "booked": body.booked or 0,
+            "available": total - (body.booked or 0)}
+
+
+@app.patch("/api/permit-slots/{slot_id}")
+def update_permit_slot(slot_id: str, body: PermitSlotUpdate):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM permit_slots WHERE id=?", (slot_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Slot not found")
+        s = dict(row)
+        if body.total_slots is not None: s["total_slots"] = body.total_slots
+        if body.booked is not None: s["booked"] = body.booked
+        if body.notes is not None: s["notes"] = body.notes
+        conn.execute(
+            "UPDATE permit_slots SET total_slots=?, booked=?, notes=? WHERE id=?",
+            (s["total_slots"], s["booked"], s["notes"], slot_id)
+        )
+        s["available"] = s["total_slots"] - s["booked"]
+    return s
+
+
+@app.delete("/api/permit-slots/{slot_id}", status_code=204)
+def delete_permit_slot(slot_id: str):
+    with db_session() as conn:
+        result = conn.execute("DELETE FROM permit_slots WHERE id=?", (slot_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Slot not found")
+    return None
+
+
+@app.get("/api/permit-slots/check")
+def check_permit_availability(date: str = Query(...), permit_type: str = Query(...), pax: int = Query(1)):
+    """Check if enough slots are available for a given permit, date, and pax count."""
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT *, (total_slots - booked) AS available FROM permit_slots "
+            "WHERE date=? AND permit_type=?",
+            (date, permit_type)
+        ).fetchall()
+    slots = [dict(r) for r in rows]
+    total_available = sum(s["available"] for s in slots)
+    max_single = max((s["available"] for s in slots), default=0)
+    return {
+        "date": date,
+        "permit_type": permit_type,
+        "pax_requested": pax,
+        "total_available": total_available,
+        "max_single_habitat": max_single,
+        "slots": slots,
+        "sufficient": max_single >= pax,
+        "warning": max_single < pax and len(slots) > 0,
+        "no_data": len(slots) == 0,
+    }
 
 
 # ---------------------------------------------------------------------------

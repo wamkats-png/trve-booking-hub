@@ -496,14 +496,16 @@
      NAVIGATION
      ============================================================ */
   const VIEW_TITLES = {
-    analytics:  'Analytics',
-    enquiry:    'New Enquiry',
-    pipeline:   'Pipeline Board',
-    tasks:      'Follow-up Tasks',
-    curation:   'Itinerary Matching',
-    pricing:    'Pricing Calculator',
-    quotations: 'Quotations',
-    sync:       'Sheets Sync'
+    analytics:     'Analytics',
+    enquiry:       'New Enquiry',
+    pipeline:      'Pipeline Board',
+    tasks:         'Follow-up Tasks',
+    calendar:      'Trip Calendar',
+    'permit-slots': 'Permit Slot Tracker',
+    curation:      'Itinerary Matching',
+    pricing:       'Pricing Calculator',
+    quotations:    'Quotations',
+    sync:          'Sheets Sync'
   };
 
   function navigate(viewId) {
@@ -535,6 +537,8 @@
     if (viewId === 'analytics') loadAnalytics();
     if (viewId === 'pipeline') loadPipeline();
     if (viewId === 'tasks') loadTasks();
+    if (viewId === 'calendar') loadCalendar();
+    if (viewId === 'permit-slots') loadPermitSlots();
     if (viewId === 'curation') loadCurationEnquiries();
     if (viewId === 'pricing') loadPricingItineraries();
     if (viewId === 'tools') initToolsView();
@@ -553,7 +557,7 @@
   }
 
   // Expose for inline onclick use
-  window.TRVE = { navigate, loadPipeline, loadTasks };
+  window.TRVE = { navigate, loadPipeline, loadTasks, downloadItineraryPdf };
 
   /* ============================================================
      SIDEBAR TOGGLE
@@ -616,6 +620,8 @@
       'enquiry': 'New Enquiry',
       'pipeline': 'Pipeline Board',
       'tasks': 'Follow-up Tasks',
+      'calendar': 'Trip Calendar',
+      'permit-slots': 'Permit Slot Tracker',
       'curation': 'Itinerary Matching',
       'pricing': 'Pricing Calculator',
       'quotations': 'Quotations',
@@ -634,6 +640,8 @@
       'enquiry': '1',
       'pipeline': '2',
       'tasks': '3',
+      'calendar': '8',
+      'permit-slots': '9',
       'curation': '4',
       'pricing': '5',
       'quotations': '6',
@@ -652,7 +660,7 @@
     // Keyboard navigation (1-6 keys when not in input)
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-      const keyMap = { '0': 'analytics', '1': 'enquiry', '2': 'pipeline', '3': 'tasks', '4': 'curation', '5': 'pricing', '6': 'quotations', '7': 'sync' };
+      const keyMap = { '0': 'analytics', '1': 'enquiry', '2': 'pipeline', '3': 'tasks', '4': 'curation', '5': 'pricing', '6': 'quotations', '7': 'sync', '8': 'calendar', '9': 'permit-slots' };
       if (keyMap[e.key]) {
         e.preventDefault();
         navigate(keyMap[e.key]);
@@ -1897,9 +1905,14 @@
           </svg>
           <div style="font-size:var(--text-xl);font-weight:600;color:var(--success);margin-bottom:var(--space-2)">Approved!</div>
           <div style="font-size:var(--text-sm);color:var(--text-secondary)">${escapeHtml(state.curation.selectedItineraryName)} has been approved by ${escapeHtml(approvedBy)}.</div>
-          <button class="btn btn-gold" style="margin-top:var(--space-4)" onclick="window.TRVE.navigate('pricing')">
-            Proceed to Pricing Calculator
-          </button>
+          <div style="display:flex;gap:var(--space-3);justify-content:center;margin-top:var(--space-4)">
+            <button class="btn btn-secondary" onclick="window.TRVE.downloadItineraryPdf(${state.curation.selectedItineraryId})">
+              Download Itinerary PDF
+            </button>
+            <button class="btn btn-gold" onclick="window.TRVE.navigate('pricing')">
+              Proceed to Pricing Calculator
+            </button>
+          </div>
         </div>
       `;
 
@@ -2972,6 +2985,8 @@
     initQuotations();
     initTasksView();
     initEmailModal();
+    initCalendarControls();
+    initPermitSlotsView();
 
     // Fetch live USD/UGX rate for FX exposure calculations
     await fetchLiveFx();
@@ -3663,6 +3678,294 @@
         btn.classList.remove('loading'); btn.disabled = false;
       }
     });
+  }
+
+  /* ============================================================
+     VIEW: BOOKING CALENDAR / TIMELINE
+     ============================================================ */
+  let _calYear = new Date().getFullYear();
+  let _calMonth = new Date().getMonth() + 1; // 1-based
+
+  const LOW_SEASON_MONTHS = [4, 5, 11];
+
+  const STATUS_CAL_COLORS = {
+    'New_Inquiry':  '#6366f1',
+    'Active_Quote': '#f59e0b',
+    'Confirmed':    '#10b981',
+    'In_Progress':  '#3b82f6',
+    'Completed':    '#64748b',
+    'Cancelled':    '#ef4444',
+    'Unconfirmed':  '#a78bfa'
+  };
+
+  async function loadCalendar() {
+    const grid = document.getElementById('calGrid');
+    if (!grid) return;
+
+    const label = document.getElementById('calMonthLabel');
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (label) label.textContent = `${monthNames[_calMonth - 1]} ${_calYear}`;
+
+    grid.innerHTML = '<div style="padding:var(--space-8);text-align:center;color:var(--text-muted)">Loading…</div>';
+
+    try {
+      const data = await apiFetch(`/api/calendar?year=${_calYear}&month=${_calMonth}`);
+      renderCalendarMonth(data.bookings || []);
+    } catch (err) {
+      grid.innerHTML = `<div style="padding:var(--space-8);text-align:center;color:var(--error)">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderCalendarMonth(bookings) {
+    const grid = document.getElementById('calGrid');
+    if (!grid) return;
+
+    const year = _calYear;
+    const month = _calMonth; // 1-based
+    const firstDay = new Date(year, month - 1, 1).getDay(); // 0=Sun
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const today = new Date();
+
+    // Build a map: day → list of bookings active that day
+    const dayBookings = {};
+    for (let d = 1; d <= daysInMonth; d++) {
+      dayBookings[d] = [];
+    }
+    for (const b of bookings) {
+      const start = b.travel_start_date ? new Date(b.travel_start_date) : null;
+      const end = b.travel_end_date ? new Date(b.travel_end_date) : start;
+      if (!start) continue;
+      for (let d = 1; d <= daysInMonth; d++) {
+        const cur = new Date(year, month - 1, d);
+        if (cur >= start && cur <= (end || start)) {
+          dayBookings[d].push(b);
+        }
+      }
+    }
+
+    const isLowSeason = LOW_SEASON_MONTHS.includes(month);
+    let html = '';
+
+    // Empty cells for offset
+    for (let i = 0; i < firstDay; i++) {
+      html += '<div class="cal-cell cal-cell--empty"></div>';
+    }
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const cur = new Date(year, month - 1, d);
+      const isToday = cur.toDateString() === today.toDateString();
+      const bList = dayBookings[d];
+      const extra = bList.length > 3 ? bList.length - 3 : 0;
+
+      html += `<div class="cal-cell${isLowSeason ? ' cal-cell--low-season' : ''}${isToday ? ' cal-cell--today' : ''}">
+        <div class="cal-day-num">${d}</div>
+        ${bList.slice(0, 3).map(b => {
+          const color = STATUS_CAL_COLORS[b.status] || '#94a3b8';
+          return `<div class="cal-booking-bar" style="background:${color}" title="${escapeHtml(b.client_name || b.booking_ref)} · ${escapeHtml(b.status)}">${escapeHtml((b.client_name || b.booking_ref || '').substring(0, 14))}</div>`;
+        }).join('')}
+        ${extra > 0 ? `<div class="cal-more">+${extra} more</div>` : ''}
+      </div>`;
+    }
+
+    // Trailing empty cells to complete the last row
+    const total = firstDay + daysInMonth;
+    const trailing = total % 7 === 0 ? 0 : 7 - (total % 7);
+    for (let i = 0; i < trailing; i++) {
+      html += '<div class="cal-cell cal-cell--empty"></div>';
+    }
+
+    grid.innerHTML = html;
+  }
+
+  function initCalendarControls() {
+    const prevBtn = document.getElementById('calPrevBtn');
+    const nextBtn = document.getElementById('calNextBtn');
+    const todayBtn = document.getElementById('calTodayBtn');
+    if (!prevBtn) return;
+
+    prevBtn.addEventListener('click', () => {
+      _calMonth--;
+      if (_calMonth < 1) { _calMonth = 12; _calYear--; }
+      loadCalendar();
+    });
+    nextBtn.addEventListener('click', () => {
+      _calMonth++;
+      if (_calMonth > 12) { _calMonth = 1; _calYear++; }
+      loadCalendar();
+    });
+    todayBtn.addEventListener('click', () => {
+      const now = new Date();
+      _calYear = now.getFullYear();
+      _calMonth = now.getMonth() + 1;
+      loadCalendar();
+    });
+  }
+
+  /* ============================================================
+     VIEW: GORILLA PERMIT SLOT TRACKER
+     ============================================================ */
+  async function loadPermitSlots() {
+    const container = document.getElementById('permitSlotsTableContainer');
+    if (!container) return;
+
+    const typeFilter = document.getElementById('psFilterType')?.value || '';
+    const monthFilter = document.getElementById('psFilterMonth')?.value || '';
+
+    let url = '/api/permit-slots?limit=200';
+    if (typeFilter) url += `&permit_type=${encodeURIComponent(typeFilter)}`;
+    if (monthFilter) url += `&month=${encodeURIComponent(monthFilter)}`;
+
+    container.innerHTML = '<div style="padding:var(--space-8);text-align:center;color:var(--text-muted)">Loading…</div>';
+    try {
+      const data = await apiFetch(url);
+      renderPermitSlotsTable(data.slots || []);
+    } catch (err) {
+      container.innerHTML = `<div style="padding:var(--space-8);text-align:center;color:var(--error)">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderPermitSlotsTable(slots) {
+    const container = document.getElementById('permitSlotsTableContainer');
+    if (!container) return;
+
+    if (!slots.length) {
+      container.innerHTML = '<div style="padding:var(--space-8);text-align:center;color:var(--text-muted)">No permit slots found. Add one above.</div>';
+      return;
+    }
+
+    const PERMIT_LABELS = {
+      gorilla_tracking_uganda: 'Gorilla Tracking (UG)',
+      gorilla_habituation_uganda: 'Gorilla Habituation (UG)',
+      gorilla_tracking_rwanda: 'Gorilla Tracking (RW)',
+      chimp_tracking: 'Chimp Tracking',
+      chimp_habituation: 'Chimp Habituation',
+      golden_monkey: 'Golden Monkey'
+    };
+
+    const rows = slots.map(s => {
+      const avail = s.available ?? (s.total_slots - s.booked);
+      const pct = s.total_slots > 0 ? Math.round((s.booked / s.total_slots) * 100) : 0;
+      const urgency = pct >= 100 ? 'error' : pct >= 75 ? 'warning' : 'success';
+      return `<tr>
+        <td>${escapeHtml(s.date)}</td>
+        <td>${escapeHtml(PERMIT_LABELS[s.permit_type] || s.permit_type)}</td>
+        <td>${escapeHtml(s.habitat || '—')}</td>
+        <td style="text-align:center">${s.total_slots}</td>
+        <td style="text-align:center">${s.booked}</td>
+        <td style="text-align:center">
+          <span class="badge badge-${urgency === 'error' ? 'danger' : urgency === 'warning' ? 'warning' : 'success'}">${avail}</span>
+        </td>
+        <td>
+          <div style="display:flex;align-items:center;gap:var(--space-2)">
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+              <div style="width:${Math.min(pct,100)}%;height:100%;background:${urgency === 'error' ? 'var(--error)' : urgency === 'warning' ? 'var(--warning)' : 'var(--success)'}"></div>
+            </div>
+            <span style="font-size:var(--text-xs);color:var(--text-muted)">${pct}%</span>
+          </div>
+        </td>
+        <td>${escapeHtml(s.notes || '')}</td>
+        <td>
+          <div style="display:flex;gap:var(--space-1)">
+            <button class="btn btn-ghost btn-xs ps-edit-btn" data-id="${escapeHtml(s.id)}" data-booked="${s.booked}" data-total="${s.total_slots}" title="Update booked count">Edit</button>
+            <button class="btn btn-ghost btn-xs ps-delete-btn" data-id="${escapeHtml(s.id)}" style="color:var(--error)">Del</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    container.innerHTML = `<table class="data-table">
+      <thead>
+        <tr>
+          <th>Date</th><th>Permit Type</th><th>Habitat</th>
+          <th style="text-align:center">Total</th>
+          <th style="text-align:center">Booked</th>
+          <th style="text-align:center">Available</th>
+          <th style="min-width:120px">Fill Rate</th>
+          <th>Notes</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+    // Edit (update booked count inline)
+    container.querySelectorAll('.ps-edit-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        const cur = parseInt(btn.dataset.booked) || 0;
+        const max = parseInt(btn.dataset.total) || 8;
+        const val = window.prompt(`Update booked count (current: ${cur}, max: ${max}):`);
+        if (val === null) return;
+        const n = parseInt(val);
+        if (isNaN(n) || n < 0) { toast('warning', 'Invalid value'); return; }
+        try {
+          await apiFetch(`/api/permit-slots/${id}`, { method: 'PATCH', body: { booked: n } });
+          toast('success', 'Updated', `Booked count set to ${n}`);
+          loadPermitSlots();
+        } catch (err) { toast('error', 'Update failed', err.message); }
+      });
+    });
+
+    // Delete
+    container.querySelectorAll('.ps-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Delete this permit slot record?')) return;
+        try {
+          await apiFetch(`/api/permit-slots/${btn.dataset.id}`, { method: 'DELETE' });
+          toast('success', 'Deleted');
+          loadPermitSlots();
+        } catch (err) { toast('error', 'Delete failed', err.message); }
+      });
+    });
+  }
+
+  function initPermitSlotsView() {
+    const addBtn = document.getElementById('addPermitSlotBtn');
+    const form = document.getElementById('permitSlotForm');
+    const saveBtn = document.getElementById('psSaveBtn');
+    const cancelBtn = document.getElementById('psCancelBtn');
+    const filterBtn = document.getElementById('psFilterBtn');
+    if (!addBtn) return;
+
+    addBtn.addEventListener('click', () => { form.style.display = form.style.display === 'none' ? '' : 'none'; });
+    cancelBtn.addEventListener('click', () => { form.style.display = 'none'; });
+    filterBtn.addEventListener('click', () => loadPermitSlots());
+
+    saveBtn.addEventListener('click', async () => {
+      const date = document.getElementById('psDate').value;
+      const type = document.getElementById('psPermitType').value;
+      if (!date || !type) { toast('warning', 'Date and type required'); return; }
+
+      saveBtn.classList.add('loading'); saveBtn.disabled = true;
+      try {
+        await apiFetch('/api/permit-slots', {
+          method: 'POST',
+          body: {
+            date,
+            permit_type: type,
+            habitat: document.getElementById('psHabitat').value.trim(),
+            total_slots: parseInt(document.getElementById('psTotalSlots').value) || 8,
+            booked: parseInt(document.getElementById('psBooked').value) || 0,
+            notes: document.getElementById('psNotes').value.trim()
+          }
+        });
+        form.style.display = 'none';
+        toast('success', 'Permit slot added');
+        loadPermitSlots();
+      } catch (err) {
+        toast('error', 'Save failed', err.message);
+      } finally {
+        saveBtn.classList.remove('loading'); saveBtn.disabled = false;
+      }
+    });
+  }
+
+  /* ============================================================
+     ITINERARY PDF DOWNLOAD
+     ============================================================ */
+  function downloadItineraryPdf(itineraryId) {
+    if (!itineraryId) { toast('warning', 'No itinerary selected'); return; }
+    window.open(`${API}/api/itineraries/${itineraryId}/pdf`, '_blank', 'noopener');
+    toast('success', 'Opening itinerary PDF…');
   }
 
 })();
