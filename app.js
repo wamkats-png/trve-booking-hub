@@ -178,6 +178,7 @@
       selectedItineraryName: ''
     },
     quotations: [],
+    tasks: [],
     liveFx: 3575,          // live USD/UGX — updated on init from open.er-api.com
     liveFxAt: null,        // ISO timestamp of last fetch
     apiConfig: null,
@@ -495,8 +496,10 @@
      NAVIGATION
      ============================================================ */
   const VIEW_TITLES = {
+    analytics:  'Analytics',
     enquiry:    'New Enquiry',
     pipeline:   'Pipeline Board',
+    tasks:      'Follow-up Tasks',
     curation:   'Itinerary Matching',
     pricing:    'Pricing Calculator',
     quotations: 'Quotations',
@@ -529,7 +532,9 @@
     state.currentView = viewId;
 
     // Lazy load data
+    if (viewId === 'analytics') loadAnalytics();
     if (viewId === 'pipeline') loadPipeline();
+    if (viewId === 'tasks') loadTasks();
     if (viewId === 'curation') loadCurationEnquiries();
     if (viewId === 'pricing') loadPricingItineraries();
     if (viewId === 'tools') initToolsView();
@@ -548,7 +553,7 @@
   }
 
   // Expose for inline onclick use
-  window.TRVE = { navigate, loadPipeline };
+  window.TRVE = { navigate, loadPipeline, loadTasks };
 
   /* ============================================================
      SIDEBAR TOGGLE
@@ -607,8 +612,10 @@
         // === SIDEBAR ENHANCEMENTS ===
     // Add tooltips for collapsed sidebar
     const tooltipMap = {
+      'analytics': 'Analytics',
       'enquiry': 'New Enquiry',
       'pipeline': 'Pipeline Board',
+      'tasks': 'Follow-up Tasks',
       'curation': 'Itinerary Matching',
       'pricing': 'Pricing Calculator',
       'quotations': 'Quotations',
@@ -623,12 +630,14 @@
 
     // Add keyboard shortcut hints to nav labels
     const shortcutMap = {
+      'analytics': '0',
       'enquiry': '1',
       'pipeline': '2',
-      'curation': '3',
-      'pricing': '4',
-      'quotations': '5',
-      'sync': '6'
+      'tasks': '3',
+      'curation': '4',
+      'pricing': '5',
+      'quotations': '6',
+      'sync': '7'
     };
     document.querySelectorAll('.nav-item[data-view]').forEach(item => {
       const view = item.dataset.view;
@@ -643,7 +652,7 @@
     // Keyboard navigation (1-6 keys when not in input)
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-      const keyMap = { '1': 'enquiry', '2': 'pipeline', '3': 'curation', '4': 'pricing', '5': 'quotations', '6': 'sync' };
+      const keyMap = { '0': 'analytics', '1': 'enquiry', '2': 'pipeline', '3': 'tasks', '4': 'curation', '5': 'pricing', '6': 'quotations', '7': 'sync' };
       if (keyMap[e.key]) {
         e.preventDefault();
         navigate(keyMap[e.key]);
@@ -1423,6 +1432,31 @@
         <textarea class="form-control" id="detailNotes" rows="3">${escapeHtml(enquiry.notes || '')}</textarea>
       </div>
 
+      <div style="margin-bottom:var(--space-4)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2)">
+          <label class="form-label" style="margin:0">Follow-up Tasks</label>
+          <button class="btn btn-ghost btn-sm" id="slideoverAddTaskToggle" style="font-size:var(--text-xs);padding:2px 8px">+ Add Task</button>
+        </div>
+        <div id="slideoverTaskAddForm" style="display:none;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);margin-bottom:var(--space-2)">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <input class="form-control" type="text" id="slideoverTaskDesc" placeholder="Task description" style="font-size:var(--text-sm)">
+            <input class="form-control" type="date" id="slideoverTaskDue" style="font-size:var(--text-sm)">
+          </div>
+          <div style="display:flex;gap:6px">
+            <select class="form-control" id="slideoverTaskAssigned" style="font-size:var(--text-sm);flex:1">
+              <option value="Desire">Desire</option>
+              <option value="Belinda">Belinda</option>
+              <option value="Robert">Robert</option>
+            </select>
+            <button class="btn btn-primary btn-sm" id="slideoverTaskSaveBtn">Save</button>
+            <button class="btn btn-ghost btn-sm" id="slideoverTaskCancelBtn">Cancel</button>
+          </div>
+        </div>
+        <div id="slideoverTasksList" style="min-height:28px">
+          <div style="font-size:var(--text-xs);color:var(--text-muted)">Loading tasks…</div>
+        </div>
+      </div>
+
       ${enquiry.curation_status && enquiry.curation_status !== 'pending' ? `
       <div style="background:var(--teal-50);border:1px solid var(--teal-100);border-radius:var(--radius-lg);padding:var(--space-3);margin-top:var(--space-3)">
         <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--teal-700);margin-bottom:4px">Matching Status</div>
@@ -1463,6 +1497,44 @@
 
     // After rendering, wire up buttons
     document.getElementById('detailCancelBtn').addEventListener('click', closeSlideover);
+
+    // Tasks panel wiring
+    const taskToggle = document.getElementById('slideoverAddTaskToggle');
+    const taskAddForm = document.getElementById('slideoverTaskAddForm');
+    if (taskToggle) {
+      taskToggle.addEventListener('click', () => {
+        taskAddForm.style.display = taskAddForm.style.display === 'none' ? '' : 'none';
+      });
+    }
+    const taskCancelBtn = document.getElementById('slideoverTaskCancelBtn');
+    if (taskCancelBtn) {
+      taskCancelBtn.addEventListener('click', () => { taskAddForm.style.display = 'none'; });
+    }
+    const taskSaveBtn = document.getElementById('slideoverTaskSaveBtn');
+    if (taskSaveBtn) {
+      taskSaveBtn.addEventListener('click', async () => {
+        const desc = document.getElementById('slideoverTaskDesc').value.trim();
+        if (!desc) { toast('warning', 'Description required'); return; }
+        taskSaveBtn.classList.add('loading'); taskSaveBtn.disabled = true;
+        try {
+          await apiFetch('/api/tasks', { method: 'POST', body: {
+            enquiry_id: enquiry.id,
+            booking_ref: enquiry.booking_ref || '',
+            description: desc,
+            due_date: document.getElementById('slideoverTaskDue').value,
+            assigned_to: document.getElementById('slideoverTaskAssigned').value,
+          }});
+          document.getElementById('slideoverTaskDesc').value = '';
+          document.getElementById('slideoverTaskDue').value = '';
+          taskAddForm.style.display = 'none';
+          await loadEnquiryTasks(enquiry.id);
+          toast('success', 'Task added');
+        } catch (err) { toast('error', 'Failed to add task', err.message); }
+        finally { taskSaveBtn.classList.remove('loading'); taskSaveBtn.disabled = false; }
+      });
+    }
+    // Load existing tasks for this enquiry
+    loadEnquiryTasks(enquiry.id);
 
     document.getElementById('detailSaveBtn').addEventListener('click', async () => {
       const statusSel = document.getElementById('detailStatusSelect');
@@ -2413,6 +2485,7 @@
       const quotations = Array.isArray(data) ? data : (data.items || []);
       state.quotations = quotations;
       renderQuotationsTable(quotations);
+      attachEmailButtons();
     } catch (err) {
       wrap.innerHTML = `
         <div class="empty-state">
@@ -2479,13 +2552,21 @@
                     ${escapeHtml(q.status || 'draft')}
                   </span>
                 </td>
-                <td style="white-space:nowrap">
+                <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
                   <a href="${API}/api/quotations/${escapeHtml(q.id)}/pdf"
                      target="_blank" rel="noopener"
                      class="btn btn-secondary btn-sm">
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9v1a1 1 0 001 1h8a1 1 0 001-1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    Download PDF
+                    PDF
                   </a>
+                  <button class="btn btn-gold btn-sm send-email-btn"
+                          data-qid="${escapeHtml(q.id)}"
+                          data-email="${escapeHtml(q.client_email || '')}"
+                          data-name="${escapeHtml(q.client_name || '')}"
+                          data-ref="${escapeHtml(q.booking_ref || '')}">
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 1l10 5-10 5V7l7-2-7-2V1z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Email
+                  </button>
                 </td>
               </tr>
             `).join('')}
@@ -2889,6 +2970,8 @@
     initCurationPanel();
     initPricingForm();
     initQuotations();
+    initTasksView();
+    initEmailModal();
 
     // Fetch live USD/UGX rate for FX exposure calculations
     await fetchLiveFx();
@@ -3220,5 +3303,366 @@
     `;
   }
 
+
+  /* ============================================================
+     VIEW: ANALYTICS DASHBOARD
+     ============================================================ */
+  let _analyticsCharts = {};
+
+  async function loadAnalytics() {
+    ['kpiTotal', 'kpiPipeline', 'kpiNew', 'kpiActive', 'kpiConfirmed', 'kpiOverdue'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '…';
+    });
+    try {
+      const data = await apiFetch('/api/analytics');
+      document.getElementById('kpiTotal').textContent = data.kpis.total_enquiries;
+      document.getElementById('kpiPipeline').textContent = '$' + fmtNum(data.kpis.pipeline_value_usd);
+      document.getElementById('kpiNew').textContent = data.kpis.new_inquiries;
+      document.getElementById('kpiActive').textContent = data.kpis.active_quotes;
+      document.getElementById('kpiConfirmed').textContent = data.kpis.confirmed;
+      document.getElementById('kpiOverdue').textContent = data.kpis.overdue_tasks;
+      updateTasksNavBadge(data.kpis.overdue_tasks);
+
+      Object.values(_analyticsCharts).forEach(c => c.destroy && c.destroy());
+      _analyticsCharts = {};
+
+      renderStatusChart(data.by_status);
+      renderChannelChart(data.by_channel);
+      renderMonthlyChart(data.monthly_trend);
+      renderTopDestinations(data.top_destinations);
+    } catch (err) {
+      toast('error', 'Analytics failed', err.message);
+    }
+  }
+
+  function renderStatusChart(byStatus) {
+    const ctx = document.getElementById('chartStatus');
+    if (!ctx || !window.Chart) return;
+    const STATUS_COLORS = {
+      New_Inquiry: '#14B8A6', Active_Quote: '#3B82F6', Confirmed: '#22C55E',
+      In_Progress: '#A855F7', Completed: '#6B7280', Cancelled: '#EF4444', Unconfirmed: '#F59E0B'
+    };
+    _analyticsCharts.status = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: byStatus.map(r => r.status.replace(/_/g, ' ')),
+        datasets: [{ label: 'Enquiries', data: byStatus.map(r => r.count),
+          backgroundColor: byStatus.map(r => STATUS_COLORS[r.status] || '#6B7280'), borderRadius: 4 }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#9CA3AF', font: { size: 11 } } },
+          y: { grid: { color: 'rgba(107,114,128,0.15)' }, ticks: { color: '#9CA3AF', font: { size: 11 }, stepSize: 1 } }
+        }
+      }
+    });
+  }
+
+  function renderChannelChart(byChannel) {
+    const ctx = document.getElementById('chartChannel');
+    if (!ctx || !window.Chart) return;
+    const COLORS = ['#C8963E', '#14B8A6', '#3B82F6', '#A855F7', '#22C55E', '#EF4444'];
+    _analyticsCharts.channel = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: byChannel.map(r => r.channel),
+        datasets: [{ data: byChannel.map(r => r.count),
+          backgroundColor: COLORS.slice(0, byChannel.length), borderWidth: 2, borderColor: 'transparent' }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom', labels: { color: '#9CA3AF', font: { size: 11 }, padding: 10 } } }
+      }
+    });
+  }
+
+  function renderMonthlyChart(monthlyTrend) {
+    const ctx = document.getElementById('chartMonthly');
+    if (!ctx || !window.Chart) return;
+    _analyticsCharts.monthly = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: monthlyTrend.map(r => r.month),
+        datasets: [{ label: 'New Enquiries', data: monthlyTrend.map(r => r.count),
+          borderColor: '#C8963E', backgroundColor: 'rgba(200,150,62,0.1)',
+          borderWidth: 2, pointBackgroundColor: '#C8963E', tension: 0.3, fill: true }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#9CA3AF', font: { size: 11 } } },
+          y: { grid: { color: 'rgba(107,114,128,0.15)' }, ticks: { color: '#9CA3AF', font: { size: 11 }, stepSize: 1 } }
+        }
+      }
+    });
+  }
+
+  function renderTopDestinations(topDests) {
+    const el = document.getElementById('analyticsDestinations');
+    if (!el) return;
+    if (!topDests || !topDests.length) {
+      el.innerHTML = '<div style="font-size:var(--text-xs);color:var(--text-muted)">No destination data yet</div>';
+      return;
+    }
+    const maxCount = topDests[0].count || 1;
+    el.innerHTML = topDests.map(d => `
+      <div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:3px">
+          <span style="color:var(--text-primary);font-weight:500">${escapeHtml(d.destination)}</span>
+          <span style="color:var(--text-muted);font-family:var(--font-mono)">${d.count}</span>
+        </div>
+        <div style="height:4px;background:var(--bg-surface);border-radius:2px;overflow:hidden">
+          <div style="height:100%;width:${Math.round((d.count / maxCount) * 100)}%;background:var(--color-gold);border-radius:2px"></div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function updateTasksNavBadge(overdueCount) {
+    const tasksItem = document.querySelector('.nav-item[data-view="tasks"]');
+    if (!tasksItem) return;
+    let badge = tasksItem.querySelector('.nav-badge');
+    if (overdueCount > 0) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'nav-badge';
+        badge.style.background = 'var(--danger)';
+        tasksItem.appendChild(badge);
+      }
+      badge.textContent = overdueCount;
+    } else if (badge) {
+      badge.remove();
+    }
+  }
+
+  /* ============================================================
+     VIEW: TASKS
+     ============================================================ */
+  let _taskFilter = 'all';
+
+  async function loadTasks(filter) {
+    if (filter !== undefined) _taskFilter = filter;
+    const container = document.getElementById('tasksTableContainer');
+    if (!container) return;
+    container.innerHTML = '<div style="padding:var(--space-8);text-align:center;color:var(--text-muted);font-size:var(--text-sm)">Loading…</div>';
+    try {
+      const tasks = await apiFetch('/api/tasks');
+      state.tasks = tasks;
+      renderTasksTable(tasks);
+      updateTasksNavBadge(tasks.filter(t => t.overdue).length);
+    } catch (err) {
+      container.innerHTML = `<div style="padding:var(--space-8);text-align:center;color:var(--danger);font-size:var(--text-sm)">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function renderTasksTable(allTasks) {
+    const container = document.getElementById('tasksTableContainer');
+    if (!container) return;
+
+    let tasks = allTasks;
+    if (_taskFilter === 'pending') tasks = allTasks.filter(t => t.status === 'pending' && !t.overdue);
+    else if (_taskFilter === 'done') tasks = allTasks.filter(t => t.status === 'done');
+    else if (_taskFilter === 'overdue') tasks = allTasks.filter(t => t.overdue);
+
+    document.querySelectorAll('.task-filter-btn').forEach(btn => {
+      btn.className = btn.dataset.filter === _taskFilter
+        ? 'btn btn-primary btn-sm task-filter-btn'
+        : 'btn btn-secondary btn-sm task-filter-btn';
+    });
+
+    if (tasks.length === 0) {
+      container.innerHTML = `<div style="padding:var(--space-8);text-align:center;color:var(--text-muted);font-size:var(--text-sm)">No tasks for filter: <strong>${_taskFilter}</strong></div>`;
+      return;
+    }
+
+    container.innerHTML = `
+      <table class="data-table" style="width:100%">
+        <thead>
+          <tr>
+            <th>Description</th>
+            <th>Booking Ref</th>
+            <th>Due Date</th>
+            <th>Assigned To</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tasks.map(t => {
+            const isDone = t.status === 'done';
+            return `
+              <tr style="${t.overdue ? 'background:rgba(239,68,68,0.05)' : ''}">
+                <td style="${isDone ? 'text-decoration:line-through;color:var(--text-muted)' : ''}">${escapeHtml(t.description)}</td>
+                <td class="mono" style="font-size:var(--text-xs)">${escapeHtml(t.booking_ref || '—')}</td>
+                <td style="white-space:nowrap;font-size:var(--text-xs)">
+                  ${t.due_date ? `<span style="${t.overdue ? 'color:var(--danger);font-weight:600' : ''}">${t.overdue ? '⚠ ' : ''}${fmtDate(t.due_date)}</span>` : '—'}
+                </td>
+                <td style="font-size:var(--text-sm)">${escapeHtml(t.assigned_to || '—')}</td>
+                <td>
+                  <span class="badge ${isDone ? 'badge-confirmed' : t.overdue ? 'badge-cancelled' : 'badge-new'}">
+                    ${isDone ? 'Done' : t.overdue ? 'Overdue' : 'Pending'}
+                  </span>
+                </td>
+                <td style="white-space:nowrap">
+                  <div style="display:flex;gap:4px">
+                    ${!isDone ? `<button class="btn btn-secondary btn-sm task-done-btn" data-task-id="${escapeHtml(t.id)}">✓ Done</button>` : ''}
+                    <button class="btn btn-ghost btn-sm task-delete-btn" data-task-id="${escapeHtml(t.id)}" style="color:var(--danger)">✕</button>
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+
+    container.querySelectorAll('.task-done-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await apiFetch(`/api/tasks/${btn.dataset.taskId}`, { method: 'PATCH', body: { status: 'done' } });
+          await loadTasks();
+          toast('success', 'Task marked done');
+        } catch (err) { toast('error', 'Update failed', err.message); }
+      });
+    });
+
+    container.querySelectorAll('.task-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Delete this task?')) return;
+        try {
+          await apiFetch(`/api/tasks/${btn.dataset.taskId}`, { method: 'DELETE' });
+          await loadTasks();
+          toast('success', 'Task deleted');
+        } catch (err) { toast('error', 'Delete failed', err.message); }
+      });
+    });
+  }
+
+  function initTasksView() {
+    const addBtn = document.getElementById('addTaskGlobalBtn');
+    const form = document.getElementById('taskQuickAddForm');
+    const saveBtn = document.getElementById('taskSaveBtn');
+    const cancelBtn = document.getElementById('taskCancelBtn');
+    if (!addBtn || form._tasksInited) return;
+    form._tasksInited = true;
+
+    addBtn.addEventListener('click', () => {
+      form.style.display = form.style.display === 'none' ? '' : 'none';
+    });
+    cancelBtn.addEventListener('click', () => { form.style.display = 'none'; });
+
+    saveBtn.addEventListener('click', async () => {
+      const desc = document.getElementById('taskDescInput').value.trim();
+      if (!desc) { toast('warning', 'Description required'); return; }
+      saveBtn.classList.add('loading'); saveBtn.disabled = true;
+      try {
+        await apiFetch('/api/tasks', { method: 'POST', body: {
+          description: desc,
+          due_date: document.getElementById('taskDueDateInput').value,
+          assigned_to: document.getElementById('taskAssignedInput').value,
+          booking_ref: document.getElementById('taskBookingRefInput').value.trim()
+        }});
+        document.getElementById('taskDescInput').value = '';
+        document.getElementById('taskDueDateInput').value = '';
+        document.getElementById('taskBookingRefInput').value = '';
+        form.style.display = 'none';
+        await loadTasks();
+        toast('success', 'Task created');
+      } catch (err) { toast('error', 'Failed to create task', err.message); }
+      finally { saveBtn.classList.remove('loading'); saveBtn.disabled = false; }
+    });
+
+    document.querySelectorAll('.task-filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => loadTasks(btn.dataset.filter));
+    });
+  }
+
+  async function loadEnquiryTasks(enquiryId) {
+    const el = document.getElementById('slideoverTasksList');
+    if (!el) return;
+    el.innerHTML = '<div style="font-size:var(--text-xs);color:var(--text-muted)">Loading…</div>';
+    try {
+      const tasks = await apiFetch(`/api/tasks?enquiry_id=${encodeURIComponent(enquiryId)}`);
+      if (tasks.length === 0) {
+        el.innerHTML = '<div style="font-size:var(--text-xs);color:var(--text-muted)">No tasks for this enquiry</div>';
+        return;
+      }
+      el.innerHTML = tasks.map(t => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+          <div style="flex:1;min-width:0">
+            <span style="font-size:var(--text-sm);${t.status === 'done' ? 'text-decoration:line-through;color:var(--text-muted)' : ''}">${escapeHtml(t.description)}</span>
+            ${t.due_date ? `<span style="margin-left:8px;font-size:var(--text-xs);color:${t.overdue ? 'var(--danger)' : 'var(--text-muted)'}">${t.overdue ? '⚠ ' : ''}${fmtDate(t.due_date)}</span>` : ''}
+            ${t.assigned_to ? `<span style="margin-left:6px;font-size:var(--text-xs);color:var(--text-muted)">→ ${escapeHtml(t.assigned_to)}</span>` : ''}
+          </div>
+          ${t.status !== 'done' ? `<button class="btn btn-secondary btn-sm slideover-task-done-btn" data-task-id="${escapeHtml(t.id)}" data-enquiry-id="${escapeHtml(enquiryId)}" style="margin-left:8px;padding:2px 6px;font-size:10px;flex-shrink:0">✓</button>` : ''}
+        </div>
+      `).join('');
+
+      el.querySelectorAll('.slideover-task-done-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          try {
+            await apiFetch(`/api/tasks/${btn.dataset.taskId}`, { method: 'PATCH', body: { status: 'done' } });
+            await loadEnquiryTasks(btn.dataset.enquiryId);
+            toast('success', 'Task done');
+          } catch (err) { toast('error', 'Update failed', err.message); }
+        });
+      });
+    } catch (err) {
+      el.innerHTML = `<div style="font-size:var(--text-xs);color:var(--danger)">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  /* ============================================================
+     EMAIL MODAL
+     ============================================================ */
+  let _currentEmailQid = null;
+
+  function attachEmailButtons() {
+    document.querySelectorAll('.send-email-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _currentEmailQid = btn.dataset.qid;
+        document.getElementById('emailTo').value = btn.dataset.email || '';
+        document.getElementById('emailSubject').value = '';
+        document.getElementById('emailMessage').value = '';
+        document.getElementById('emailModal').classList.remove('hidden');
+      });
+    });
+  }
+
+  function initEmailModal() {
+    const modal = document.getElementById('emailModal');
+    if (!modal || modal._emailInited) return;
+    modal._emailInited = true;
+
+    document.getElementById('emailModalClose').addEventListener('click', () => modal.classList.add('hidden'));
+    modal.addEventListener('click', e => { if (e.target === modal) modal.classList.add('hidden'); });
+
+    document.getElementById('emailSendBtn').addEventListener('click', async () => {
+      const toEmail = document.getElementById('emailTo').value.trim();
+      if (!toEmail) { toast('warning', 'Recipient email required'); return; }
+      if (!_currentEmailQid) return;
+
+      const btn = document.getElementById('emailSendBtn');
+      btn.classList.add('loading'); btn.disabled = true;
+      try {
+        const subject = document.getElementById('emailSubject').value.trim();
+        const message = document.getElementById('emailMessage').value.trim();
+        await apiFetch(`/api/quotations/${_currentEmailQid}/send-email`, {
+          method: 'POST',
+          body: { to_email: toEmail, ...(subject && { subject }), ...(message && { message }) }
+        });
+        modal.classList.add('hidden');
+        toast('success', 'Quotation emailed', `Sent to ${toEmail}`);
+      } catch (err) {
+        toast('error', 'Email failed', err.message);
+      } finally {
+        btn.classList.remove('loading'); btn.disabled = false;
+      }
+    });
+  }
 
 })();

@@ -24,6 +24,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230D5E4F'/><text y='22' x='6' font-size='18' font-family='serif' fill='%23C8963E'>T</text></svg>">
 
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
 
@@ -122,7 +123,19 @@
 
     <!-- Navigation -->
     <nav class="sidebar-nav" role="navigation" aria-label="Main">
-      <div class="nav-section-label">Operations</div>
+      <div class="nav-section-label">Overview</div>
+
+      <div class="nav-item" data-view="analytics" role="button" tabindex="0">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M2 14l4-5 3 3 3-4 4 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <rect x="1.5" y="1.5" width="15" height="15" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+        </span>
+        <span class="nav-label">Analytics</span>
+      </div>
+
+      <div class="nav-section-label" style="margin-top:8px">Operations</div>
 
       <div class="nav-item" data-view="enquiry" role="button" tabindex="0">
         <span class="nav-icon">
@@ -152,6 +165,18 @@
           </svg>
         </span>
         <span class="nav-label">Itinerary Matching</span>
+      </div>
+
+      <div class="nav-item" data-view="tasks" role="button" tabindex="0">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <rect x="1.5" y="1.5" width="15" height="15" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M5 6h8M5 9h6M5 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="13.5" cy="12" r="2.5" fill="var(--bg-surface)" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12.5 12l.75.75 1.25-1.25" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="nav-label">Tasks</span>
       </div>
 
       <div class="nav-section-label" style="margin-top: 8px;">Finance</div>
@@ -870,6 +895,136 @@
         </div>
       </section>
 
+      <!-- ANALYTICS VIEW -->
+      <section class="view" id="view-analytics" aria-label="Analytics">
+        <div class="view-header">
+          <h1 class="view-title">Analytics</h1>
+          <p class="view-subtitle">Pipeline overview &middot; Revenue &middot; Booking sources &middot; Monthly trends</p>
+        </div>
+
+        <!-- KPI Cards -->
+        <div id="analyticsKpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:var(--space-4);margin-bottom:var(--space-5)">
+          <div class="card" style="padding:var(--space-4)">
+            <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Total Enquiries</div>
+            <div id="kpiTotal" style="font-size:var(--text-3xl);font-weight:700;color:var(--text-primary);font-family:var(--font-mono)">—</div>
+          </div>
+          <div class="card" style="padding:var(--space-4)">
+            <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Pipeline Value</div>
+            <div id="kpiPipeline" style="font-size:var(--text-2xl);font-weight:700;color:var(--color-gold);font-family:var(--font-mono)">—</div>
+          </div>
+          <div class="card" style="padding:var(--space-4)">
+            <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">New Inquiries</div>
+            <div id="kpiNew" style="font-size:var(--text-3xl);font-weight:700;color:var(--color-teal);font-family:var(--font-mono)">—</div>
+          </div>
+          <div class="card" style="padding:var(--space-4)">
+            <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Active Quotes</div>
+            <div id="kpiActive" style="font-size:var(--text-3xl);font-weight:700;color:var(--info);font-family:var(--font-mono)">—</div>
+          </div>
+          <div class="card" style="padding:var(--space-4)">
+            <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Confirmed</div>
+            <div id="kpiConfirmed" style="font-size:var(--text-3xl);font-weight:700;color:var(--success);font-family:var(--font-mono)">—</div>
+          </div>
+          <div class="card" style="padding:var(--space-4)">
+            <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Overdue Tasks</div>
+            <div id="kpiOverdue" style="font-size:var(--text-3xl);font-weight:700;color:var(--danger);font-family:var(--font-mono)">—</div>
+          </div>
+        </div>
+
+        <!-- Charts row 1 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4);margin-bottom:var(--space-4)">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Enquiries by Status</span></div>
+            <div class="card-body" style="padding:var(--space-4)">
+              <canvas id="chartStatus" height="200"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Booking Channels</span></div>
+            <div class="card-body" style="padding:var(--space-4)">
+              <canvas id="chartChannel" height="200"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Charts row 2 -->
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:var(--space-4)">
+          <div class="card">
+            <div class="card-header"><span class="card-title">Monthly Enquiry Trend</span></div>
+            <div class="card-body" style="padding:var(--space-4)">
+              <canvas id="chartMonthly" height="140"></canvas>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Top Destinations</span></div>
+            <div class="card-body" style="padding:var(--space-4)" id="analyticsDestinations">
+              <div style="font-size:var(--text-xs);color:var(--text-muted)">Loading…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TASKS VIEW -->
+      <section class="view" id="view-tasks" aria-label="Tasks">
+        <div class="view-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3)">
+          <div>
+            <h1 class="view-title">Follow-up Tasks</h1>
+            <p class="view-subtitle">Track follow-up calls, payment chasers, and pre-departure checklists</p>
+          </div>
+          <button class="btn btn-primary btn-sm" id="addTaskGlobalBtn">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            Add Task
+          </button>
+        </div>
+
+        <!-- Quick Add Form (hidden by default) -->
+        <div id="taskQuickAddForm" class="card mb-4" style="display:none">
+          <div class="card-header"><span class="card-title">New Task</span></div>
+          <div class="card-body" style="padding:var(--space-4)">
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:var(--space-3);align-items:end">
+              <div class="form-group mb-0">
+                <label class="form-label">Description <span class="required">*</span></label>
+                <input class="form-control" type="text" id="taskDescInput" placeholder="e.g. Follow up on deposit payment">
+              </div>
+              <div class="form-group mb-0">
+                <label class="form-label">Due Date</label>
+                <input class="form-control" type="date" id="taskDueDateInput">
+              </div>
+              <div class="form-group mb-0">
+                <label class="form-label">Assigned To</label>
+                <select class="form-control" id="taskAssignedInput">
+                  <option value="Desire">Desire</option>
+                  <option value="Belinda">Belinda</option>
+                  <option value="Robert">Robert</option>
+                </select>
+              </div>
+              <div style="display:flex;gap:var(--space-2)">
+                <button class="btn btn-primary btn-sm" id="taskSaveBtn">Save</button>
+                <button class="btn btn-ghost btn-sm" id="taskCancelBtn">Cancel</button>
+              </div>
+            </div>
+            <div class="form-group mt-3 mb-0">
+              <label class="form-label">Booking Reference (optional)</label>
+              <input class="form-control" type="text" id="taskBookingRefInput" placeholder="TRVE-2026-001" style="max-width:200px">
+            </div>
+          </div>
+        </div>
+
+        <!-- Filter Tabs -->
+        <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4)">
+          <button class="btn btn-primary btn-sm task-filter-btn" data-filter="all">All</button>
+          <button class="btn btn-secondary btn-sm task-filter-btn" data-filter="pending">Pending</button>
+          <button class="btn btn-secondary btn-sm task-filter-btn" data-filter="overdue">Overdue</button>
+          <button class="btn btn-secondary btn-sm task-filter-btn" data-filter="done">Done</button>
+        </div>
+
+        <!-- Tasks Table -->
+        <div class="card">
+          <div style="overflow-x:auto" id="tasksTableContainer">
+            <div style="padding:var(--space-8);text-align:center;color:var(--text-muted);font-size:var(--text-sm)">Loading tasks…</div>
+          </div>
+        </div>
+      </section>
+
       <!-- T3: Finance Tools — Bank Charges Calculator -->
       <section class="view" id="view-tools" aria-label="Finance Tools">
         <div class="view-header">
@@ -961,6 +1116,37 @@
       <button class="btn btn-gold w-full" id="qmSubmitBtn">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v9M3 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Generate Quotation PDF
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Email Send Modal -->
+<div id="emailModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="emailModalTitle">
+  <div class="modal-content card" style="max-width:480px;width:90%;margin:auto;position:relative;top:50%;transform:translateY(-50%)">
+    <div class="card-header">
+      <span class="card-title" id="emailModalTitle">Send Quotation to Client</span>
+      <button class="btn btn-ghost btn-sm" id="emailModalClose" aria-label="Close" style="margin-left:auto">&times;</button>
+    </div>
+    <div class="card-body" style="padding:var(--space-5)">
+      <div class="form-group mb-4">
+        <label class="form-label" for="emailTo">Recipient Email <span class="required">*</span></label>
+        <input class="form-control" type="email" id="emailTo" placeholder="client@example.com">
+      </div>
+      <div class="form-group mb-4">
+        <label class="form-label" for="emailSubject">Subject</label>
+        <input class="form-control" type="text" id="emailSubject" placeholder="Auto-generated if blank">
+      </div>
+      <div class="form-group mb-4">
+        <label class="form-label" for="emailMessage">Message (optional)</label>
+        <textarea class="form-control" id="emailMessage" rows="4" placeholder="Leave blank to use the default message"></textarea>
+      </div>
+      <p style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-4)">
+        The PDF quotation will be attached automatically. SMTP must be configured via environment variables (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS).
+      </p>
+      <button class="btn btn-gold w-full" id="emailSendBtn">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1l12 6-12 6V8.5l8-2.5-8-2.5V1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Send Email
       </button>
     </div>
   </div>

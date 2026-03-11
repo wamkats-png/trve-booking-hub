@@ -8,10 +8,15 @@ Runs on port 8000.
 import json
 import os
 import re
+import smtplib
 import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, date
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Any
@@ -160,11 +165,24 @@ CREATE TABLE IF NOT EXISTS sync_queue (
     completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    enquiry_id TEXT DEFAULT '',
+    booking_ref TEXT DEFAULT '',
+    description TEXT NOT NULL,
+    due_date TEXT DEFAULT '',
+    assigned_to TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_enquiries_booking_ref ON enquiries(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_enquiries_status ON enquiries(status);
 CREATE INDEX IF NOT EXISTS idx_lodges_name ON lodges(lodge_name);
 CREATE INDEX IF NOT EXISTS idx_lodges_country ON lodges(country);
 CREATE INDEX IF NOT EXISTS idx_quotations_booking_ref ON quotations(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_tasks_enquiry_id ON tasks(enquiry_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
 """
 
 # ---------------------------------------------------------------------------
@@ -2003,6 +2021,249 @@ def sync_export(unsynced_only: bool = Query(False)):
                 "row_array": [_sheets_safe(str(v)) for v in raw],
             })
     return {"items": items, "total": len(items)}
+
+
+# ---------------------------------------------------------------------------
+# ANALYTICS
+# ---------------------------------------------------------------------------
+@app.get("/api/analytics")
+def get_analytics():
+    today = date.today().isoformat()
+    with db_session() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM enquiries").fetchone()[0]
+        new_count = conn.execute("SELECT COUNT(*) FROM enquiries WHERE status='New_Inquiry'").fetchone()[0]
+        active_quote_count = conn.execute("SELECT COUNT(*) FROM enquiries WHERE status='Active_Quote'").fetchone()[0]
+        confirmed_count = conn.execute("SELECT COUNT(*) FROM enquiries WHERE status='Confirmed'").fetchone()[0]
+        total_pipeline = conn.execute(
+            "SELECT COALESCE(SUM(CAST(NULLIF(quoted_usd,'') AS REAL)),0) FROM enquiries "
+            "WHERE status NOT IN ('Cancelled','Completed')"
+        ).fetchone()[0] or 0
+
+        status_rows = conn.execute(
+            "SELECT status, COUNT(*) as count FROM enquiries GROUP BY status ORDER BY count DESC"
+        ).fetchall()
+        revenue_rows = conn.execute(
+            "SELECT status, COALESCE(SUM(CAST(NULLIF(quoted_usd,'') AS REAL)),0) as total "
+            "FROM enquiries WHERE quoted_usd!='' GROUP BY status"
+        ).fetchall()
+        channel_rows = conn.execute(
+            "SELECT channel, COUNT(*) as count FROM enquiries GROUP BY channel ORDER BY count DESC"
+        ).fetchall()
+        tier_rows = conn.execute(
+            "SELECT nationality_tier, COUNT(*) as count FROM enquiries GROUP BY nationality_tier ORDER BY count DESC"
+        ).fetchall()
+        monthly_rows = conn.execute(
+            "SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count "
+            "FROM enquiries GROUP BY month ORDER BY month DESC LIMIT 6"
+        ).fetchall()
+        dest_rows = conn.execute(
+            "SELECT destinations_requested FROM enquiries WHERE destinations_requested!=''"
+        ).fetchall()
+        overdue_tasks = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status!='done' AND due_date!='' AND due_date<?",
+            (today,)
+        ).fetchone()[0]
+        pending_tasks = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status='pending'"
+        ).fetchone()[0]
+
+    dest_count: dict = {}
+    for row in dest_rows:
+        for d in [x.strip() for x in row[0].split(',') if x.strip()]:
+            dest_count[d] = dest_count.get(d, 0) + 1
+    top_dests = sorted(dest_count.items(), key=lambda x: -x[1])[:8]
+
+    return {
+        "kpis": {
+            "total_enquiries": total,
+            "new_inquiries": new_count,
+            "active_quotes": active_quote_count,
+            "confirmed": confirmed_count,
+            "pipeline_value_usd": round(float(total_pipeline), 2),
+            "overdue_tasks": overdue_tasks,
+            "pending_tasks": pending_tasks,
+        },
+        "by_status": [dict(r) for r in status_rows],
+        "revenue_by_status": [{"status": r["status"], "total": round(float(r["total"]), 2)} for r in revenue_rows],
+        "by_channel": [dict(r) for r in channel_rows],
+        "by_nationality": [dict(r) for r in tier_rows],
+        "monthly_trend": list(reversed([dict(r) for r in monthly_rows])),
+        "top_destinations": [{"destination": d, "count": c} for d, c in top_dests],
+    }
+
+
+# ---------------------------------------------------------------------------
+# TASKS
+# ---------------------------------------------------------------------------
+class TaskCreate(BaseModel):
+    enquiry_id: Optional[str] = ''
+    booking_ref: Optional[str] = ''
+    description: str
+    due_date: Optional[str] = ''
+    assigned_to: Optional[str] = ''
+
+
+class TaskUpdate(BaseModel):
+    description: Optional[str] = None
+    due_date: Optional[str] = None
+    assigned_to: Optional[str] = None
+    status: Optional[str] = None
+
+
+@app.get("/api/tasks")
+def list_tasks(enquiry_id: Optional[str] = Query(None), status: Optional[str] = Query(None)):
+    with db_session() as conn:
+        if enquiry_id:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE enquiry_id=? ORDER BY due_date ASC, created_at DESC",
+                (enquiry_id,)
+            ).fetchall()
+        elif status:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE status=? ORDER BY due_date ASC, created_at DESC",
+                (status,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tasks ORDER BY due_date ASC, created_at DESC"
+            ).fetchall()
+    today = date.today().isoformat()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["overdue"] = bool(d["due_date"] and d["status"] != "done" and d["due_date"] < today)
+        items.append(d)
+    return items
+
+
+@app.post("/api/tasks", status_code=201)
+def create_task(body: TaskCreate):
+    task_id = str(uuid.uuid4())[:8]
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, enquiry_id, booking_ref, description, due_date, assigned_to, status, created_at) "
+            "VALUES (?,?,?,?,?,?,'pending',?)",
+            (task_id, body.enquiry_id or '', body.booking_ref or '',
+             body.description, body.due_date or '', body.assigned_to or '',
+             datetime.now().isoformat())
+        )
+    return {"id": task_id, "status": "pending", "description": body.description}
+
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: str, body: TaskUpdate):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        t = dict(row)
+        if body.description is not None:
+            t["description"] = body.description
+        if body.due_date is not None:
+            t["due_date"] = body.due_date
+        if body.assigned_to is not None:
+            t["assigned_to"] = body.assigned_to
+        if body.status is not None:
+            t["status"] = body.status
+        conn.execute(
+            "UPDATE tasks SET description=?, due_date=?, assigned_to=?, status=? WHERE id=?",
+            (t["description"], t["due_date"], t["assigned_to"], t["status"], task_id)
+        )
+    today = date.today().isoformat()
+    t["overdue"] = bool(t["due_date"] and t["status"] != "done" and t["due_date"] < today)
+    return t
+
+
+@app.delete("/api/tasks/{task_id}", status_code=204)
+def delete_task(task_id: str):
+    with db_session() as conn:
+        result = conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Task not found")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# EMAIL — Send quotation PDF to client
+# ---------------------------------------------------------------------------
+class SendEmailRequest(BaseModel):
+    to_email: str
+    subject: Optional[str] = None
+    message: Optional[str] = None
+
+
+@app.post("/api/quotations/{quotation_id}/send-email")
+def send_quotation_email(quotation_id: str, body: SendEmailRequest):
+    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+    smtp_from = os.environ.get("SMTP_FROM", smtp_user)
+
+    if not smtp_user or not smtp_pass:
+        raise HTTPException(
+            status_code=503,
+            detail="SMTP not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS environment variables."
+        )
+
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotations WHERE id=? OR quotation_id=?",
+            (quotation_id, quotation_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+
+    q = dict(row)
+    try:
+        q["pricing_data"] = json.loads(q["pricing_data"]) if isinstance(q["pricing_data"], str) else q["pricing_data"]
+    except (json.JSONDecodeError, TypeError):
+        q["pricing_data"] = {}
+
+    pdf_bytes = generate_quotation_pdf(q)
+
+    subject = body.subject or f"Safari Quotation {q['quotation_id']} — The Rift Valley Explorer"
+    message_body = body.message or (
+        f"Dear {q['client_name']},\n\n"
+        "Thank you for your interest in a safari with The Rift Valley Explorer.\n\n"
+        "Please find your personalised quotation attached. "
+        f"This quotation is valid for {q.get('valid_days', 14)} days.\n\n"
+        "To confirm your booking please reply to this email or contact your coordinator directly.\n\n"
+        "Warm regards,\nThe TRVE Team\nThe Rift Valley Explorer\n"
+        "Bucket List Adventures Into The Heart Of Africa"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"] = smtp_from
+    msg["To"] = body.to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(message_body, "plain"))
+
+    attachment = MIMEBase("application", "pdf")
+    attachment.set_payload(pdf_bytes)
+    encoders.encode_base64(attachment)
+    filename = f"TRVE_Quotation_{q['quotation_id']}.pdf"
+    attachment.add_header("Content-Disposition", "attachment", filename=filename)
+    msg.attach(attachment)
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to send email: {str(e)}")
+
+    # Log in sync queue
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO sync_queue (id, type, reference, description, status, created_at) "
+            "VALUES (?, 'email', ?, ?, 'completed', ?)",
+            (str(uuid.uuid4())[:8], q["quotation_id"],
+             f"Quotation emailed to {body.to_email}", datetime.now().isoformat())
+        )
+
+    return {"status": "sent", "to": body.to_email, "quotation_id": q["quotation_id"]}
 
 
 # ---------------------------------------------------------------------------
