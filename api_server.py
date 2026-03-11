@@ -763,6 +763,95 @@ def _migrate_from_json(conn):
 # ---------------------------------------------------------------------------
 # PDF Generation (branded TRVE quotation)
 # ---------------------------------------------------------------------------
+def _build_raw_pdf(title: str, sections: list[tuple[str, list[str]]]) -> bytes:
+    """
+    Pure-Python PDF generator — no external libraries required.
+    sections: list of (heading, [line, line, ...])
+    Returns a minimal but valid PDF/1.4 byte string.
+    """
+    def pdf_str(s: str) -> str:
+        # Escape parentheses and backslashes; strip non-latin chars
+        s = s.encode('latin-1', errors='replace').decode('latin-1')
+        return s.replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
+
+    lines_buf: list[str] = []
+    y = 760.0
+    line_h = 14.0
+
+    def add_line(text: str, font: str = "F1", size: int = 10, indent: float = 50.0):
+        nonlocal y
+        lines_buf.append(f"/{font} {size} Tf")
+        lines_buf.append(f"{indent} {y:.1f} Td")
+        lines_buf.append(f"({pdf_str(text)}) Tj")
+        lines_buf.append(f"-{indent} -{line_h} Td")
+        y -= line_h
+
+    def add_blank():
+        nonlocal y
+        lines_buf.append(f"0 -{line_h} Td")
+        y -= line_h
+
+    # Title
+    add_line(title, "F2", 16)
+    add_line("The Rift Valley Explorer — Bucket List Adventures Into The Heart Of Africa", "F1", 9)
+    add_blank()
+
+    for heading, body_lines in sections:
+        if y < 60:
+            break
+        add_line(heading, "F2", 12)
+        for bl in body_lines:
+            if y < 60:
+                break
+            add_line(bl, "F1", 10)
+        add_blank()
+
+    content_stream = "BT\n" + "\n".join(lines_buf) + "\nET"
+    stream_bytes = content_stream.encode('latin-1')
+    stream_len = len(stream_bytes)
+
+    objects: list[str] = []
+
+    def obj(n: int, body: str) -> str:
+        return f"{n} 0 obj\n{body}\nendobj"
+
+    objects.append(obj(1, "<< /Type /Catalog /Pages 2 0 R >>"))
+    objects.append(obj(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"))
+    objects.append(obj(3,
+        "<< /Type /Page /Parent 2 0 R\n"
+        "   /MediaBox [0 0 612 792]\n"
+        "   /Contents 4 0 R\n"
+        "   /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>"))
+    objects.append(
+        f"4 0 obj\n<< /Length {stream_len} >>\nstream\n"
+        + stream_bytes.decode('latin-1')
+        + "\nendstream\nendobj"
+    )
+    objects.append(obj(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"))
+    objects.append(obj(6, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>"))
+
+    header = "%PDF-1.4\n"
+    body_parts = [header]
+    offsets: list[int] = []
+    pos = len(header.encode('latin-1'))
+    for o in objects:
+        offsets.append(pos)
+        part = o + "\n"
+        body_parts.append(part)
+        pos += len(part.encode('latin-1'))
+
+    xref_start = pos
+    xref = f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n"
+    for off in offsets:
+        xref += f"{off:010d} 00000 n \n"
+    trailer = (
+        f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_start}\n%%EOF\n"
+    )
+    body_parts.append(xref + trailer)
+    return "".join(body_parts).encode('latin-1')
+
+
 def _sanitize_pdf_text(text: str) -> str:
     """Replace Unicode chars not supported by Helvetica."""
     replacements = {
@@ -778,8 +867,31 @@ def _sanitize_pdf_text(text: str) -> str:
 
 
 def generate_quotation_pdf(quotation: dict) -> bytes:
-    """Generate a branded TRVE quotation PDF."""
-    from fpdf import FPDF
+    """Generate a branded TRVE quotation PDF.
+    Tries fpdf first; falls back to pure-Python _build_raw_pdf if unavailable.
+    """
+    try:
+        from fpdf import FPDF
+    except Exception:
+        pd = quotation.get("pricing_data", {}) or {}
+        if isinstance(pd, str):
+            try: pd = json.loads(pd)
+            except: pd = {}
+        sections = [
+            ("Quotation Details", [
+                f"Ref: {quotation.get('quotation_id', quotation.get('id',''))}",
+                f"Client: {quotation.get('client_name','')}",
+                f"Valid for: {quotation.get('valid_days', 14)} days",
+            ]),
+            ("Pricing Summary", [
+                f"Total USD: ${pd.get('total_usd', pd.get('grand_total', 0)):,.2f}",
+                f"Total UGX: {pd.get('total_ugx', 0):,.0f}",
+            ]),
+        ]
+        return _build_raw_pdf(
+            f"Safari Quotation — {quotation.get('quotation_id', '')}",
+            sections
+        )
 
     class TRVEQuotationPDF(FPDF):
         def cell(self, w, h=0, text='', *args, **kwargs):
@@ -1078,6 +1190,16 @@ class EnquiryUpdate(BaseModel):
     destinations_requested: Optional[Any] = None
     special_requests: Optional[str] = None
     quoted_usd: Optional[str] = None
+    revenue_usd: Optional[str] = None
+    balance_usd: Optional[str] = None
+    payment_status: Optional[str] = None
+    agent_name: Optional[str] = None
+    permits: Optional[str] = None
+    accommodation: Optional[str] = None
+    vehicle: Optional[str] = None
+    insurance: Optional[str] = None
+    internal_flags: Optional[str] = None
+    synced: Optional[bool] = None
     notes: Optional[str] = None
 
 
@@ -2297,15 +2419,56 @@ def get_calendar(year: int = Query(...), month: int = Query(...)):
             "ORDER BY travel_start_date",
             (month_end, month_start, month_start)
         ).fetchall()
-    return [dict(r) for r in rows]
+    return {"bookings": [dict(r) for r in rows], "year": year, "month": month}
 
 
 # ---------------------------------------------------------------------------
 # ITINERARY PDF — day-by-day branded itinerary document
 # ---------------------------------------------------------------------------
 def generate_itinerary_pdf(itinerary: dict) -> bytes:
-    """Generate a branded day-by-day TRVE itinerary PDF."""
-    from fpdf import FPDF
+    """Generate a branded day-by-day TRVE itinerary PDF.
+    Tries fpdf first; falls back to pure-Python _build_raw_pdf if fpdf unavailable.
+    """
+    try:
+        from fpdf import FPDF
+    except Exception:
+        # fpdf not available — use pure-Python fallback
+        name = itinerary.get("name", "Safari Itinerary")
+        duration = itinerary.get("duration_days", 7)
+        countries = itinerary.get("countries", [])
+        if isinstance(countries, str):
+            try: countries = json.loads(countries)
+            except: countries = [countries]
+        destinations = itinerary.get("destinations", [])
+        if isinstance(destinations, str):
+            try: destinations = json.loads(destinations)
+            except: destinations = [destinations]
+        description = itinerary.get("description", "")
+        highlights = itinerary.get("highlights", "")
+        sections = [
+            ("Overview", [
+                f"Duration: {duration} days",
+                f"Countries: {', '.join(countries) if countries else 'East Africa'}",
+                f"Budget: {itinerary.get('budget_tier','').replace('_',' ').title()}",
+            ]),
+        ]
+        if description:
+            sections.append(("Description", [description[:200]]))
+        if highlights:
+            sections.append(("Highlights", [h.strip() for h in highlights.split(',') if h.strip()]))
+        day_lines: list[str] = []
+        num_dests = len(destinations) if destinations else 1
+        days_per_dest = max(1, duration // num_dests) if num_dests else 1
+        day = 1
+        for i, dest in enumerate(destinations or ["Safari"]):
+            days = days_per_dest if i < num_dests - 1 else (duration - day + 1)
+            label = f"Day {day}" if days == 1 else f"Days {day}-{day+days-1}"
+            day_lines.append(f"{label}: {dest}")
+            day += days
+            if day > duration:
+                break
+        sections.append(("Day-by-Day", day_lines))
+        return _build_raw_pdf(name, sections)
 
     class TRVEItineraryPDF(FPDF):
         def cell(self, w, h=0, text='', *args, **kwargs):
@@ -2508,7 +2671,13 @@ def get_itinerary_pdf(itinerary_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Itinerary not found")
     itn = dict(row)
-    pdf_bytes = generate_itinerary_pdf(itn)
+    try:
+        pdf_bytes = generate_itinerary_pdf(itn)
+    except BaseException as pdf_err:
+        raise HTTPException(
+            status_code=503,
+            detail=f"PDF generation unavailable: {type(pdf_err).__name__}. Ensure fpdf2 is installed."
+        )
     filename = f"TRVE_Itinerary_{itinerary_id}.pdf"
     return StreamingResponse(
         BytesIO(pdf_bytes),
@@ -2581,7 +2750,7 @@ def list_permit_slots(
             f"SELECT *, (total_slots - booked) AS available FROM permit_slots {where} ORDER BY date, permit_type",
             params
         ).fetchall()
-    return [dict(r) for r in rows]
+    return {"slots": [dict(r) for r in rows], "total": len(rows)}
 
 
 @app.post("/api/permit-slots", status_code=201)

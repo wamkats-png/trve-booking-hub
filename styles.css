@@ -486,3 +486,77 @@ textarea.form-control { resize: vertical; min-height: 80px; }
 
 /* ── Amount column ───────────────────────────────────────────── */
 .amount-col { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Status Badge classes ────────────────────────────────────── */
+.badge-new        { background: #e0e7ff; color: #3730a3; }
+.badge-active     { background: #fef3c7; color: #92400e; }
+.badge-confirmed  { background: #d1fae5; color: #065f46; }
+.badge-inprogress { background: #dbeafe; color: #1e40af; }
+.badge-completed  { background: #f3f4f6; color: #374151; }
+.badge-cancelled  { background: #fee2e2; color: #991b1b; }
+.badge-unconfirmed{ background: #e5e7eb; color: #6b7280; }
+
+/* ── Channel Badge classes ───────────────────────────────────── */
+.badge-ch-whatsapp { background: #dcfce7; color: #166534; }
+.badge-ch-email    { background: #dbeafe; color: #1e40af; }
+.badge-ch-b2b      { background: #f3e8ff; color: #6b21a8; }
+.badge-ch-hornbill { background: #fef9c3; color: #713f12; }
+.badge-ch-direct   { background: #f1f5f9; color: #475569; }
+.badge-ch-website  { background: #e0f2fe; color: #075985; }
+
+/* ── Quotation Status Badge classes ─────────────────────────── */
+.badge-quot-draft    { background: #f1f5f9; color: #64748b; }
+.badge-quot-sent     { background: #dbeafe; color: #1e40af; }
+.badge-quot-accepted { background: #d1fae5; color: #065f46; }
+.badge-quot-expired  { background: #fee2e2; color: #991b1b; }
+
+/* ── Login shake animation ───────────────────────────────────── */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-10px); }
+  40%       { transform: translateX(10px); }
+  60%       { transform: translateX(-8px); }
+  80%       { transform: translateX(8px); }
+}
+.login-card.shake { animation: shake 0.45s ease-in-out; }
+
+/* ── Toast remove animation ──────────────────────────────────── */
+@keyframes slideOut {
+  to { transform: translateX(110%); opacity: 0; }
+}
+.toast.removing { animation: slideOut .2s ease forwards; }
+
+/* ── Kanban column ───────────────────────────────────────────── */
+.kanban-col {
+  min-width: 220px; flex: 1; background: var(--bg-body);
+  border-radius: var(--radius-lg); padding: var(--space-3);
+  display: flex; flex-direction: column; gap: var(--space-2);
+}
+.kanban-col-header {
+  font-size: var(--text-xs); font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-muted); padding: 4px 0 8px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.kanban-card {
+  background: white; border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: var(--space-3); cursor: pointer; transition: box-shadow var(--transition), border-color var(--transition);
+}
+.kanban-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.08); border-color: var(--teal-400); }
+.kanban-card.selected { border-color: var(--teal-500); box-shadow: 0 0 0 2px rgba(26,138,114,.2); }
+
+/* ── Lodge item row ──────────────────────────────────────────── */
+.lodge-item { display: flex; gap: var(--space-2); align-items: flex-start; margin-bottom: var(--space-2); }
+
+/* ── Suggestion cards (curation) ─────────────────────────────── */
+.suggestion-card {
+  border: 1.5px solid var(--border); border-radius: var(--radius-lg);
+  padding: var(--space-4); cursor: pointer; transition: all var(--transition);
+  background: white;
+}
+.suggestion-card:hover { border-color: var(--teal-400); background: var(--teal-50); }
+.suggestion-card.selected { border-color: var(--teal-600); background: var(--teal-50); box-shadow: 0 0 0 3px rgba(13,94,79,.12); }
+
+/* ── Detail field rows ───────────────────────────────────────── */
+.detail-field { margin-bottom: var(--space-3); }
+.detail-field-label { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+.detail-field-value { font-size: var(--text-sm); color: var(--text-primary); }
