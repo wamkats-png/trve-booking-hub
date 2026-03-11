@@ -14,9 +14,9 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: SMTP_HOST
-        sync: false
+        value: smtp.gmail.com
       - key: SMTP_PORT
-        sync: false
+        value: 587
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASS
