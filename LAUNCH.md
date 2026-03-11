@@ -5,7 +5,77 @@
 
 ---
 
-## Quick Start (2 minutes)
+## Deploy to Render (Public Web Link)
+
+Deploy once, access from any device via a permanent HTTPS URL.
+
+### Step 1 — Push to GitHub
+The code must be in a GitHub repository. If it isn't already:
+```bash
+# From inside trve-booking-hub/
+git remote add origin https://github.com/YOUR_ORG/trve-booking-hub.git
+git push -u origin main
+```
+
+### Step 2 — Create a Render account
+Go to [render.com](https://render.com) and sign up (free). Connect your GitHub account.
+
+### Step 3 — Deploy from the Render dashboard
+
+1. Click **New → Web Service**
+2. Select your **trve-booking-hub** repository
+3. Render detects `render.yaml` automatically — confirm the settings:
+
+| Setting | Value |
+|---------|-------|
+| Runtime | Python |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn api_server:app --host 0.0.0.0 --port $PORT` |
+| Plan | Free (or Starter for always-on) |
+
+4. Under **Disks**, confirm the disk is attached:
+   - Name: `trve-data`
+   - Mount path: `/opt/render/project/src/data`
+   - Size: 1 GB
+   *(This keeps the SQLite database alive between deploys.)*
+
+5. Click **Create Web Service** — Render builds and deploys automatically.
+
+6. Your URL will be: `https://trve-booking-hub.onrender.com` (or similar)
+
+### Step 4 — Set environment variables (optional, for email)
+
+In the Render dashboard → your service → **Environment**:
+
+| Key | Value |
+|-----|-------|
+| `SMTP_HOST` | `smtp.gmail.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_USER` | `yourteam@email.com` |
+| `SMTP_PASS` | your Gmail App Password |
+| `SMTP_FROM` | `yourteam@email.com` |
+
+Click **Save Changes** — Render redeploys automatically.
+
+### Step 5 — Share the link with agents
+
+Send agents the URL (e.g. `https://trve-booking-hub.onrender.com`).
+They open it in any browser and log in with the team password.
+
+> **Free plan note:** Render's free tier spins down after 15 minutes of inactivity. The first request after a sleep takes ~30 seconds to wake. Upgrade to **Starter ($7/mo)** for always-on access.
+
+### Updating the app
+
+Push changes to GitHub — Render redeploys automatically:
+```bash
+git add .
+git commit -m "your change"
+git push
+```
+
+---
+
+## Quick Start (Local / 2 minutes)
 
 ### 1. Install dependencies
 ```bash
