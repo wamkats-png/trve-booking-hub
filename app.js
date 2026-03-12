@@ -1408,9 +1408,9 @@
                 const delta     = atLive - atLocked;
                 const pct       = ((delta / atLocked) * 100).toFixed(1);
                 const pos       = delta >= 0;
-                return \`<span style="font-size:11px;font-family:'Courier New',monospace;color:\${pos ? 'var(--success)' : 'var(--danger)'}">
-                  \${pos ? '▲' : '▼'} \${pos ? '+' : ''}\${delta.toLocaleString()} UGX (\${pos ? '+' : ''}\${pct}%)
-                </span>\`;
+                return `<span style="font-size:11px;font-family:'Courier New',monospace;color:${pos ? 'var(--success)' : 'var(--danger)'}">
+                  ${pos ? '▲' : '▼'} ${pos ? '+' : ''}${delta.toLocaleString()} UGX (${pos ? '+' : ''}${pct}%)
+                </span>`;
               })() : ''}
             </div>
           </div>` : ''}
