@@ -546,6 +546,7 @@
     }
     if (viewId === 'quotations') loadQuotations();
     if (viewId === 'sync') renderSyncView();
+    if (viewId === 'lodges') { loadLodgesView(); }
   }
 
   // Expose for inline onclick use
@@ -1245,6 +1246,20 @@
       pill.classList.add('active');
       renderPipeline();
     });
+
+    const exportCsvBtn = document.getElementById('exportCsvBtn');
+    if (exportCsvBtn) {
+      exportCsvBtn.addEventListener('click', () => {
+        const url = `${API}/api/enquiries/export.csv`;
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `TRVE_Pipeline_${new Date().toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        toast('info', 'Downloading CSV', 'Pipeline export started');
+      });
+    }
   }
 
   /* ============================================================
@@ -1903,8 +1918,22 @@
     // Load lodges
     try {
       const lodges = await apiFetch('/api/lodge-rates/lodges');
-      state.lodges = Array.isArray(lodges) ? lodges.map(l => l.name || l.lodge_name || (typeof l === 'string' ? l : '')).filter(Boolean) : [];
       state.lodgeData = Array.isArray(lodges) ? lodges : [];
+      state.lodges = state.lodgeData.map(l => l.name || l.lodge_name || '').filter(Boolean);
+      if (state.lodges.length === 0) {
+        // Try the /api/lodges endpoint as fallback
+        const lodges2 = await apiFetch('/api/lodges?limit=200');
+        const items = lodges2.items || lodges2 || [];
+        // Build same structure as lodge-rates/lodges
+        const lodgeMap = {};
+        for (const l of items) {
+          const n = l.lodge_name;
+          if (!lodgeMap[n]) lodgeMap[n] = { name: n, country: l.country, location: l.location, room_types: [] };
+          lodgeMap[n].room_types.push({ room_type: l.room_type, net_rate_usd: l.net_rate_usd, rack_rate_usd: l.rack_rate_usd, meal_plan: l.meal_plan, valid_from: l.valid_from, valid_to: l.valid_to });
+        }
+        state.lodgeData = Object.values(lodgeMap);
+        state.lodges = state.lodgeData.map(l => l.name).filter(Boolean);
+      }
       addLodgeItem(); // Add first lodge row
     } catch (_) {
       addLodgeItem();
@@ -1920,7 +1949,7 @@
 
     const lodgeOptions = state.lodges.length > 0
       ? state.lodges.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')
-      : '<option value="">No lodges loaded</option>';
+      : '<option value="" disabled>⚠ No lodges — check backend connection</option>';
 
     el.innerHTML = `
       <div style="flex:1;min-width:0">
@@ -3013,6 +3042,161 @@
     } catch (_) { /* silent — fall back to state.liveFx default 3575 */ }
   }
 
+  /* ============================================================
+     VIEW: LODGE RATE MANAGEMENT
+     ============================================================ */
+  let _editingLodgeId = null;
+  let _allLodges = [];
+
+  async function loadLodgesView() {
+    try {
+      const data = await apiFetch('/api/lodges?limit=500');
+      _allLodges = data.items || [];
+      renderLodgeTable(_allLodges);
+      document.getElementById('lodgeCount').textContent = `${_allLodges.length} lodge rates`;
+    } catch (e) {
+      const tb = document.getElementById('lodgeTableBody');
+      if (tb) tb.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--danger)">Failed to load lodges: ${escapeHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderLodgeTable(lodges) {
+    const tbody = document.getElementById('lodgeTableBody');
+    if (!tbody) return;
+    if (!lodges.length) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text-muted)">No lodges found. Add one above.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = lodges.map(l => `
+      <tr>
+        <td><strong>${escapeHtml(l.lodge_name)}</strong></td>
+        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.room_type || '')}</span></td>
+        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.country || '')} ${l.location ? '· ' + l.location : ''}</span></td>
+        <td style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs)">$${(l.rack_rate_usd || 0).toFixed(0)}</td>
+        <td style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--teal-700)"><strong>$${(l.net_rate_usd || 0).toFixed(0)}</strong></td>
+        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.meal_plan || '')}</span></td>
+        <td><span style="font-size:10px;color:var(--text-muted)">${l.valid_from ? l.valid_from.slice(0,7) : ''} – ${l.valid_to ? l.valid_to.slice(0,7) : ''}</span></td>
+        <td><span style="font-size:10px;color:var(--text-muted)">${escapeHtml(l.notes || '')}</span></td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-ghost btn-icon" title="Edit" onclick="window.TRVE.editLodge('${l.id}')">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M9 2l2 2-7 7H2v-2L9 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="btn btn-ghost btn-icon" title="Delete" style="color:var(--danger)" onclick="window.TRVE.deleteLodge('${l.id}', '${escapeHtml(l.lodge_name)} – ${escapeHtml(l.room_type || '')}')">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 3h9M5 3V2h3v1M4 3v7h5V3H4z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  function initLodgesView() {
+    const saveBtn = document.getElementById('lodgeSaveBtn');
+    const clearBtn = document.getElementById('lodgeClearBtn');
+    const cancelBtn = document.getElementById('lodgeFormCancelBtn');
+    const search = document.getElementById('lodgeSearch');
+    const filterCountry = document.getElementById('lodgeFilterCountry');
+
+    if (!saveBtn) return;
+
+    function clearForm() {
+      _editingLodgeId = null;
+      document.getElementById('lodgeFormTitle').textContent = 'Add New Lodge Rate';
+      cancelBtn.style.display = 'none';
+      ['lf_name','lf_room_type','lf_location','lf_rack','lf_net','lf_notes'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      document.getElementById('lf_country').value = 'Uganda';
+      document.getElementById('lf_meal').value = 'Full Board';
+      document.getElementById('lf_valid_from').value = '2025-01-01';
+      document.getElementById('lf_valid_to').value = '2026-12-31';
+    }
+
+    function filterLodges() {
+      const q = (search.value || '').toLowerCase();
+      const country = filterCountry.value;
+      const filtered = _allLodges.filter(l => {
+        const matchText = !q || (l.lodge_name || '').toLowerCase().includes(q) || (l.location || '').toLowerCase().includes(q) || (l.room_type || '').toLowerCase().includes(q);
+        const matchCountry = !country || l.country === country;
+        return matchText && matchCountry;
+      });
+      renderLodgeTable(filtered);
+      document.getElementById('lodgeCount').textContent = `${filtered.length} of ${_allLodges.length} lodge rates`;
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      const name = document.getElementById('lf_name').value.trim();
+      const room = document.getElementById('lf_room_type').value.trim();
+      if (!name || !room) { toast('warning', 'Required fields', 'Lodge name and room type are required'); return; }
+      const rack = parseFloat(document.getElementById('lf_rack').value) || 0;
+      const net = parseFloat(document.getElementById('lf_net').value) || null;
+      const payload = {
+        lodge_name: name,
+        room_type: room,
+        country: document.getElementById('lf_country').value,
+        location: document.getElementById('lf_location').value.trim(),
+        rack_rate_usd: rack,
+        net_rate_usd: net,
+        meal_plan: document.getElementById('lf_meal').value,
+        valid_from: document.getElementById('lf_valid_from').value,
+        valid_to: document.getElementById('lf_valid_to').value,
+        notes: document.getElementById('lf_notes').value.trim(),
+      };
+      try {
+        if (_editingLodgeId) {
+          await apiFetch(`/api/lodges/${_editingLodgeId}`, { method: 'PATCH', body: payload });
+          toast('success', 'Lodge updated');
+        } else {
+          await apiFetch('/api/lodges', { method: 'POST', body: payload });
+          toast('success', 'Lodge added');
+        }
+        clearForm();
+        await loadLodgesView();
+        // Refresh lodge list in pricing calculator too
+        const lodgesData = await apiFetch('/api/lodge-rates/lodges');
+        state.lodgeData = Array.isArray(lodgesData) ? lodgesData : [];
+        state.lodges = state.lodgeData.map(l => l.name || l.lodge_name || '').filter(Boolean);
+      } catch (e) {
+        toast('error', 'Save failed', e.message);
+      }
+    });
+
+    clearBtn.addEventListener('click', clearForm);
+    cancelBtn.addEventListener('click', clearForm);
+    search.addEventListener('input', filterLodges);
+    filterCountry.addEventListener('change', filterLodges);
+  }
+
+  window.TRVE.editLodge = function(id) {
+    const lodge = _allLodges.find(l => l.id === id);
+    if (!lodge) return;
+    _editingLodgeId = id;
+    document.getElementById('lodgeFormTitle').textContent = 'Edit Lodge Rate';
+    document.getElementById('lodgeFormCancelBtn').style.display = '';
+    document.getElementById('lf_name').value = lodge.lodge_name || '';
+    document.getElementById('lf_room_type').value = lodge.room_type || '';
+    document.getElementById('lf_country').value = lodge.country || 'Uganda';
+    document.getElementById('lf_location').value = lodge.location || '';
+    document.getElementById('lf_rack').value = lodge.rack_rate_usd || '';
+    document.getElementById('lf_net').value = lodge.net_rate_usd || '';
+    document.getElementById('lf_meal').value = lodge.meal_plan || 'Full Board';
+    document.getElementById('lf_valid_from').value = lodge.valid_from || '2025-01-01';
+    document.getElementById('lf_valid_to').value = lodge.valid_to || '2026-12-31';
+    document.getElementById('lf_notes').value = lodge.notes || '';
+    document.getElementById('lodgeFormCard').scrollIntoView({ behavior: 'smooth' });
+  };
+
+  window.TRVE.deleteLodge = async function(id, label) {
+    if (!confirm(`Delete "${label}"? This cannot be undone.`)) return;
+    try {
+      await apiFetch(`/api/lodges/${id}`, { method: 'DELETE' });
+      toast('success', 'Lodge deleted');
+      await loadLodgesView();
+    } catch (e) {
+      toast('error', 'Delete failed', e.message);
+    }
+  };
+
   async function init() {
     initSidebar();
     initEnquiryForm();
@@ -3020,6 +3204,7 @@
     initCurationPanel();
     initPricingForm();
     initQuotations();
+    initLodgesView();
 
     // Fetch live USD/UGX rate for FX exposure calculations
     await fetchLiveFx();
