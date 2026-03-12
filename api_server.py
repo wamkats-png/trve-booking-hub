@@ -583,7 +583,7 @@ CONFIG = {
     "insurance_rate_per_person_per_day": 10,
     "coordinators": ["Desire", "Belinda", "Robert"],
     "fx_buffer_pct": 3,          # 3% FX volatility buffer
-    "fuel_buffer_pct": 10,       # 10% fuel price buffer
+    "fuel_buffer_pct": 5,        # 5% fuel price buffer
     "quotation_validity_days": 7,  # Quotations expire after 7 days
     "last_updated": datetime.now().isoformat(),
 }

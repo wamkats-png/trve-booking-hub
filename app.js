@@ -2096,7 +2096,7 @@
         <div style="display:flex;flex-wrap:wrap;gap:4px">
           ${items.map(a => `
             <button type="button" class="ai-suggestion-chip"
-              onclick="addActivityCost('${escapeHtml(a.id)}', '${escapeHtml(a.name)}', ${a.default_usd}, ${a.per_person})"
+              onclick="window.TRVE.addActivityCost('${escapeHtml(a.id)}', '${escapeHtml(a.name)}', ${a.default_usd}, ${a.per_person})"
               title="${escapeHtml(a.notes || '')}">
               ${escapeHtml(a.name)}${a.default_usd > 0 ? ` ($${a.default_usd})` : ''}
             </button>
