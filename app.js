@@ -181,7 +181,8 @@
     liveFx: 3575,          // live USD/UGX — updated on init from open.er-api.com
     liveFxAt: null,        // ISO timestamp of last fetch
     apiConfig: null,
-    syncInterval: null
+    syncInterval: null,
+    activities: []
   };
 
   /* ============================================================
@@ -548,7 +549,7 @@
   }
 
   // Expose for inline onclick use
-  window.TRVE = { navigate, loadPipeline };
+  window.TRVE = { navigate, loadPipeline, saveFxRateAtQuote, addActivityCost };
 
   /* ============================================================
      SIDEBAR TOGGLE
@@ -1396,7 +1397,7 @@
                 placeholder="${state.liveFx}"
                 min="1000" max="10000" step="1"
                 style="width:110px;padding:4px 8px;font-family:'Courier New',monospace;font-size:13px;border:1px solid ${enquiry.fx_rate_at_quote ? 'var(--teal-500)' : 'var(--border)'};border-radius:6px;background:var(--surface);color:var(--text-primary)"
-                onchange="saveFxRateAtQuote('${enquiry.id}', this.value)"
+                onchange="window.TRVE.saveFxRateAtQuote('${enquiry.id}', this.value)"
               />
               ${enquiry.fx_rate_at_quote && enquiry.quoted_usd ? (() => {
                 const q = parseFloat(enquiry.quoted_usd);
@@ -1890,6 +1891,11 @@
           // Update permit labels for the new date/tier context
           updatePermitLabels();
           toast('info', 'Itinerary loaded', `${itn.name || itn.id} — ${itn.duration_days || '?'} days, auto-filled permits & vehicle days`);
+
+          // Generate AI day-by-day itinerary description
+          if (itn.highlights || itn.description) {
+            generateItineraryText(itn);
+          }
         }
       });
     } catch (e) { void e; }
@@ -2016,6 +2022,95 @@
     container.appendChild(el);
   }
 
+  function generateItineraryText(itn) {
+    const panel = document.getElementById('aiItineraryPanel');
+    if (!panel) return;
+    panel.style.display = 'block';
+
+    const days = itn.duration_days || 7;
+    const destinations = itn.destinations || [];
+    const highlights = (itn.highlights || '').split(',').map(h => h.trim()).filter(Boolean);
+
+    // Generate a simple day-by-day structure
+    let dayTexts = [];
+
+    // Day 1: always arrival
+    dayTexts.push(`<strong>Day 1:</strong> Arrive ${destinations[0] || 'Entebbe'}. Transfer to lodge, evening briefing.`);
+
+    // Distribute highlights across remaining days
+    const destCycle = destinations.slice(1);
+
+    for (let d = 2; d <= days - 1; d++) {
+      const dest = destCycle[(d - 2) % Math.max(1, destCycle.length)] || destinations[0];
+      const highlight = highlights[(d - 2) % Math.max(1, highlights.length)] || 'Game drive and wildlife viewing';
+      dayTexts.push(`<strong>Day ${d}:</strong> ${dest}. ${highlight}.`);
+    }
+
+    // Last day: departure
+    dayTexts.push(`<strong>Day ${days}:</strong> Transfer to Entebbe / Kigali for departure flight.`);
+
+    const html = `
+      <div class="ai-panel">
+        <div class="ai-panel-header">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M5 7l2 2 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          AI Itinerary Outline — ${itn.name || 'Safari Itinerary'}
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-2)">
+          ${days}-day suggested structure · Edit as needed
+        </div>
+        <div style="font-size:var(--text-sm);line-height:1.8;color:var(--text-base)">
+          ${dayTexts.join('<br>')}
+        </div>
+        <div style="margin-top:var(--space-3)">
+          <span style="font-size:var(--text-xs);color:var(--text-muted)">Key activities: </span>
+          ${highlights.map(h => `<span class="ai-suggestion-chip">${escapeHtml(h)}</span>`).join('')}
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-2)">
+          <em>AI-generated outline based on TRVE itinerary library. All text is editable before sending to client.</em>
+        </div>
+      </div>
+    `;
+    panel.innerHTML = html;
+  }
+
+  async function loadActivities() {
+    try {
+      const data = await apiFetch('/api/activities');
+      state.activities = data.items || [];
+      renderActivityPresets();
+    } catch (_) { /* silent */ }
+  }
+
+  function renderActivityPresets() {
+    const container = document.getElementById('activityPresets');
+    if (!container || !state.activities) return;
+    const categories = [...new Set(state.activities.map(a => a.category))];
+    let html = '';
+    for (const cat of categories) {
+      const items = state.activities.filter(a => a.category === cat);
+      html += `<div style="margin-bottom:var(--space-2)">
+        <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:4px">${cat}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${items.map(a => `
+            <button type="button" class="ai-suggestion-chip"
+              onclick="addActivityCost('${escapeHtml(a.id)}', '${escapeHtml(a.name)}', ${a.default_usd}, ${a.per_person})"
+              title="${escapeHtml(a.notes || '')}">
+              ${escapeHtml(a.name)}${a.default_usd > 0 ? ` ($${a.default_usd})` : ''}
+            </button>
+          `).join('')}
+        </div>
+      </div>`;
+    }
+    container.innerHTML = html;
+  }
+
+  function addActivityCost(actId, name, amount, perPerson) {
+    addExtraCost(name, amount);
+  }
+
   function initPricingForm() {
     document.getElementById('btnAddLodge').addEventListener('click', addLodgeItem);
     document.getElementById('btnAddExtra').addEventListener('click', addExtraCost);
@@ -2075,6 +2170,26 @@
       fuelTypeEl.addEventListener('change', toggleFuelInputs);
       toggleFuelInputs();
     }
+
+    const applyBuffersBtn = document.getElementById('applyBuffersBtn');
+    if (applyBuffersBtn) {
+      applyBuffersBtn.addEventListener('click', async () => {
+        const fuelBuf = parseFloat(document.getElementById('fuelBufferInput')?.value || '5');
+        const fxBuf = parseFloat(document.getElementById('fxBufferInput')?.value || '3');
+        try {
+          await apiFetch('/api/config/update', {
+            method: 'POST',
+            body: { fuel_buffer_pct: fuelBuf, fx_buffer_pct: fxBuf }
+          });
+          toast('success', 'Buffers updated', `Fuel: ${fuelBuf}%, FX: ${fxBuf}%`);
+        } catch (e) {
+          toast('error', 'Could not update buffers', e.message);
+        }
+      });
+    }
+
+    // Load activities for preset cost buttons
+    loadActivities();
 
     document.getElementById('pricingForm').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -2250,6 +2365,13 @@
             </tbody>
           </table>
         </div>
+      </div>
+
+      <!-- Price Notice -->
+      <div class="price-notice">
+        ⚠️ <strong>Prices are subject to confirmation within 7 days</strong> due to fuel price and exchange rate fluctuations.
+        ${result.fuel_buffer_pct ? `Fuel buffer: ${result.fuel_buffer_pct}% applied to vehicle costs.` : ''}
+        ${result.fx_buffer_pct ? `FX buffer: ${result.fx_buffer_pct}% noted.` : ''}
       </div>
 
       <!-- Generate Quotation Button -->
@@ -2478,6 +2600,15 @@
                   <span class="badge ${QUOTATION_STATUS_BADGE[q.status] || 'badge-quot-draft'}">
                     ${escapeHtml(q.status || 'draft')}
                   </span>
+                  ${(() => {
+                    const createdMs = new Date(q.created_at).getTime();
+                    const expiresMs = createdMs + (q.valid_days || 14) * 86400000;
+                    const now = Date.now();
+                    const daysLeft = Math.ceil((expiresMs - now) / 86400000);
+                    const expiryClass = daysLeft <= 0 ? 'badge-expired' : daysLeft <= 2 ? 'badge-expiring' : 'badge-valid';
+                    const expiryText = daysLeft <= 0 ? 'EXPIRED' : daysLeft <= 2 ? `Expires in ${daysLeft}d` : `Valid ${daysLeft}d`;
+                    return `<span class="badge ${expiryClass}" style="margin-left:4px">${expiryText}</span>`;
+                  })()}
                 </td>
                 <td style="white-space:nowrap">
                   <a href="${API}/api/quotations/${escapeHtml(q.id)}/pdf"
@@ -2896,6 +3027,11 @@
     // Load API config
     try {
       state.apiConfig = await apiFetch('/api/config');
+      // Update buffer UI with server values
+      const fb = document.getElementById('fuelBufferInput');
+      const xb = document.getElementById('fxBufferInput');
+      if (fb && state.apiConfig?.fuel_buffer_pct != null) fb.value = state.apiConfig.fuel_buffer_pct;
+      if (xb && state.apiConfig?.fx_buffer_pct != null) xb.value = state.apiConfig.fx_buffer_pct;
     } catch (e) {
       toast('warning', 'Config not loaded', 'Some features may use default values');
     }
