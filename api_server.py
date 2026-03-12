@@ -16,6 +16,13 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Any
 
+import smtplib
+import email as email_lib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
@@ -567,6 +574,132 @@ ITINERARY_LIBRARY = [
         "nationality_tiers": ["FNR", "FR", "EAC"],
     },
 ]
+
+# ---------------------------------------------------------------------------
+# EMAIL NOTIFICATIONS
+# ---------------------------------------------------------------------------
+EMAIL_CFG = {
+    "enabled": os.environ.get("EMAIL_NOTIFICATIONS_ENABLED", "false").lower() == "true",
+    "smtp_host": os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+    "smtp_port": int(os.environ.get("SMTP_PORT", "587")),
+    "smtp_user": os.environ.get("SMTP_USER", ""),
+    "smtp_pass": os.environ.get("SMTP_PASS", ""),
+    "from_name": os.environ.get("EMAIL_FROM_NAME", "TRVE Booking Hub"),
+    "from_addr": os.environ.get("SMTP_USER", "noreply@trve.co.ug"),
+    "bcc": os.environ.get("EMAIL_BCC", ""),  # optional BCC to TRVE staff
+}
+
+
+def send_email(to_addr: str, subject: str, html_body: str, pdf_attachment: bytes = None, pdf_filename: str = None) -> bool:
+    """Send an email via SMTP. Returns True on success, False on failure (non-blocking)."""
+    if not EMAIL_CFG["enabled"]:
+        return False
+    if not EMAIL_CFG["smtp_user"] or not to_addr:
+        return False
+    try:
+        msg = MIMEMultipart("mixed")
+        msg["From"] = f"{EMAIL_CFG['from_name']} <{EMAIL_CFG['from_addr']}>"
+        msg["To"] = to_addr
+        msg["Subject"] = subject
+        if EMAIL_CFG["bcc"]:
+            msg["Bcc"] = EMAIL_CFG["bcc"]
+
+        # HTML body
+        body_part = MIMEMultipart("alternative")
+        body_part.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(body_part)
+
+        # Optional PDF attachment
+        if pdf_attachment and pdf_filename:
+            part = MIMEBase("application", "pdf")
+            part.set_payload(pdf_attachment)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f'attachment; filename="{pdf_filename}"')
+            msg.attach(part)
+
+        with smtplib.SMTP(EMAIL_CFG["smtp_host"], EMAIL_CFG["smtp_port"]) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(EMAIL_CFG["smtp_user"], EMAIL_CFG["smtp_pass"])
+            recipients = [to_addr]
+            if EMAIL_CFG["bcc"]:
+                recipients.append(EMAIL_CFG["bcc"])
+            server.sendmail(EMAIL_CFG["from_addr"], recipients, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"[EMAIL] Send failed: {e}")
+        return False
+
+
+def enquiry_confirmation_html(booking_ref: str, client_name: str, destinations: str, travel_start: str, pax: int) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+  body {{ font-family: Arial, sans-serif; color: #1a2e29; max-width: 600px; margin: auto; padding: 20px; }}
+  .header {{ background: #0D5E4F; color: white; padding: 24px; border-radius: 8px 8px 0 0; }}
+  .header h1 {{ margin: 0; font-size: 20px; }}
+  .header p {{ margin: 4px 0 0; font-size: 13px; opacity: 0.85; }}
+  .body {{ background: #f9fafb; padding: 24px; border: 1px solid #e2e8e6; }}
+  .ref {{ background: white; border: 2px solid #C8963E; border-radius: 6px; padding: 12px 20px; margin: 16px 0; text-align: center; font-size: 22px; font-weight: bold; color: #C8963E; letter-spacing: 2px; }}
+  .field {{ margin: 8px 0; font-size: 14px; }}
+  .label {{ color: #6b7e79; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }}
+  .footer {{ background: #e8f4f1; padding: 16px 24px; border-radius: 0 0 8px 8px; font-size: 12px; color: #6b7e79; text-align: center; }}
+</style></head>
+<body>
+  <div class="header">
+    <h1>TRVE — The Rift Valley Explorer</h1>
+    <p>Bucket List Adventures Into The Heart Of Africa</p>
+  </div>
+  <div class="body">
+    <p>Dear {client_name},</p>
+    <p>Thank you for your safari enquiry. We have received your request and our team will be in touch within 24 hours with a tailored itinerary.</p>
+    <div class="ref">{booking_ref}</div>
+    <p>Please quote your booking reference in all correspondence.</p>
+    <div class="field"><div class="label">Destinations</div>{destinations or 'To be confirmed'}</div>
+    <div class="field"><div class="label">Travel date</div>{travel_start or 'Flexible'}</div>
+    <div class="field"><div class="label">Group size</div>{pax} {'person' if pax == 1 else 'people'}</div>
+    <p style="margin-top:20px">We look forward to crafting an unforgettable African adventure for you.</p>
+    <p>Warm regards,<br><strong>The TRVE Team</strong></p>
+  </div>
+  <div class="footer">TRVE — The Rift Valley Explorer | trve.co.ug | +256 XXX XXX XXX</div>
+</body>
+</html>"""
+
+
+def quotation_email_html(client_name: str, booking_ref: str, total_usd: float, valid_days: int, itinerary_name: str) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+  body {{ font-family: Arial, sans-serif; color: #1a2e29; max-width: 600px; margin: auto; padding: 20px; }}
+  .header {{ background: #0D5E4F; color: white; padding: 24px; border-radius: 8px 8px 0 0; }}
+  .header h1 {{ margin: 0; font-size: 20px; }}
+  .body {{ background: #f9fafb; padding: 24px; border: 1px solid #e2e8e6; }}
+  .total {{ background: white; border: 2px solid #0D5E4F; border-radius: 6px; padding: 16px 20px; margin: 16px 0; text-align: center; }}
+  .total-label {{ font-size: 12px; color: #6b7e79; text-transform: uppercase; }}
+  .total-amount {{ font-size: 28px; font-weight: bold; color: #0D5E4F; }}
+  .notice {{ background: #fffbeb; border-left: 3px solid #d97706; padding: 10px 14px; font-size: 12px; color: #92400e; margin: 16px 0; border-radius: 0 4px 4px 0; }}
+  .footer {{ background: #e8f4f1; padding: 16px 24px; border-radius: 0 0 8px 8px; font-size: 12px; color: #6b7e79; text-align: center; }}
+</style></head>
+<body>
+  <div class="header">
+    <h1>TRVE — Your Safari Quotation</h1>
+  </div>
+  <div class="body">
+    <p>Dear {client_name},</p>
+    <p>Please find attached your personalised safari quotation for <strong>{itinerary_name}</strong>.</p>
+    <p>Reference: <strong>{booking_ref}</strong></p>
+    <div class="total">
+      <div class="total-label">Total Quoted Price</div>
+      <div class="total-amount">USD {total_usd:,.2f}</div>
+    </div>
+    <div class="notice">&#9888; Prices are subject to final confirmation within {valid_days} days due to fuel price and exchange rate fluctuations.</div>
+    <p>To confirm your booking, please reply to this email or contact your TRVE coordinator. A 30% deposit is required to secure permits and accommodation.</p>
+    <p>Warm regards,<br><strong>The TRVE Team</strong></p>
+  </div>
+  <div class="footer">TRVE — The Rift Valley Explorer | trve.co.ug | This quotation is valid for {valid_days} days from the date of issue.</div>
+</body>
+</html>"""
+
 
 # ---------------------------------------------------------------------------
 # CONFIG
@@ -1420,6 +1553,21 @@ def update_config_post(body: ConfigUpdate):
     return CONFIG
 
 
+@app.get("/api/email/status")
+def email_status():
+    """Return current email configuration status (without exposing credentials)."""
+    return {
+        "enabled": EMAIL_CFG["enabled"],
+        "configured": bool(EMAIL_CFG["smtp_user"]),
+        "from": EMAIL_CFG["from_addr"] if EMAIL_CFG["smtp_user"] else None,
+        "smtp_host": EMAIL_CFG["smtp_host"],
+        "instructions": None if EMAIL_CFG["enabled"] else (
+            "To enable: set EMAIL_NOTIFICATIONS_ENABLED=true, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS "
+            "as environment variables in your Render dashboard."
+        ),
+    }
+
+
 # --- Enquiries ---
 @app.get("/api/enquiries")
 def list_enquiries(limit: int = Query(200, ge=1, le=1000)):
@@ -1474,6 +1622,25 @@ def create_enquiry(body: EnquiryCreate):
             "SELECT * FROM enquiries WHERE id = ?", (booking_ref,)
         ).fetchone())
         entry["synced"] = bool(entry["synced"])
+
+    # Send confirmation email (non-blocking)
+    if entry.get("email"):
+        dest = entry.get("destinations_requested", "")
+        try:
+            dest_clean = ', '.join(json.loads(dest)) if dest.startswith('[') else dest
+        except Exception:
+            dest_clean = dest
+        send_email(
+            to_addr=entry["email"],
+            subject=f"Safari Enquiry Confirmed — {booking_ref} | TRVE",
+            html_body=enquiry_confirmation_html(
+                booking_ref=booking_ref,
+                client_name=entry["client_name"],
+                destinations=dest_clean,
+                travel_start=entry.get("travel_start_date", ""),
+                pax=entry.get("pax", 2),
+            )
+        )
 
     return {"booking_ref": booking_ref, "id": booking_ref, **entry}
 
@@ -2114,6 +2281,65 @@ def get_quotation_pdf(quotation_id: str):
     )
 
 
+@app.post("/api/quotations/{quotation_id}/email")
+def email_quotation(quotation_id: str):
+    """Generate PDF and email it to the client on the quotation."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotations WHERE id = ? OR quotation_id = ?",
+            (quotation_id, quotation_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+
+    q = dict(row)
+    if not q.get("client_email"):
+        raise HTTPException(status_code=400, detail="No client email on this quotation")
+
+    try:
+        q["pricing_data"] = json.loads(q["pricing_data"]) if isinstance(q["pricing_data"], str) else q["pricing_data"]
+    except (json.JSONDecodeError, TypeError):
+        q["pricing_data"] = {}
+
+    # Generate PDF
+    try:
+        pdf_bytes = generate_quotation_pdf(q)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
+    pd = q.get("pricing_data", {})
+    total = pd.get("grand_total_usd", 0)
+    itn_name = pd.get("summary", {}).get("itinerary_name", "Safari Itinerary") if isinstance(pd.get("summary"), dict) else "Safari Itinerary"
+    valid_days = q.get("valid_days", 7)
+
+    sent = send_email(
+        to_addr=q["client_email"],
+        subject=f"Your TRVE Safari Quotation — {q.get('booking_ref', quotation_id)}",
+        html_body=quotation_email_html(
+            client_name=q["client_name"],
+            booking_ref=q.get("booking_ref", quotation_id),
+            total_usd=total,
+            valid_days=valid_days,
+            itinerary_name=itn_name,
+        ),
+        pdf_attachment=pdf_bytes,
+        pdf_filename=f"TRVE_Quotation_{quotation_id}.pdf",
+    )
+
+    if not sent and not EMAIL_CFG["enabled"]:
+        return {
+            "status": "not_configured",
+            "message": "Email not sent — set EMAIL_NOTIFICATIONS_ENABLED=true and SMTP_* environment variables on Render to enable.",
+            "quotation_id": quotation_id,
+            "client_email": q["client_email"],
+        }
+
+    if not sent:
+        raise HTTPException(status_code=500, detail="Email send failed — check SMTP configuration")
+
+    return {"status": "sent", "to": q["client_email"], "quotation_id": quotation_id}
+
+
 # --- Quotation Status / Expiry ---
 @app.get("/api/quotations/{quotation_id}/status")
 def get_quotation_status(quotation_id: str):
@@ -2517,6 +2743,46 @@ def sync_export(unsynced_only: bool = Query(False)):
                 "row_array": [_sheets_safe(str(v)) for v in raw],
             })
     return {"items": items, "total": len(items)}
+
+
+@app.get("/api/enquiries.csv")
+def export_enquiries_csv(status: str = Query(None), coordinator: str = Query(None)):
+    """Export enquiries as a downloadable CSV file."""
+    import io, csv
+    with db_session() as conn:
+        query = "SELECT * FROM enquiries WHERE 1=1"
+        params = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if coordinator:
+            query += " AND coordinator = ?"
+            params.append(coordinator)
+        query += " ORDER BY created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    columns = [
+        "booking_ref", "client_name", "email", "phone", "country", "nationality_tier",
+        "channel", "agent_name", "inquiry_date", "tour_type", "pax",
+        "destinations_requested", "travel_start_date", "travel_end_date", "duration_days",
+        "status", "coordinator", "budget_range", "interests",
+        "quoted_usd", "revenue_usd", "balance_usd", "payment_status",
+        "special_requests", "last_updated",
+    ]
+    writer.writerow(columns)
+    for r in rows:
+        d = dict(r)
+        writer.writerow([d.get(c, "") for c in columns])
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # utf-8-sig for Excel compatibility
+    filename = f"TRVE_Pipeline_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 # --- Cost Presets ---
