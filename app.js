@@ -39,7 +39,7 @@
     // Already authenticated this session
     if (getAuthState()) {
       gate.classList.add('hidden');
-      document.getElementById('appLayout').classList.remove('hidden');
+      document.getElementById('appLayout').style.display = '';
       return;
     }
 
@@ -67,7 +67,7 @@
         setAuthState();
         gate.style.transition = 'opacity 0.3s ease';
         gate.style.opacity = '0';
-        document.getElementById('appLayout').classList.remove('hidden');
+        document.getElementById('appLayout').style.display = '';
         setTimeout(function () {
           gate.classList.add('hidden');
           gate.style.opacity = '';

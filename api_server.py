@@ -2824,20 +2824,9 @@ def check_permit_availability(date: str = Query(...), permit_type: str = Query(.
 # ---------------------------------------------------------------------------
 # Static Frontend Serving
 # ---------------------------------------------------------------------------
-# Serve static assets (CSS, JS) — must come after all /api routes
-STATIC_DIR = BASE_DIR
-
-@app.get("/styles.css")
-def serve_css():
-    return FileResponse(STATIC_DIR / "styles.css", media_type="text/css")
-
-@app.get("/app.js")
-def serve_js():
-    return FileResponse(STATIC_DIR / "app.js", media_type="application/javascript")
-
-@app.get("/", response_class=HTMLResponse)
-def serve_index():
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+# Mount the project root as a static site — must come after all /api routes.
+# StaticFiles with html=True serves index.html for "/" and any unmatched path.
+app.mount("/", StaticFiles(directory=BASE_DIR, html=True), name="static")
 
 
 # ---------------------------------------------------------------------------
