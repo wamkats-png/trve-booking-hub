@@ -661,6 +661,87 @@ LODGE_SEED = [
 ]
 
 
+def _seed_lodges(conn):
+    """Seed the lodges table with TRVE partner lodge rates (detailed, fixed IDs)."""
+    lodges = [
+        # ── BWINDI IMPENETRABLE NP ──────────────────────────────────
+        ("lodge-bwindi-1", "Gorilla Safari Lodge", "Double Room", "Uganda", "Bwindi — Buhoma", 590, 450, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-bwindi-1b", "Gorilla Safari Lodge", "Single Room", "Uganda", "Bwindi — Buhoma", 720, 580, "Full Board", "2025-01-01", "2025-12-31", "Single supplement"),
+        ("lodge-bwindi-2", "Gorilla Safari Lodge", "Double Room", "Uganda", "Bwindi — Buhoma", 610, 470, "Full Board", "2026-01-01", "2026-12-31", "2026 rates"),
+        ("lodge-bwindi-2b", "Gorilla Safari Lodge", "Single Room", "Uganda", "Bwindi — Buhoma", 750, 600, "Full Board", "2026-01-01", "2026-12-31", "2026 rates"),
+        ("lodge-clouds-1", "Clouds Mountain Gorilla Lodge", "Cottage (Double)", "Uganda", "Bwindi — Nkuringo", 1050, 820, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-clouds-2", "Clouds Mountain Gorilla Lodge", "Cottage (Single)", "Uganda", "Bwindi — Nkuringo", 1260, 980, "Full Board", "2025-01-01", "2025-12-31", "Luxury single"),
+        ("lodge-mahogany-1", "Mahogany Springs Lodge", "Forest Suite (Double)", "Uganda", "Bwindi — Buhoma", 780, 610, "Full Board", "2025-01-01", "2025-12-31", "Premium"),
+        ("lodge-mahogany-2", "Mahogany Springs Lodge", "Forest Suite (Single)", "Uganda", "Bwindi — Buhoma", 940, 730, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-buhoma-1", "Buhoma Lodge", "Banda (Double)", "Uganda", "Bwindi — Buhoma", 490, 380, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-buhoma-2", "Buhoma Lodge", "Banda (Single)", "Uganda", "Bwindi — Buhoma", 590, 460, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-nkuringo-1", "Nkuringo Bwindi Gorilla Lodge", "Bandas (Double)", "Uganda", "Bwindi — Nkuringo", 530, 415, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-nkuringo-2", "Nkuringo Bwindi Gorilla Lodge", "Bandas (Single)", "Uganda", "Bwindi — Nkuringo", 640, 495, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-sanctuary-1", "Sanctuary Gorilla Forest Camp", "Tent (Double)", "Uganda", "Bwindi — Buhoma", 1200, 960, "Full Board", "2025-01-01", "2025-12-31", "Luxury tented"),
+        ("lodge-rushaga-1", "Rushaga Gorilla Camp", "Double Room", "Uganda", "Bwindi — Rushaga", 320, 250, "Full Board", "2025-01-01", "2025-12-31", "Budget option"),
+        ("lodge-rushaga-2", "Rushaga Gorilla Camp", "Single Room", "Uganda", "Bwindi — Rushaga", 390, 300, "Full Board", "2025-01-01", "2025-12-31", ""),
+        # ── KIBALE NATIONAL PARK ───────────────────────────────────
+        ("lodge-kibale-kyan-1", "Kyaninga Lodge", "Cottage (Double)", "Uganda", "Kibale NP", 820, 650, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-kibale-kyan-2", "Kyaninga Lodge", "Cottage (Single)", "Uganda", "Kibale NP", 980, 780, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-primate-1", "Primate Lodge Kibale", "Bandas (Double)", "Uganda", "Kibale NP — Kanyanchu", 480, 375, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-primate-2", "Primate Lodge Kibale", "Bandas (Single)", "Uganda", "Kibale NP — Kanyanchu", 580, 450, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-papaya-1", "Papaya Lake Lodge", "Suite (Double)", "Uganda", "Kibale NP — Fort Portal", 560, 440, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-papaya-2", "Papaya Lake Lodge", "Suite (Single)", "Uganda", "Kibale NP — Fort Portal", 680, 530, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-forest-1", "Kibale Forest Camp", "Tent (Double)", "Uganda", "Kibale NP", 430, 340, "Full Board", "2025-01-01", "2025-12-31", ""),
+        # ── QUEEN ELIZABETH NATIONAL PARK ──────────────────────────
+        ("lodge-qenp-mweya-1", "Mweya Safari Lodge", "Standard Double", "Uganda", "Queen Elizabeth NP — Mweya", 460, 360, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-mweya-2", "Mweya Safari Lodge", "Standard Single", "Uganda", "Queen Elizabeth NP — Mweya", 550, 430, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-kyambura-1", "Kyambura Gorge Lodge", "Cottage (Double)", "Uganda", "Queen Elizabeth NP — Kyambura", 780, 610, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-qenp-kyambura-2", "Kyambura Gorge Lodge", "Cottage (Single)", "Uganda", "Queen Elizabeth NP — Kyambura", 940, 730, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-jacana-1", "Jacana Safari Lodge", "Banda (Double)", "Uganda", "Queen Elizabeth NP — Mweya", 390, 305, "Full Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-qenp-jacana-2", "Jacana Safari Lodge", "Banda (Single)", "Uganda", "Queen Elizabeth NP — Mweya", 470, 365, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-ishasha-1", "Ishasha Wilderness Camp", "Tent (Double)", "Uganda", "Queen Elizabeth NP — Ishasha", 680, 530, "Full Board", "2025-01-01", "2025-12-31", "Premium tented"),
+        ("lodge-qenp-ishasha-2", "Ishasha Wilderness Camp", "Tent (Single)", "Uganda", "Queen Elizabeth NP — Ishasha", 820, 640, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-kazinga-1", "Kazinga Channel Tented Lodge", "Tent (Double)", "Uganda", "Queen Elizabeth NP — Kazinga", 340, 265, "Half Board", "2025-01-01", "2025-12-31", ""),
+        # ── MURCHISON FALLS NP ─────────────────────────────────────
+        ("lodge-mfc-bakers-1", "Baker's Lodge", "Luxury Tent (Double)", "Uganda", "Murchison Falls NP", 920, 720, "Full Board", "2025-01-01", "2025-12-31", "Luxury, Nile views"),
+        ("lodge-mfc-bakers-2", "Baker's Lodge", "Luxury Tent (Single)", "Uganda", "Murchison Falls NP", 1100, 860, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-paraa-1", "Paraa Safari Lodge", "Standard Double", "Uganda", "Murchison Falls NP — Paraa", 450, 355, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-paraa-2", "Paraa Safari Lodge", "Standard Single", "Uganda", "Murchison Falls NP — Paraa", 540, 420, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-pakuba-1", "Pakuba Safari Lodge", "Banda (Double)", "Uganda", "Murchison Falls NP — Pakuba", 320, 250, "Half Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-mfc-chobe-1", "Chobe Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP — Chobe", 380, 300, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-nile-1", "Nile Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP", 520, 405, "Full Board", "2025-01-01", "2025-12-31", ""),
+        # ── LAKE MBURO NATIONAL PARK ────────────────────────────────
+        ("lodge-mburo-mihingo-1", "Mihingo Lodge", "Tent (Double)", "Uganda", "Lake Mburo NP", 620, 485, "Full Board", "2025-01-01", "2025-12-31", "Premium, hillside"),
+        ("lodge-mburo-mihingo-2", "Mihingo Lodge", "Tent (Single)", "Uganda", "Lake Mburo NP", 745, 580, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mburo-mantana-1", "Mantana Tented Camp", "Tent (Double)", "Uganda", "Lake Mburo NP", 290, 225, "Full Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-mburo-arcadia-1", "Arcadia Cottages", "Cottage (Double)", "Uganda", "Lake Bunyonyi", 180, 140, "Bed & Breakfast", "2025-01-01", "2025-12-31", "Budget-friendly"),
+        # ── KIDEPO VALLEY NP ────────────────────────────────────────
+        ("lodge-kidepo-apoka-1", "Apoka Safari Lodge", "Cottage (Double)", "Uganda", "Kidepo Valley NP", 820, 640, "Full Board", "2025-01-01", "2025-12-31", "Luxury, remote"),
+        ("lodge-kidepo-apoka-2", "Apoka Safari Lodge", "Cottage (Single)", "Uganda", "Kidepo Valley NP", 980, 765, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kidepo-wild-1", "Kidepo Savannah Lodge", "Cottage (Double)", "Uganda", "Kidepo Valley NP", 380, 295, "Full Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        # ── ENTEBBE / KAMPALA ───────────────────────────────────────
+        ("lodge-entebbe-boma-1", "The Boma Entebbe", "Superior Double", "Uganda", "Entebbe", 180, 140, "Bed & Breakfast", "2025-01-01", "2025-12-31", "City hotel"),
+        ("lodge-entebbe-lake-1", "Lake Victoria Hotel", "Standard Double", "Uganda", "Entebbe", 120, 95, "Bed & Breakfast", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kampala-serena-1", "Kampala Serena Hotel", "Superior Double", "Uganda", "Kampala", 240, 190, "Bed & Breakfast", "2025-01-01", "2025-12-31", "5-star city"),
+        # ── ZIWA RHINO SANCTUARY ────────────────────────────────────
+        ("lodge-ziwa-1", "Amuka Safari Lodge", "Banda (Double)", "Uganda", "Ziwa Rhino Sanctuary", 220, 170, "Half Board", "2025-01-01", "2025-12-31", "At sanctuary"),
+        # ── RWANDA — VOLCANOES NP ───────────────────────────────────
+        ("lodge-rwa-singita-1", "Singita Kwitonda Lodge", "Suite (Double)", "Rwanda", "Volcanoes NP", 2200, 1760, "Full Board", "2025-01-01", "2025-12-31", "Ultra-luxury"),
+        ("lodge-rwa-wilderness-1", "Wilderness Bisate Lodge", "Villa (Double)", "Rwanda", "Volcanoes NP", 1850, 1480, "Full Board", "2025-01-01", "2025-12-31", "Luxury eco"),
+        ("lodge-rwa-sabyinyo-1", "Sabyinyo Silverback Lodge", "Cottage (Double)", "Rwanda", "Volcanoes NP", 1480, 1185, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-rwa-mountain-1", "Mountain Gorilla View Lodge", "Double Room", "Rwanda", "Volcanoes NP", 720, 575, "Full Board", "2025-01-01", "2025-12-31", "Premium"),
+        ("lodge-rwa-mountain-2", "Mountain Gorilla View Lodge", "Single Room", "Rwanda", "Volcanoes NP", 860, 690, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-rwa-five-1", "Five Volcanoes Boutique Hotel", "Double Room", "Rwanda", "Volcanoes NP — Musanze", 320, 255, "Bed & Breakfast", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-rwa-gorillas-1", "One&Only Gorilla's Nest", "Suite (Double)", "Rwanda", "Volcanoes NP", 1650, 1320, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        # ── RWANDA — NYUNGWE / AKAGERA ──────────────────────────────
+        ("lodge-rwa-nyungwe-1", "Nyungwe House", "Double Room", "Rwanda", "Nyungwe Forest NP", 620, 495, "Full Board", "2025-01-01", "2025-12-31", "One&Only property"),
+        ("lodge-rwa-akagera-1", "Akagera Game Lodge", "Standard Double", "Rwanda", "Akagera NP", 280, 220, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-rwa-ruzizi-1", "Ruzizi Tented Lodge", "Tent (Double)", "Rwanda", "Akagera NP", 350, 275, "Full Board", "2025-01-01", "2025-12-31", "Tented luxury"),
+    ]
+    for l in lodges:
+        conn.execute("""
+            INSERT OR IGNORE INTO lodges (id, lodge_name, room_type, country, location,
+                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, l)
+
+
 def seed_lodges(conn):
     """Seed the lodges table with Uganda/Rwanda safari lodge data if empty."""
     count = conn.execute("SELECT COUNT(*) FROM lodges").fetchone()[0]
@@ -721,6 +802,11 @@ def init_db():
 
     # Seed lodges if table is empty
     seed_lodges(conn)
+
+    # Seed detailed partner lodge data (INSERT OR IGNORE — safe to always call)
+    lodge_count = conn.execute("SELECT COUNT(*) FROM lodges").fetchone()[0]
+    if lodge_count == 0:
+        _seed_lodges(conn)
 
     conn.commit()
     conn.close()
