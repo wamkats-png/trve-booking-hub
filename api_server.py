@@ -582,8 +582,112 @@ CONFIG = {
     "vehicle_rate_per_day": 120,
     "insurance_rate_per_person_per_day": 10,
     "coordinators": ["Desire", "Belinda", "Robert"],
+    "fx_buffer_pct": 3,          # 3% buffer on FX conversions
+    "fuel_buffer_pct": 10,       # 10% buffer on vehicle/fuel pricing
+    "quotation_validity_days": 7,  # Quotations expire after 7 days
     "last_updated": datetime.now().isoformat(),
 }
+
+# ---------------------------------------------------------------------------
+# Lodge seed data
+# ---------------------------------------------------------------------------
+LODGE_SEED = [
+    # --- Uganda: Bwindi ---
+    {"lodge_name": "Bwindi Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 350, "meal_plan": "Full Board"},
+    {"lodge_name": "Bwindi Lodge", "room_type": "Single Supplement", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 175, "meal_plan": "Full Board"},
+    {"lodge_name": "Mahogany Springs", "room_type": "Deluxe Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 400, "meal_plan": "Full Board"},
+    {"lodge_name": "Mahogany Springs", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 220, "meal_plan": "Full Board"},
+    {"lodge_name": "Gorilla Forest Camp", "room_type": "Luxury Tent Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 680, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "Gorilla Forest Camp", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 380, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "Sanctuary Gorilla Forest Camp", "room_type": "Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 580, "meal_plan": "Full Board"},
+    {"lodge_name": "Sanctuary Gorilla Forest Camp", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 300, "meal_plan": "Full Board"},
+    {"lodge_name": "Clouds Mountain Gorilla Lodge", "room_type": "Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 750, "meal_plan": "Full Board"},
+    {"lodge_name": "Clouds Mountain Gorilla Lodge", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 400, "meal_plan": "Full Board"},
+    {"lodge_name": "Gorillas Nest Lodge", "room_type": "Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 320, "meal_plan": "Full Board"},
+    {"lodge_name": "Gorillas Nest Lodge", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 175, "meal_plan": "Full Board"},
+    # --- Uganda: Kibale ---
+    {"lodge_name": "Kibale Forest Camp", "room_type": "Double", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 320, "meal_plan": "Full Board"},
+    {"lodge_name": "Kibale Forest Camp", "room_type": "Single", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 180, "meal_plan": "Full Board"},
+    {"lodge_name": "Primate Lodge Kibale", "room_type": "Double", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 280, "meal_plan": "Full Board"},
+    {"lodge_name": "Primate Lodge Kibale", "room_type": "Single", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 160, "meal_plan": "Full Board"},
+    {"lodge_name": "Kyaninga Lodge", "room_type": "Double", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 550, "meal_plan": "Full Board"},
+    {"lodge_name": "Kyaninga Lodge", "room_type": "Single", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 300, "meal_plan": "Full Board"},
+    # --- Uganda: Queen Elizabeth NP ---
+    {"lodge_name": "Mweya Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "QENP", "rack_rate_usd": 220, "meal_plan": "Half Board"},
+    {"lodge_name": "Mweya Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "QENP", "rack_rate_usd": 130, "meal_plan": "Half Board"},
+    {"lodge_name": "Jacana Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "QENP", "rack_rate_usd": 200, "meal_plan": "Full Board"},
+    {"lodge_name": "Jacana Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "QENP", "rack_rate_usd": 110, "meal_plan": "Full Board"},
+    {"lodge_name": "Ishasha Wilderness Camp", "room_type": "Double", "country": "Uganda", "location": "QENP/Ishasha", "rack_rate_usd": 320, "meal_plan": "Full Board"},
+    {"lodge_name": "Ishasha Wilderness Camp", "room_type": "Single", "country": "Uganda", "location": "QENP/Ishasha", "rack_rate_usd": 180, "meal_plan": "Full Board"},
+    # --- Uganda: Murchison Falls ---
+    {"lodge_name": "Paraa Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 180, "meal_plan": "Half Board"},
+    {"lodge_name": "Paraa Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 100, "meal_plan": "Half Board"},
+    {"lodge_name": "Chobe Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 200, "meal_plan": "Full Board"},
+    {"lodge_name": "Chobe Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 110, "meal_plan": "Full Board"},
+    {"lodge_name": "Baker's Lodge", "room_type": "Double", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 350, "meal_plan": "Full Board"},
+    {"lodge_name": "Baker's Lodge", "room_type": "Single", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 195, "meal_plan": "Full Board"},
+    # --- Uganda: Kidepo ---
+    {"lodge_name": "Apoka Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "Kidepo Valley NP", "rack_rate_usd": 480, "meal_plan": "Full Board"},
+    {"lodge_name": "Apoka Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "Kidepo Valley NP", "rack_rate_usd": 260, "meal_plan": "Full Board"},
+    # --- Uganda: Jinja ---
+    {"lodge_name": "Wildwaters Lodge", "room_type": "Double", "country": "Uganda", "location": "Jinja", "rack_rate_usd": 280, "meal_plan": "Full Board"},
+    {"lodge_name": "Wildwaters Lodge", "room_type": "Single", "country": "Uganda", "location": "Jinja", "rack_rate_usd": 155, "meal_plan": "Full Board"},
+    # --- Uganda: Lake Mburo ---
+    {"lodge_name": "Lake Mburo Camp", "room_type": "Double", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 180, "meal_plan": "Full Board"},
+    {"lodge_name": "Lake Mburo Camp", "room_type": "Single", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 100, "meal_plan": "Full Board"},
+    {"lodge_name": "Mihingo Lodge", "room_type": "Double", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 260, "meal_plan": "Full Board"},
+    {"lodge_name": "Mihingo Lodge", "room_type": "Single", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 145, "meal_plan": "Full Board"},
+    # --- Uganda: Lake Bunyonyi ---
+    {"lodge_name": "Arcadia Cottages", "room_type": "Double", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 90, "meal_plan": "Breakfast"},
+    {"lodge_name": "Arcadia Cottages", "room_type": "Single", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 55, "meal_plan": "Breakfast"},
+    {"lodge_name": "Bird Nest Resort", "room_type": "Double", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 120, "meal_plan": "Half Board"},
+    {"lodge_name": "Bird Nest Resort", "room_type": "Single", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 70, "meal_plan": "Half Board"},
+    # --- Rwanda: Volcanoes NP ---
+    {"lodge_name": "Bisate Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 2200, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "Bisate Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1200, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "One&Only Gorilla's Nest", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1800, "meal_plan": "Full Board"},
+    {"lodge_name": "One&Only Gorilla's Nest", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 950, "meal_plan": "Full Board"},
+    {"lodge_name": "Singita Kwitonda Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 2500, "meal_plan": "Full Board"},
+    {"lodge_name": "Singita Kwitonda Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1300, "meal_plan": "Full Board"},
+    {"lodge_name": "Sabyinyo Silverback Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1500, "meal_plan": "Full Board"},
+    {"lodge_name": "Sabyinyo Silverback Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 800, "meal_plan": "Full Board"},
+    {"lodge_name": "Virunga Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1200, "meal_plan": "Full Board"},
+    {"lodge_name": "Virunga Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 650, "meal_plan": "Full Board"},
+    {"lodge_name": "Mountain Gorilla View Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 450, "meal_plan": "Full Board"},
+    {"lodge_name": "Mountain Gorilla View Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 250, "meal_plan": "Full Board"},
+    # --- Rwanda: Kigali ---
+    {"lodge_name": "Kigali Serena Hotel", "room_type": "Double", "country": "Rwanda", "location": "Kigali", "rack_rate_usd": 180, "meal_plan": "Breakfast"},
+    {"lodge_name": "Kigali Serena Hotel", "room_type": "Single", "country": "Rwanda", "location": "Kigali", "rack_rate_usd": 130, "meal_plan": "Breakfast"},
+]
+
+
+def seed_lodges(conn):
+    """Seed the lodges table with Uganda/Rwanda safari lodge data if empty."""
+    count = conn.execute("SELECT COUNT(*) FROM lodges").fetchone()[0]
+    if count > 0:
+        return
+    for lodge in LODGE_SEED:
+        rack = lodge["rack_rate_usd"]
+        net = round(rack * 0.7, 2)
+        conn.execute("""
+            INSERT INTO lodges (id, lodge_name, room_type, country, location,
+                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, source_file, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(uuid.uuid4())[:8],
+            lodge["lodge_name"],
+            lodge.get("room_type", "Double"),
+            lodge.get("country", "Uganda"),
+            lodge.get("location", ""),
+            rack,
+            net,
+            lodge.get("meal_plan", "Full Board"),
+            "2025-01-01",
+            "2026-12-31",
+            "seed_data",
+            lodge.get("notes", ""),
+        ))
+
 
 # ---------------------------------------------------------------------------
 # Database initialization + migration from JSON
@@ -614,6 +718,9 @@ def init_db():
             itn.get("season", "year_round"), itn["description"],
             itn.get("highlights", ""), json.dumps(itn.get("nationality_tiers", []))
         ))
+
+    # Seed lodges if table is empty
+    seed_lodges(conn)
 
     conn.commit()
     conn.close()
@@ -992,6 +1099,28 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     for p in payment:
         pdf.cell(0, 5, f"  {p}", ln=True)
 
+    # --- Price Validity Notice ---
+    pdf.ln(6)
+    validity_days = CONFIG.get("quotation_validity_days", 7)
+    try:
+        created_dt = datetime.fromisoformat(created[:10])
+    except (ValueError, TypeError):
+        created_dt = datetime.now()
+    from datetime import timedelta
+    expiry_date_str = (created_dt + timedelta(days=validity_days)).strftime("%d %B %Y")
+    pdf.set_fill_color(255, 243, 205)  # Light amber background
+    pdf.set_draw_color(200, 150, 62)
+    pdf.set_line_width(0.4)
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_text_color(120, 80, 0)
+    notice_text = (
+        f"! PRICE VALIDITY: Prices are subject to final confirmation within {validity_days} days "
+        f"due to fuel price and foreign exchange rate fluctuations. "
+        f"This quotation expires on {expiry_date_str}. "
+        f"After expiry, prices must be recalculated."
+    )
+    pdf.multi_cell(0, 5.5, notice_text, border=1, fill=True)
+
     return pdf.output()
 
 
@@ -1116,6 +1245,43 @@ class SyncPushQuotation(BaseModel):
     quotation_id: str
 
 
+class ConfigUpdate(BaseModel):
+    fx_rate: Optional[float] = None
+    fx_buffer_pct: Optional[float] = None
+    fuel_buffer_pct: Optional[float] = None
+    vehicle_rate_per_day: Optional[float] = None
+    service_fee_pct: Optional[float] = None
+    quotation_validity_days: Optional[int] = None
+
+
+class LodgeCreate(BaseModel):
+    lodge_name: str
+    room_type: Optional[str] = "Double"
+    country: Optional[str] = "Uganda"
+    location: Optional[str] = ""
+    rack_rate_usd: Optional[float] = 0
+    net_rate_usd: Optional[float] = None
+    meal_plan: Optional[str] = "Full Board"
+    valid_from: Optional[str] = "2025-01-01"
+    valid_to: Optional[str] = "2026-12-31"
+    source_file: Optional[str] = ""
+    notes: Optional[str] = ""
+
+
+class LodgeUpdate(BaseModel):
+    lodge_name: Optional[str] = None
+    room_type: Optional[str] = None
+    country: Optional[str] = None
+    location: Optional[str] = None
+    rack_rate_usd: Optional[float] = None
+    net_rate_usd: Optional[float] = None
+    meal_plan: Optional[str] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    source_file: Optional[str] = None
+    notes: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # ENDPOINTS
 # ---------------------------------------------------------------------------
@@ -1136,6 +1302,14 @@ def health():
 # --- Config ---
 @app.get("/api/config")
 def get_config():
+    CONFIG["last_updated"] = datetime.now().isoformat()
+    return CONFIG
+
+
+@app.patch("/api/config")
+def update_config(body: ConfigUpdate):
+    updates = body.model_dump(exclude_none=True)
+    CONFIG.update(updates)
     CONFIG["last_updated"] = datetime.now().isoformat()
     return CONFIG
 
@@ -1285,6 +1459,85 @@ def list_lodges():
             "notes": l["notes"],
         })
     return list(lodge_map.values())
+
+
+# --- Lodge CRUD ---
+@app.get("/api/lodges")
+def list_lodges_raw(
+    country: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    with db_session() as conn:
+        query = "SELECT * FROM lodges WHERE 1=1"
+        params = []
+        if country:
+            query += " AND country = ?"
+            params.append(country)
+        if location:
+            query += " AND location LIKE ?"
+            params.append(f"%{location}%")
+        query += " ORDER BY country, location, lodge_name LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
+@app.post("/api/lodges", status_code=201)
+def create_lodge(body: LodgeCreate):
+    lid = str(uuid.uuid4())[:8]
+    net = body.net_rate_usd if body.net_rate_usd is not None else round((body.rack_rate_usd or 0) * 0.7, 2)
+    with db_session() as conn:
+        conn.execute("""
+            INSERT INTO lodges (id, lodge_name, room_type, country, location,
+                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, source_file, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            lid, body.lodge_name, body.room_type or "Double",
+            body.country or "Uganda", body.location or "",
+            body.rack_rate_usd or 0, net,
+            body.meal_plan or "Full Board",
+            body.valid_from or "2025-01-01", body.valid_to or "2026-12-31",
+            body.source_file or "", body.notes or "",
+        ))
+        row = dict(conn.execute("SELECT * FROM lodges WHERE id = ?", (lid,)).fetchone())
+    return row
+
+
+@app.get("/api/lodges/{lodge_id}")
+def get_lodge(lodge_id: str):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM lodges WHERE id = ?", (lodge_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Lodge not found")
+    return dict(row)
+
+
+@app.patch("/api/lodges/{lodge_id}")
+def update_lodge(lodge_id: str, body: LodgeUpdate):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM lodges WHERE id = ?", (lodge_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Lodge not found")
+        updates = body.model_dump(exclude_none=True)
+        if not updates:
+            return dict(row)
+        set_clauses = [f"{k} = ?" for k in updates]
+        values = list(updates.values()) + [lodge_id]
+        conn.execute(
+            f"UPDATE lodges SET {', '.join(set_clauses)} WHERE id = ?", values
+        )
+        updated = dict(conn.execute("SELECT * FROM lodges WHERE id = ?", (lodge_id,)).fetchone())
+    return updated
+
+
+@app.delete("/api/lodges/{lodge_id}", status_code=204)
+def delete_lodge(lodge_id: str):
+    with db_session() as conn:
+        result = conn.execute("DELETE FROM lodges WHERE id = ?", (lodge_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Lodge not found")
+    return None
 
 
 # --- Curation (Itinerary Matching) ---
@@ -1499,6 +1752,10 @@ def calculate_price(body: PricingRequest):
     v_days = (body.extra_vehicle_days or 0) + (days - 1 if days > 1 else days)
     vehicle_rate = CONFIG["vehicle_rate_per_day"]
     vehicle_total = v_days * vehicle_rate
+    # Apply fuel buffer
+    fuel_buffer_pct = CONFIG.get("fuel_buffer_pct", 0)
+    if fuel_buffer_pct:
+        vehicle_total = vehicle_total * (1 + fuel_buffer_pct / 100)
 
     # 3. Permits
     permit_total = 0.0
@@ -1557,7 +1814,8 @@ def calculate_price(body: PricingRequest):
     commission_amount = subtotal * (commission_pct / 100) if commission_pct else 0
     grand_total = subtotal + service_fee + commission_amount
     per_person = grand_total / pax if pax else grand_total
-    fx_rate = CONFIG["fx_rate"]
+    fx_buffer_pct = CONFIG.get("fx_buffer_pct", 0)
+    fx_rate = CONFIG["fx_rate"] * (1 + fx_buffer_pct / 100)
     grand_total_ugx = grand_total * fx_rate
 
     # Build flat line_items array
@@ -1565,7 +1823,8 @@ def calculate_price(body: PricingRequest):
     for line in accommodation_lines:
         line_items.append({"item": line["description"] + f" ({line['nights']} nights)", "total_usd": line["total"]})
     if vehicle_total > 0:
-        line_items.append({"item": f"4x4 Safari Vehicle ({v_days} days @ ${vehicle_rate}/day)", "total_usd": round(vehicle_total, 2)})
+        fuel_note = f" [+{fuel_buffer_pct}% fuel buffer]" if fuel_buffer_pct else ""
+        line_items.append({"item": f"4x4 Safari Vehicle ({v_days} days @ ${vehicle_rate}/day){fuel_note}", "total_usd": round(vehicle_total, 2)})
     for line in permit_lines:
         line_items.append({"item": line["description"] + f" (x{line['qty']})", "total_usd": line["total"]})
     if insurance_total > 0:
@@ -1591,7 +1850,9 @@ def calculate_price(body: PricingRequest):
         "service_fee_label": f"TRVE Service Fee ({service_fee_pct}%)",
         "service_fee_pct": service_fee_pct,
         "tmsf_usd": round(service_fee, 2),
-        "fx_rate": fx_rate,
+        "fx_rate": round(fx_rate, 2),
+        "fx_buffer_pct": fx_buffer_pct,
+        "fuel_buffer_pct": fuel_buffer_pct,
         "fx_timestamp": "2026 avg",
         "duration_days": days,
         "pax": pax,
@@ -1703,6 +1964,79 @@ def get_quotation_pdf(quotation_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{filename}"'}
     )
+
+
+# --- Quotation Status / Expiry ---
+@app.get("/api/quotations/{quotation_id}/status")
+def get_quotation_status(quotation_id: str):
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotations WHERE id = ? OR quotation_id = ?",
+            (quotation_id, quotation_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    q = dict(row)
+    created_at = q.get("created_at", "")
+    valid_days = q.get("valid_days", CONFIG.get("quotation_validity_days", 7))
+    try:
+        created_dt = datetime.fromisoformat(created_at)
+    except (ValueError, TypeError):
+        created_dt = datetime.now()
+    from datetime import timedelta
+    expiry_dt = created_dt + timedelta(days=valid_days)
+    now = datetime.now()
+    expired = now > expiry_dt
+    days_remaining = max(0, (expiry_dt - now).days)
+    current_status = q.get("status", "draft")
+    if expired and current_status not in ("expired", "confirmed"):
+        with db_session() as conn2:
+            conn2.execute(
+                "UPDATE quotations SET status = 'expired' WHERE id = ?", (q["id"],)
+            )
+        current_status = "expired"
+    return {
+        "id": q["id"],
+        "quotation_id": q.get("quotation_id", q["id"]),
+        "status": current_status,
+        "expired": expired,
+        "days_remaining": days_remaining,
+        "expiry_date": expiry_dt.isoformat(),
+        "created_at": created_at,
+        "valid_days": valid_days,
+        "requires_recalculation": expired,
+    }
+
+
+@app.get("/api/quotations/check-expiry")
+def check_quotation_expiry():
+    """Bulk check and mark all expired quotations."""
+    from datetime import timedelta
+    expired_ids = []
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM quotations WHERE status NOT IN ('expired', 'confirmed')"
+        ).fetchall()
+        now = datetime.now()
+        for row in rows:
+            q = dict(row)
+            created_at = q.get("created_at", "")
+            valid_days = q.get("valid_days", CONFIG.get("quotation_validity_days", 7))
+            try:
+                created_dt = datetime.fromisoformat(created_at)
+            except (ValueError, TypeError):
+                continue
+            expiry_dt = created_dt + timedelta(days=valid_days)
+            if now > expiry_dt:
+                conn.execute(
+                    "UPDATE quotations SET status = 'expired' WHERE id = ?", (q["id"],)
+                )
+                expired_ids.append(q["id"])
+    return {
+        "expired_count": len(expired_ids),
+        "expired_ids": expired_ids,
+        "checked_at": datetime.now().isoformat(),
+    }
 
 
 # --- Sync ---
@@ -2003,6 +2337,65 @@ def sync_export(unsynced_only: bool = Query(False)):
                 "row_array": [_sheets_safe(str(v)) for v in raw],
             })
     return {"items": items, "total": len(items)}
+
+
+# --- Cost Presets ---
+@app.get("/api/cost-presets")
+def get_cost_presets():
+    """Return structured cost presets for Uganda/Rwanda safari pricing calculator."""
+    return {
+        "activities": [
+            {"id": "boat_cruise_kazinga", "label": "Boat Cruise — Kazinga Channel (QENP)", "price_usd": 30, "unit": "per_person", "duration_hrs": 2},
+            {"id": "boat_cruise_murchison", "label": "Boat Cruise — Murchison Falls (Nile)", "price_usd": 40, "unit": "per_person", "duration_hrs": 3},
+            {"id": "game_drive_half_day", "label": "Game Drive — Half Day (private)", "price_usd": 0, "unit": "included_in_vehicle", "notes": "Covered by vehicle rate"},
+            {"id": "game_drive_full_day", "label": "Game Drive — Full Day (private)", "price_usd": 0, "unit": "included_in_vehicle", "notes": "Covered by vehicle rate"},
+            {"id": "rhino_tracking_ziwa", "label": "Rhino Tracking — Ziwa Rhino Sanctuary", "price_usd": 40, "unit": "per_person"},
+            {"id": "nature_walk_bwindi", "label": "Nature Walk — Bwindi Forest", "price_usd": 40, "unit": "per_person"},
+            {"id": "bigodi_wetland_walk", "label": "Bigodi Wetland Sanctuary Walk", "price_usd": 15, "unit": "per_person"},
+            {"id": "batwa_trail", "label": "Batwa Cultural Trail — Bwindi", "price_usd": 80, "unit": "per_person"},
+            {"id": "community_visit_karamojong", "label": "Karamojong Village Visit — Kidepo", "price_usd": 20, "unit": "per_person"},
+            {"id": "sport_fishing_nile", "label": "Sport Fishing — Nile (Murchison)", "price_usd": 50, "unit": "per_person"},
+            {"id": "hot_spring_kanangorok", "label": "Kanangorok Hot Springs Visit — Kidepo", "price_usd": 10, "unit": "per_person"},
+            {"id": "source_nile_boat", "label": "Source of the Nile Boat Ride — Jinja", "price_usd": 25, "unit": "per_person"},
+            {"id": "white_water_rafting", "label": "White Water Rafting Grade 5 — Nile (Jinja)", "price_usd": 125, "unit": "per_person"},
+            {"id": "bungee_jumping", "label": "Bungee Jumping — Jinja", "price_usd": 115, "unit": "per_person"},
+            {"id": "canoe_lake_bunyonyi", "label": "Canoe Hire — Lake Bunyonyi", "price_usd": 15, "unit": "per_person_per_hour"},
+            {"id": "coffee_farm_tour", "label": "Coffee Farm Tour — Kibale region", "price_usd": 20, "unit": "per_person"},
+            {"id": "golden_monkey_rwanda", "label": "Golden Monkey Tracking — Volcanoes NP", "price_usd": 100, "unit": "per_person"},
+            {"id": "cultural_performance_rwanda", "label": "Cultural Performance — Intore Dance", "price_usd": 30, "unit": "per_group"},
+        ],
+        "transfers": [
+            {"id": "transfer_entebbe_airport", "label": "Entebbe Airport Transfer (one way)", "price_usd": 50, "unit": "per_vehicle"},
+            {"id": "transfer_entebbe_kampala", "label": "Entebbe — Kampala City Transfer", "price_usd": 60, "unit": "per_vehicle"},
+            {"id": "transfer_kampala_entebbe", "label": "Kampala — Entebbe Transfer", "price_usd": 60, "unit": "per_vehicle"},
+            {"id": "transfer_kigali_airport", "label": "Kigali Airport Transfer (one way)", "price_usd": 40, "unit": "per_vehicle"},
+            {"id": "transfer_kigali_volcanoes", "label": "Kigali — Volcanoes NP Transfer", "price_usd": 120, "unit": "per_vehicle"},
+            {"id": "border_crossing_gatuna", "label": "Uganda/Rwanda Border Crossing (Gatuna/Katuna)", "price_usd": 30, "unit": "per_vehicle", "notes": "Handling fee"},
+        ],
+        "internal_flights": [
+            {"id": "flight_entebbe_kidepo", "label": "Entebbe — Kidepo Valley (one way)", "price_usd": 280, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_kidepo_entebbe", "label": "Kidepo Valley — Entebbe (one way)", "price_usd": 280, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_entebbe_murchison", "label": "Entebbe — Murchison Falls (one way)", "price_usd": 220, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_entebbe_bwindi", "label": "Entebbe — Bwindi/Kihihi (one way)", "price_usd": 240, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_entebbe_rwenzori", "label": "Entebbe — Kasese/Rwenzori (one way)", "price_usd": 200, "unit": "per_person", "operator": "AeroLink"},
+        ],
+        "guide_fees": [
+            {"id": "local_guide_bwindi", "label": "Local Guide — Bwindi (gorilla trek)", "price_usd": 20, "unit": "per_group_per_day"},
+            {"id": "local_guide_kibale", "label": "Local Guide — Kibale (chimp trek)", "price_usd": 15, "unit": "per_group_per_day"},
+            {"id": "ranger_escort_kidepo", "label": "Armed Ranger Escort — Kidepo", "price_usd": 30, "unit": "per_group_per_day"},
+            {"id": "birding_guide", "label": "Specialist Birding Guide", "price_usd": 80, "unit": "per_day"},
+        ],
+        "conservation_fees": [
+            {"id": "uwa_dev_levy", "label": "UWA Conservation Development Levy", "price_usd": 10, "unit": "per_person_per_day", "notes": "Some parks include in entry"},
+            {"id": "community_levy_bwindi", "label": "Bwindi Community Levy", "price_usd": 10, "unit": "per_person_per_trek"},
+            {"id": "rwanda_tourism_levy", "label": "Rwanda Tourism Levy", "price_usd": 30, "unit": "per_person_per_night", "notes": "Applicable to luxury lodges"},
+        ],
+        "government_taxes": [
+            {"id": "uganda_vat", "label": "Uganda VAT", "rate_pct": 18, "unit": "percentage", "notes": "Applied to goods/services — tours typically exempt for non-residents"},
+            {"id": "rwanda_vat", "label": "Rwanda VAT", "rate_pct": 18, "unit": "percentage", "notes": "Applied to goods/services in Rwanda"},
+            {"id": "tourism_development_levy_ug", "label": "Tourism Development Levy (Uganda)", "rate_pct": 1, "unit": "percentage"},
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
