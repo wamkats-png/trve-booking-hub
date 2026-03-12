@@ -582,8 +582,8 @@ CONFIG = {
     "vehicle_rate_per_day": 120,
     "insurance_rate_per_person_per_day": 10,
     "coordinators": ["Desire", "Belinda", "Robert"],
-    "fx_buffer_pct": 3,          # 3% buffer on FX conversions
-    "fuel_buffer_pct": 10,       # 10% buffer on vehicle/fuel pricing
+    "fx_buffer_pct": 3,          # 3% FX volatility buffer
+    "fuel_buffer_pct": 5,        # 5% fuel price buffer
     "quotation_validity_days": 7,  # Quotations expire after 7 days
     "last_updated": datetime.now().isoformat(),
 }
@@ -1071,6 +1071,8 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     pdf.set_font('Helvetica', '', 8)
     pdf.set_text_color(80, 80, 80)
     terms = [
+        "PRICES ARE SUBJECT TO CONFIRMATION WITHIN 7 DAYS due to fuel price and exchange rate fluctuations.",
+        "All prices are quoted in USD unless otherwise stated.",
         f"This quotation is valid for {valid} days from the date of issue.",
         "A 30% deposit is required to confirm the booking. Balance due 45 days before travel.",
         "Permit availability is subject to UWA/RDB allocation and is not guaranteed until confirmed.",
@@ -1098,6 +1100,14 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     ]
     for p in payment:
         pdf.cell(0, 5, f"  {p}", ln=True)
+
+    # --- Bold Disclaimer ---
+    pdf.ln(4)
+    pdf.set_font("Helvetica", style="B", size=9)
+    pdf.set_text_color(180, 50, 50)  # Red for urgency
+    pdf.cell(0, 6, "IMPORTANT: Prices valid for 7 days only. Subject to change without notice due to", ln=True)
+    pdf.cell(0, 6, "fuel price fluctuations and exchange rate movements.", ln=True)
+    pdf.set_text_color(0, 0, 0)
 
     # --- Price Validity Notice ---
     pdf.ln(6)
@@ -1314,6 +1324,16 @@ def update_config(body: ConfigUpdate):
     return CONFIG
 
 
+@app.post("/api/config/update")
+def update_config_post(body: ConfigUpdate):
+    updates = body.model_dump(exclude_none=True)
+    for k, v in updates.items():
+        if k in CONFIG:
+            CONFIG[k] = v
+    CONFIG["last_updated"] = datetime.now().isoformat()
+    return CONFIG
+
+
 # --- Enquiries ---
 @app.get("/api/enquiries")
 def list_enquiries(limit: int = Query(200, ge=1, le=1000)):
@@ -1459,6 +1479,44 @@ def list_lodges():
             "notes": l["notes"],
         })
     return list(lodge_map.values())
+
+
+# --- Activities & Structured Costs ---
+ACTIVITY_CATALOGUE = [
+    {"id": "boat_cruise_kazinga", "name": "Boat Cruise — Kazinga Channel", "category": "activity", "default_usd": 30, "per_person": True, "notes": "2-hour cruise, QENP"},
+    {"id": "boat_cruise_murchison", "name": "Boat Cruise — Murchison Falls", "category": "activity", "default_usd": 30, "per_person": True, "notes": "3-hour cruise to base of falls"},
+    {"id": "game_drive_half", "name": "Game Drive — Half Day", "category": "activity", "default_usd": 0, "per_person": False, "notes": "Included in vehicle hire"},
+    {"id": "rhino_tracking_ziwa", "name": "Rhino Tracking — Ziwa Sanctuary", "category": "activity", "default_usd": 40, "per_person": True, "notes": "Per person, walk-based"},
+    {"id": "community_walk", "name": "Community/Village Walk", "category": "activity", "default_usd": 20, "per_person": True, "notes": "Bigodi, Batwa Trail, etc."},
+    {"id": "canoe_bunyonyi", "name": "Canoe — Lake Bunyonyi", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Half-day canoe rental"},
+    {"id": "birdwatching_guided", "name": "Guided Birding Walk", "category": "activity", "default_usd": 25, "per_person": True, "notes": "2-3 hours with specialist guide"},
+    {"id": "cultural_batwa", "name": "Batwa Trail — Cultural Experience", "category": "activity", "default_usd": 45, "per_person": True, "notes": "Bwindi cultural immersion"},
+    {"id": "nature_walk_forest", "name": "Guided Forest Nature Walk", "category": "activity", "default_usd": 20, "per_person": True, "notes": "Self-guided or guided"},
+    {"id": "sport_fishing", "name": "Sport Fishing — Nile/Lake Victoria", "category": "activity", "default_usd": 50, "per_person": True, "notes": "Per rod per day"},
+    {"id": "white_water_jinja", "name": "White-Water Rafting — Jinja", "category": "activity", "default_usd": 140, "per_person": True, "notes": "Full day, Grade 5 Nile rapids"},
+    {"id": "bungee_jinja", "name": "Bungee Jump — Jinja", "category": "activity", "default_usd": 115, "per_person": True, "notes": "Over the Nile"},
+    {"id": "quad_bike", "name": "Quad Biking", "category": "activity", "default_usd": 90, "per_person": True, "notes": "Jinja / Entebbe"},
+    {"id": "horse_riding", "name": "Horse Riding Safari", "category": "activity", "default_usd": 80, "per_person": True, "notes": "Lake Mburo area"},
+    {"id": "internal_flight_ebb_mfc", "name": "Internal Flight — EBB to Murchison", "category": "flight", "default_usd": 280, "per_person": True, "notes": "Aerolink Uganda one-way"},
+    {"id": "internal_flight_ebb_kidepo", "name": "Internal Flight — EBB to Kidepo", "category": "flight", "default_usd": 320, "per_person": True, "notes": "Aerolink Uganda one-way"},
+    {"id": "internal_flight_ebb_bwindi", "name": "Internal Flight — EBB to Bwindi (Kihihi)", "category": "flight", "default_usd": 250, "per_person": True, "notes": "Aerolink Uganda one-way"},
+    {"id": "internal_flight_ebb_kla", "name": "Internal Flight — Kigali to Bwindi", "category": "flight", "default_usd": 300, "per_person": True, "notes": "One-way cross-border connection"},
+    {"id": "transfer_entebbe", "name": "Airport Transfer — Entebbe/Kampala", "category": "transfer", "default_usd": 80, "per_person": False, "notes": "Per vehicle one-way"},
+    {"id": "transfer_kigali", "name": "Airport Transfer — Kigali", "category": "transfer", "default_usd": 60, "per_person": False, "notes": "Per vehicle one-way"},
+    {"id": "visa_uganda", "name": "Uganda Entry Visa", "category": "visa", "default_usd": 50, "per_person": True, "notes": "EAC members exempt"},
+    {"id": "visa_rwanda", "name": "Rwanda Entry Visa", "category": "visa", "default_usd": 50, "per_person": True, "notes": "Most nationalities on arrival"},
+    {"id": "conservancy_fee", "name": "Community Conservancy Fee", "category": "conservation", "default_usd": 20, "per_person": True, "notes": "Various private conservancies"},
+    {"id": "park_dev_levy", "name": "Park Development Levy", "category": "conservation", "default_usd": 5, "per_person": True, "notes": "Per park entry in Uganda"},
+    {"id": "driver_guide_tip", "name": "Driver-Guide Gratuity (suggested)", "category": "gratuity", "default_usd": 20, "per_person": False, "notes": "Per day suggestion"},
+    {"id": "porter_bwindi", "name": "Porter — Gorilla/Chimp Trek", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Highly recommended, per trek"},
+    {"id": "covid_test", "name": "PCR / Health Certificate (if required)", "category": "health", "default_usd": 60, "per_person": True, "notes": "Check current requirements"},
+    {"id": "travel_insurance_ext", "name": "Travel Insurance (external quote)", "category": "insurance", "default_usd": 0, "per_person": True, "notes": "Client arranges — amount varies"},
+]
+
+
+@app.get("/api/activities")
+def list_activities():
+    return {"items": ACTIVITY_CATALOGUE}
 
 
 # --- Lodge CRUD ---
@@ -1823,8 +1881,8 @@ def calculate_price(body: PricingRequest):
     for line in accommodation_lines:
         line_items.append({"item": line["description"] + f" ({line['nights']} nights)", "total_usd": line["total"]})
     if vehicle_total > 0:
-        fuel_note = f" [+{fuel_buffer_pct}% fuel buffer]" if fuel_buffer_pct else ""
-        line_items.append({"item": f"4x4 Safari Vehicle ({v_days} days @ ${vehicle_rate}/day){fuel_note}", "total_usd": round(vehicle_total, 2)})
+        fuel_pct = CONFIG["fuel_buffer_pct"]
+        line_items.append({"item": f"4x4 Safari Vehicle ({v_days} days @ ${vehicle_rate}/day + {fuel_pct}% fuel buffer)", "total_usd": round(vehicle_total, 2)})
     for line in permit_lines:
         line_items.append({"item": line["description"] + f" (x{line['qty']})", "total_usd": line["total"]})
     if insurance_total > 0:
@@ -1877,6 +1935,10 @@ def calculate_price(body: PricingRequest):
             "per_person_usd": round(per_person, 2),
             "fx_rate": fx_rate,
             "grand_total_ugx": round(grand_total_ugx, 0),
+            "buffers": {
+                "fx_buffer_pct": CONFIG["fx_buffer_pct"],
+                "fuel_buffer_pct": CONFIG["fuel_buffer_pct"],
+            },
         },
     }
 
@@ -2036,6 +2098,38 @@ def check_quotation_expiry():
         "expired_count": len(expired_ids),
         "expired_ids": expired_ids,
         "checked_at": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/quotations/{quotation_id}/check-expiry")
+def check_quotation_expiry_by_id(quotation_id: str):
+    """Check expiry status for a specific quotation by ID."""
+    from datetime import timedelta
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotations WHERE id = ? OR quotation_id = ?",
+            (quotation_id, quotation_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    q = dict(row)
+    created = q.get("created_at", datetime.now().isoformat())
+    valid_days = q.get("valid_days", 14)
+    try:
+        created_dt = datetime.fromisoformat(created)
+    except (ValueError, TypeError):
+        created_dt = datetime.now()
+    expires_at = created_dt + timedelta(days=valid_days)
+    is_expired = datetime.now() > expires_at
+    days_remaining = (expires_at - datetime.now()).days
+    return {
+        "quotation_id": quotation_id,
+        "created_at": q.get("created_at", ""),
+        "valid_days": valid_days,
+        "expires_at": expires_at.isoformat(),
+        "is_expired": is_expired,
+        "days_remaining": max(0, days_remaining),
+        "status": "expired" if is_expired else ("warning" if days_remaining <= 2 else "valid"),
     }
 
 
