@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, List, Any
 
 import smtplib
+import threading
 import email as email_lib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -25,7 +26,7 @@ from email import encoders
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -720,6 +721,106 @@ CONFIG = {
     "quotation_validity_days": 7,  # Quotations expire after 7 days
     "last_updated": datetime.now().isoformat(),
 }
+
+# ---------------------------------------------------------------------------
+# Email configuration (set via environment variables)
+# ---------------------------------------------------------------------------
+EMAIL_CONFIG = {
+    "smtp_host": os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+    "smtp_port": int(os.environ.get("SMTP_PORT", "587")),
+    "smtp_user": os.environ.get("SMTP_USER", ""),
+    "smtp_pass": os.environ.get("SMTP_PASS", ""),
+    "from_name": os.environ.get("EMAIL_FROM_NAME", "TRVE Booking Hub"),
+    "from_addr": os.environ.get("EMAIL_FROM_ADDR", ""),
+    "enabled": bool(os.environ.get("SMTP_USER", "")),
+}
+
+
+def send_email_async(to_addr: str, subject: str, html_body: str, attachments: list = None):
+    """Send an email in a background thread. Silent failure if not configured."""
+    if not EMAIL_CONFIG["enabled"] or not to_addr or "@" not in to_addr:
+        return
+
+    def _send():
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = f'{EMAIL_CONFIG["from_name"]} <{EMAIL_CONFIG["from_addr"] or EMAIL_CONFIG["smtp_user"]}>'
+            msg["To"] = to_addr
+            msg.attach(MIMEText(html_body, "html"))
+
+            if attachments:
+                for fname, fdata in attachments:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(fdata)
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", f'attachment; filename="{fname}"')
+                    msg.attach(part)
+
+            with smtplib.SMTP(EMAIL_CONFIG["smtp_host"], EMAIL_CONFIG["smtp_port"]) as server:
+                server.ehlo()
+                server.starttls()
+                server.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_pass"])
+                server.sendmail(msg["From"], [to_addr], msg.as_string())
+        except Exception as e:
+            print(f"[email] Failed to send to {to_addr}: {e}")
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
+ENQUIRY_CONFIRM_TEMPLATE = """
+<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a2e29">
+  <div style="background:#0D5E4F;padding:24px;text-align:center">
+    <h1 style="color:#C8963E;margin:0;font-size:24px">TRVE Booking Hub</h1>
+    <p style="color:#fff;margin:8px 0 0;font-size:14px">The Rift Valley Explorer — Bucket List Adventures Into The Heart Of Africa</p>
+  </div>
+  <div style="padding:32px 24px;background:#fff">
+    <h2 style="color:#0D5E4F">Enquiry Received ✓</h2>
+    <p>Dear {client_name},</p>
+    <p>Thank you for your enquiry. We have received your request and one of our safari specialists will be in touch within <strong>24 hours</strong>.</p>
+    <table style="width:100%;border-collapse:collapse;margin:20px 0">
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold;width:40%">Booking Reference</td><td style="padding:10px;color:#0D5E4F;font-weight:bold">{booking_ref}</td></tr>
+      <tr><td style="padding:10px;font-weight:bold">Travel Dates</td><td style="padding:10px">{travel_dates}</td></tr>
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold">Guests</td><td style="padding:10px">{pax} people</td></tr>
+      <tr><td style="padding:10px;font-weight:bold">Destinations</td><td style="padding:10px">{destinations}</td></tr>
+    </table>
+    <p>We will craft a personalised itinerary based on your interests and budget.</p>
+    <div style="background:#f4f6f5;padding:16px;border-radius:8px;margin-top:20px">
+      <p style="margin:0;font-size:13px;color:#6b7e79">Questions? Reply to this email or WhatsApp us. Please quote your reference <strong>{booking_ref}</strong> in all communications.</p>
+    </div>
+  </div>
+  <div style="padding:16px 24px;background:#0D5E4F;text-align:center">
+    <p style="color:#fff;font-size:12px;margin:0">The Rift Valley Explorer · Uganda & Rwanda Safari Specialists</p>
+  </div>
+</body></html>
+"""
+
+QUOTATION_EMAIL_TEMPLATE = """
+<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a2e29">
+  <div style="background:#0D5E4F;padding:24px;text-align:center">
+    <h1 style="color:#C8963E;margin:0;font-size:24px">TRVE Booking Hub</h1>
+    <p style="color:#fff;margin:8px 0 0;font-size:14px">Safari Quotation</p>
+  </div>
+  <div style="padding:32px 24px;background:#fff">
+    <h2 style="color:#0D5E4F">Your Safari Quotation</h2>
+    <p>Dear {client_name},</p>
+    <p>Please find your personalised safari quotation attached as a PDF. We have designed this itinerary specifically for you.</p>
+    <table style="width:100%;border-collapse:collapse;margin:20px 0">
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold;width:40%">Quotation Reference</td><td style="padding:10px;color:#0D5E4F;font-weight:bold">{quotation_id}</td></tr>
+      <tr><td style="padding:10px;font-weight:bold">Total (USD)</td><td style="padding:10px;font-size:18px;font-weight:bold;color:#0D5E4F">${total_usd}</td></tr>
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold">Valid Until</td><td style="padding:10px;color:#dc2626">{expires_at}</td></tr>
+    </table>
+    <div style="background:#fffbeb;border:1px solid #fef3c7;border-left:3px solid #d97706;padding:12px 16px;border-radius:6px;margin:16px 0">
+      <p style="margin:0;font-size:13px;color:#d97706"><strong>⚠️ Price Validity:</strong> Prices are subject to confirmation within 7 days due to fuel price and exchange rate fluctuations.</p>
+    </div>
+    <p>To confirm your booking, please reply to this email or contact your safari specialist directly.</p>
+    <p>A 30% deposit is required to secure your reservation.</p>
+  </div>
+  <div style="padding:16px 24px;background:#0D5E4F;text-align:center">
+    <p style="color:#fff;font-size:12px;margin:0">The Rift Valley Explorer · Uganda & Rwanda Safari Specialists</p>
+  </div>
+</body></html>
+"""
 
 # ---------------------------------------------------------------------------
 # Lodge seed data
@@ -1532,7 +1633,7 @@ def health():
 @app.get("/api/config")
 def get_config():
     CONFIG["last_updated"] = datetime.now().isoformat()
-    return CONFIG
+    return {**CONFIG, "email_enabled": EMAIL_CONFIG["enabled"]}
 
 
 @app.patch("/api/config")
@@ -2228,6 +2329,42 @@ def generate_quotation(body: QuotationRequest):
             body.booking_ref or "", body.valid_days or 14,
             datetime.now().isoformat(), json.dumps(body.pricing_data), "draft"
         ))
+
+    # Send quotation PDF to client by email (only when email is configured)
+    if EMAIL_CONFIG["enabled"] and body.client_email and "@" in body.client_email:
+        from datetime import timedelta
+        pricing = body.pricing_data or {}
+        total_usd = pricing.get("grand_total_usd", 0) if isinstance(pricing, dict) else 0
+        expires_dt = (datetime.now() + timedelta(days=body.valid_days or 14)).strftime("%d %B %Y")
+        html = QUOTATION_EMAIL_TEMPLATE.format(
+            client_name=body.client_name,
+            quotation_id=qid,
+            total_usd=f"{total_usd:,.2f}" if total_usd else "See attached",
+            expires_at=expires_dt,
+        )
+        # Attempt to attach PDF
+        try:
+            from fpdf import FPDF  # noqa: F401
+            q_doc = {
+                "quotation_id": qid,
+                "client_name": body.client_name,
+                "client_email": body.client_email,
+                "booking_ref": body.booking_ref or qid,
+                "valid_days": body.valid_days or 14,
+                "created_at": datetime.now().isoformat(),
+                "pricing_data": body.pricing_data or {},
+            }
+            pdf_bytes = generate_quotation_pdf(q_doc)
+            attachments = [(f"TRVE_Quotation_{qid}.pdf", pdf_bytes)]
+        except (ModuleNotFoundError, Exception):
+            attachments = None
+        send_email_async(
+            body.client_email,
+            f"Your TRVE Safari Quotation — {qid}",
+            html,
+            attachments=attachments,
+        )
+
     return {
         "id": qid,
         "quotation_id": qid,
@@ -2780,6 +2917,81 @@ def export_enquiries_csv(status: str = Query(None), coordinator: str = Query(Non
     filename = f"TRVE_Pipeline_{datetime.now().strftime('%Y-%m-%d')}.csv"
     return StreamingResponse(
         io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@app.get("/api/enquiries/export.csv")
+def export_enquiries_csv_v2():
+    """Export all enquiries as a downloadable CSV file."""
+    import csv
+    import io
+    with db_session() as conn:
+        rows = conn.execute("SELECT * FROM enquiries ORDER BY booking_ref").fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header row
+    writer.writerow([
+        "Booking Ref", "Date", "Client Name", "Email", "Phone", "Country",
+        "Nationality Tier", "Channel", "Agent", "Tour Type", "PAX",
+        "Start Date", "End Date", "Duration (Days)", "Status", "Coordinator",
+        "Budget Range", "Destinations", "Interests", "Quoted USD",
+        "Revenue USD", "Balance USD", "Payment Status", "Special Requests",
+        "Notes", "Last Updated", "Synced"
+    ])
+
+    for r in rows:
+        d = dict(r)
+        # Parse JSON fields for CSV
+        interests = d.get("interests", "")
+        try:
+            interests = ", ".join(json.loads(interests)) if interests else ""
+        except Exception:
+            pass
+        destinations = d.get("destinations_requested", "")
+        try:
+            if destinations.startswith("["):
+                destinations = ", ".join(json.loads(destinations))
+        except Exception:
+            pass
+
+        writer.writerow([
+            d.get("booking_ref", ""),
+            d.get("inquiry_date", ""),
+            d.get("client_name", ""),
+            d.get("email", ""),
+            d.get("phone", ""),
+            d.get("country", ""),
+            d.get("nationality_tier", ""),
+            d.get("channel", ""),
+            d.get("agent_name", ""),
+            d.get("tour_type", ""),
+            d.get("pax", ""),
+            d.get("travel_start_date", ""),
+            d.get("travel_end_date", ""),
+            d.get("duration_days", ""),
+            d.get("status", ""),
+            d.get("coordinator", ""),
+            d.get("budget_range", ""),
+            destinations,
+            interests,
+            d.get("quoted_usd", ""),
+            d.get("revenue_usd", ""),
+            d.get("balance_usd", ""),
+            d.get("payment_status", ""),
+            d.get("special_requests", ""),
+            d.get("internal_flags", ""),
+            d.get("last_updated", ""),
+            "Yes" if d.get("synced") else "No",
+        ])
+
+    csv_content = output.getvalue()
+    filename = f"TRVE_Pipeline_{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content=csv_content,
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
