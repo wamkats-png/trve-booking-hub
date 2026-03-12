@@ -1863,7 +1863,7 @@
             document.getElementById('pricingVehicleDays').value = itn.vehicle_days || Math.max(1, (itn.duration_days || 7) - 1);
           }
           // Auto-check permits based on itinerary destinations/activities
-          const activities = (itn.activities || itn.highlights || []).join(' ').toLowerCase();
+          const activities = [].concat(itn.activities || itn.highlights || []).join(' ').toLowerCase();
           const dests = (itn.destinations || []).join(' ').toLowerCase();
           const combined = activities + ' ' + dests + ' ' + (itn.name || '').toLowerCase();
 
