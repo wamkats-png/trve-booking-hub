@@ -3833,6 +3833,11 @@
             <div>
               <div style="font-weight:600; font-size:var(--text-base); color:var(--text-primary); margin-bottom:2px;">Connected to Operations Hub</div>
               <div style="font-size:var(--text-sm); color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(spreadsheet)}</div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
+                Push (system → Sheets): fully operational &middot;
+                Pull (Sheets → system): requires
+                <code style="font-size:9px;background:var(--bg-subtle);padding:1px 4px;border-radius:3px">GOOGLE_SHEETS_TOKEN</code> env var
+              </div>
             </div>
           </div>
           <div style="display:flex; gap:var(--space-6);">
@@ -3908,8 +3913,45 @@
       if (!sel.value) { toast('warning', 'Select a quotation first'); return; }
       syncPushQuotation(sel.value);
     });
-    document.getElementById('btnRefreshFromSheets').addEventListener('click', () => {
-      toast('info', 'Refresh from Sheets', 'Hydrate operation is not yet configured.');
+    document.getElementById('btnRefreshFromSheets').addEventListener('click', async () => {
+      const btn = document.getElementById('btnRefreshFromSheets');
+      if (btn) { btn.classList.add('loading'); btn.disabled = true; }
+      try {
+        const result = await apiFetch('/api/sync/refresh-from-sheets', { method: 'POST' });
+        toast('success', 'Sheets refreshed', result.message || `Pulled ${result.rows_fetched} rows`);
+        _refreshSyncPanel();
+      } catch (err) {
+        // Parse structured error from backend
+        let detail = err.message || 'Unknown error';
+        let howToFix = null;
+        try {
+          const parsed = JSON.parse(err.message);
+          detail = parsed.message || detail;
+          howToFix = parsed.how_to_fix;
+        } catch (_) { /* plain string */ }
+
+        const fixHtml = howToFix
+          ? `<div style="margin-top:8px;font-size:var(--text-xs);color:var(--text-muted)">${howToFix.join('<br>')}</div>`
+          : '';
+
+        // Show a clear, persistent error in the sync panel
+        const actionsCard = document.getElementById('syncActionsCard');
+        if (actionsCard) {
+          let errDiv = document.getElementById('syncSheetsError');
+          if (!errDiv) {
+            errDiv = document.createElement('div');
+            errDiv.id = 'syncSheetsError';
+            errDiv.style.cssText = 'margin:var(--space-4) var(--space-6);padding:var(--space-4);background:var(--danger-subtle,#fef2f2);border:1px solid var(--danger);border-radius:var(--radius-md);font-size:var(--text-sm)';
+            actionsCard.querySelector('.card-body')?.appendChild(errDiv);
+          }
+          errDiv.innerHTML = `<strong style="color:var(--danger)">Sheets Sync failed.</strong> ${escapeHtml(detail)}${fixHtml}
+            <button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px;font-size:10px" onclick="document.getElementById('syncSheetsError').remove()">Dismiss</button>`;
+        }
+        toast('error', 'Sheets Sync failed', detail.slice(0, 120));
+      } finally {
+        if (btn) { btn.classList.remove('loading'); btn.disabled = false; }
+        _refreshSyncPanel();
+      }
     });
   }
 
@@ -4619,7 +4661,14 @@
 
   let activeBankTab = 'stanbic';
 
-  function initToolsView() {
+  // ── State for market data (loaded once per tools-view visit) ─────────────
+  const _mktState = {
+    fx:    null,   // last fetched FX response
+    fees:  null,   // last fetched bank-fee benchmarks
+    fuel:  null,   // last fetched fuel benchmarks
+  };
+
+  async function initToolsView() {
     renderBankTxTypes();
     renderBankRefTable();
 
@@ -4635,9 +4684,202 @@
       document.getElementById('gtAuditLog').innerHTML = '<div style="color:var(--text-muted);font-style:italic">No calculations yet.</div>';
     });
 
+    // Load market data and benchmark defaults
+    document.getElementById('btnRefreshMarketData')?.addEventListener('click', () => _loadMarketData(true));
+    document.getElementById('btnLoadBenchmark')?.addEventListener('click', _applyBenchmarkDefaults);
+
+    await _loadMarketData(false);
+    _watchTransferOverrides();
+
     // Load existing audit log from backend
     _loadTransferAuditLog();
   }
+
+  // ── Market data loader ────────────────────────────────────────────────────
+  async function _loadMarketData(force) {
+    const qs = force ? '?force_refresh=true' : '';
+    const [fxRes, feesRes, fuelRes] = await Promise.allSettled([
+      apiFetch(`/api/market-data/fx${qs}`),
+      apiFetch('/api/market-data/bank-fees'),
+      apiFetch(`/api/market-data/fuel${qs}`),
+    ]);
+    _mktState.fx   = fxRes.status   === 'fulfilled' ? fxRes.value   : null;
+    _mktState.fees = feesRes.status === 'fulfilled' ? feesRes.value : null;
+    _mktState.fuel = fuelRes.status === 'fulfilled' ? fuelRes.value : null;
+
+    _renderMarketDataPanel();
+    _autoFillTransferFields();
+  }
+
+  function _renderMarketDataPanel() {
+    const container = document.getElementById('marketDataRows');
+    if (!container) return;
+
+    const rows = [];
+
+    // Exchange rate row
+    if (_mktState.fx) {
+      const fx = _mktState.fx;
+      const staleClass  = fx.is_stale  ? 'color:var(--danger)'  : 'color:var(--success)';
+      const staleBadge  = fx.is_stale  ? '<span style="font-size:9px;background:var(--danger);color:#fff;padding:1px 5px;border-radius:3px;margin-left:6px">STALE</span>' : '<span style="font-size:9px;background:var(--success);color:#fff;padding:1px 5px;border-radius:3px;margin-left:6px">LIVE</span>';
+      const overrideBadge = fx.is_overridden ? `<span style="font-size:9px;background:var(--gold-600,#b45309);color:#fff;padding:1px 5px;border-radius:3px;margin-left:6px">OVERRIDE</span>` : '';
+      rows.push(`
+        <div style="display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:start;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;padding-top:2px">USD/UGX</div>
+          <div>
+            <div style="display:flex;align-items:center;gap:4px">
+              <span style="font-family:var(--font-mono);font-size:var(--text-lg);font-weight:700;${staleClass}">${fmtNum(fx.rate)}</span>
+              ${staleBadge}${overrideBadge}
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">
+              Source: ${escapeHtml(fx.source || '—')} &middot; Updated: ${fx.fetched_at ? new Date(fx.fetched_at).toLocaleString() : '—'}
+              ${fx.age_hours > 0 ? ` &middot; ${fx.age_hours}h ago` : ''}
+            </div>
+            ${fx.is_stale ? `<div style="font-size:10px;color:var(--danger);margin-top:2px">⚠ Rate is more than 24 hours old — click Refresh to update</div>` : ''}
+          </div>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px;height:24px" onclick="window.TRVE._mktOverride('fx_usd_ugx','USD/UGX exchange rate')">Override</button>
+            ${fx.is_overridden ? `<button type="button" class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px;height:24px;color:var(--danger)" onclick="window.TRVE._mktClearOverride('fx_usd_ugx')">Revert</button>` : ''}
+          </div>
+        </div>`);
+    } else {
+      rows.push(`<div style="padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);font-size:var(--text-xs);color:var(--danger)">
+        ⚠ Exchange rate unavailable — using fallback value. Check network connection.
+      </div>`);
+    }
+
+    // Bank fee benchmarks row
+    if (_mktState.fees && _mktState.fees.recommended_defaults) {
+      const f = _mktState.fees;
+      const d = f.recommended_defaults;
+      rows.push(`
+        <div style="display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:start;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;padding-top:2px">Bank Fees</div>
+          <div>
+            <div style="font-family:var(--font-mono);font-size:var(--text-sm);font-weight:600;color:var(--text-primary)">
+              Recv $${d.receiving_flat_usd} flat · Corr $${d.intermediary_usd} · Sender $${d.sender_flat_usd}
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">
+              Source: ${escapeHtml(f.source || '—')} &middot; Updated: ${f.fetched_at ? new Date(f.fetched_at).toLocaleString() : '—'}
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${escapeHtml(d.rationale || '')}</div>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px;height:24px" id="btnLoadBenchmarkInRow">Apply</button>
+        </div>`);
+    }
+
+    // Fuel benchmark row
+    if (_mktState.fuel) {
+      const fuel = _mktState.fuel;
+      const staleClass = fuel.is_stale ? 'color:var(--danger)' : 'color:var(--text-primary)';
+      rows.push(`
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;padding:10px 12px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;padding-top:2px">Fuel</div>
+          <div>
+            <div style="font-family:var(--font-mono);font-size:var(--text-sm);font-weight:600;${staleClass}">
+              Petrol $${fuel.petrol_usd_per_litre}/L · Diesel $${fuel.diesel_usd_per_litre}/L
+              <span style="font-size:10px;font-weight:400;color:var(--text-muted)">(UGX ${fmtNum(fuel.petrol_ugx_per_litre)} / ${fmtNum(fuel.diesel_ugx_per_litre)})</span>
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">
+              Source: ${escapeHtml(fuel.source || '—')} &middot; Updated: ${fuel.fetched_at ? new Date(fuel.fetched_at).toLocaleString() : '—'}
+              ${fuel.age_days ? ` &middot; ${fuel.age_days}d ago` : ''}
+            </div>
+            ${fuel.is_stale ? `<div style="font-size:10px;color:var(--danger);margin-top:2px">⚠ Fuel price is more than 7 days old — click Refresh to update</div>` : ''}
+          </div>
+        </div>`);
+    }
+
+    container.innerHTML = rows.join('');
+
+    // Wire Apply button inside row
+    document.getElementById('btnLoadBenchmarkInRow')?.addEventListener('click', _applyBenchmarkDefaults);
+  }
+
+  function _autoFillTransferFields() {
+    // Auto-populate exchange rate from live FX if field is empty
+    const xRateEl   = document.getElementById('gtExchangeRate');
+    const xBadgeEl  = document.getElementById('gtExRateBadge');
+    const xSourceEl = document.getElementById('gtExRateSource');
+    if (_mktState.fx && xRateEl && !xRateEl.value) {
+      // Only auto-fill when the client currency field is empty (i.e. not using conversion)
+      // Leave blank — user may want UGX or another currency; just show live rate context
+    }
+    if (_mktState.fx && xSourceEl) {
+      xSourceEl.textContent = `Live USD/UGX: ${fmtNum(_mktState.fx.rate)} · ${_mktState.fx.source || ''}`;
+    }
+
+    // Auto-populate benchmark fee source label
+    const srcEl = document.getElementById('gtBenchmarkSource');
+    if (srcEl && _mktState.fees) {
+      srcEl.textContent = `${_mktState.fees.source || 'Benchmark data'} · ${_mktState.fees.fetched_at ? new Date(_mktState.fees.fetched_at).toLocaleDateString() : ''}`;
+    } else if (srcEl) {
+      srcEl.textContent = 'Loading…';
+    }
+  }
+
+  function _applyBenchmarkDefaults() {
+    if (!_mktState.fees || !_mktState.fees.recommended_defaults) {
+      toast('warning', 'No benchmark data', 'Market data is still loading. Try again in a moment.');
+      return;
+    }
+    const d = _mktState.fees.recommended_defaults;
+    const fields = {
+      gtReceivingFlat: d.receiving_flat_usd,
+      gtReceivingPct:  d.receiving_pct,
+      gtIntermediary:  d.intermediary_usd,
+      gtSenderPct:     d.sender_pct,
+      gtSenderFlat:    d.sender_flat_usd,
+    };
+    Object.entries(fields).forEach(([id, val]) => {
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+      const badge = document.querySelector(`.gt-auto-badge[data-field="${id}"]`);
+      if (badge) badge.style.display = '';
+    });
+    toast('success', 'Fee defaults loaded', `${_mktState.fees.source || 'Benchmarks'} applied`);
+  }
+
+  // Mark any auto-filled field as manually overridden when user edits it
+  function _watchTransferOverrides() {
+    ['gtReceivingFlat','gtReceivingPct','gtIntermediary','gtSenderPct','gtSenderFlat'].forEach(id => {
+      document.getElementById(id)?.addEventListener('input', function() {
+        const badge = document.querySelector(`.gt-auto-badge[data-field="${id}"]`);
+        if (badge && badge.style.display !== 'none') {
+          badge.style.background = 'var(--gold-600,#b45309)';
+          badge.textContent = 'override';
+        }
+      });
+    });
+  }
+
+  // ── Override helpers (exposed for onclick in rendered HTML) ───────────────
+  async function _mktOverride(key, label) {
+    const current = key === 'fx_usd_ugx' && _mktState.fx ? _mktState.fx.rate : '';
+    const val = prompt(`Override ${label}\n\nEnter new value (current auto-fetched: ${current}):`, current);
+    if (val === null || val === '') return;
+    const num = parseFloat(val);
+    if (isNaN(num)) { toast('warning', 'Invalid value', 'Please enter a number'); return; }
+    const by = prompt('Your name (for audit trail):') || 'unknown';
+    try {
+      await apiFetch('/api/market-data/override', { method: 'POST', body: { key, override_value: num, override_by: by } });
+      toast('success', 'Override saved', `${label} set to ${num} by ${by}`);
+      await _loadMarketData(false);
+    } catch (e) {
+      toast('error', 'Override failed', e.message);
+    }
+  }
+  window.TRVE._mktOverride = _mktOverride;
+
+  async function _mktClearOverride(key) {
+    try {
+      await apiFetch(`/api/market-data/override/${key}`, { method: 'DELETE' });
+      toast('info', 'Override removed', 'Reverting to auto-fetched value');
+      await _loadMarketData(false);
+    } catch (e) {
+      toast('error', 'Revert failed', e.message);
+    }
+  }
+  window.TRVE._mktClearOverride = _mktClearOverride;
 
   async function runTransferGrossUp() {
     const invTotal = parseFloat(document.getElementById('gtInvoiceTotal').value);
@@ -4652,6 +4894,20 @@
       toast('warning', 'Confirmation required', 'Enter your name to confirm the fee assumptions');
       document.getElementById('gtApprovedBy').focus();
       return;
+    }
+
+    // Freshness check: warn if market data is stale
+    if (_mktState.fx && _mktState.fx.is_stale) {
+      const go = confirm('Exchange rate data is more than 24 hours old.\n\nClick OK to force a refresh before calculating, or Cancel to proceed with stale data.');
+      if (go) {
+        await _loadMarketData(true);
+        if (_mktState.fx && _mktState.fx.is_stale) {
+          toast('warning', 'Still stale', 'Could not refresh rate. Proceeding with cached value.');
+        }
+      }
+    }
+    if (_mktState.fuel && _mktState.fuel.is_stale) {
+      toast('warning', 'Fuel prices outdated', 'Fuel benchmark data is more than 7 days old. Refresh market data for updated prices.');
     }
 
     const payload = {

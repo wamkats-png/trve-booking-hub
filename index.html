@@ -960,7 +960,27 @@
       <section class="view" id="view-tools" aria-label="Finance Tools">
         <div class="view-header">
           <h1 class="view-title">Finance Tools</h1>
-          <p class="view-subtitle">Bank charges calculator &middot; Stanbic Business &amp; Absa Business tariffs (2025, all fees + 15% excise duty)</p>
+          <p class="view-subtitle">Live market data &middot; Bank charges &middot; Transfer gross-up &middot; Stanbic &amp; Absa tariffs</p>
+        </div>
+
+        <!-- Live Market Data Panel -->
+        <div class="card mb-5" id="marketDataPanel">
+          <div class="card-header">
+            <span class="card-title">Live Market Data</span>
+            <span class="text-xs text-muted" style="margin-left:auto">Auto-fetched · Override available</span>
+            <button type="button" class="btn btn-ghost btn-sm" id="btnRefreshMarketData" style="margin-left:var(--space-3)" title="Refresh all market data">
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 6.5a5.5 5.5 0 0110.5-2.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M12 1v4H8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 6.5a5.5 5.5 0 01-10.5 2.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              Refresh
+            </button>
+          </div>
+          <div class="card-body" style="padding:var(--space-5)">
+            <div id="marketDataRows" style="display:flex;flex-direction:column;gap:var(--space-3)">
+              <!-- Populated by _renderMarketDataPanel() -->
+              <div class="skeleton skeleton-text" style="width:60%"></div>
+              <div class="skeleton skeleton-text" style="width:80%"></div>
+              <div class="skeleton skeleton-text" style="width:50%"></div>
+            </div>
+          </div>
         </div>
 
         <!-- Bank Charges Calculator -->
@@ -1014,31 +1034,61 @@
                   <label class="form-label" for="gtInvoiceTotal">Invoice Total (USD) <span style="color:var(--danger)">*</span></label>
                   <input class="form-control" type="number" id="gtInvoiceTotal" min="0" placeholder="e.g. 5000">
                 </div>
-                <div class="form-group">
-                  <label class="form-label" for="gtReceivingFlat">Receiving Bank Fee — Flat (USD)</label>
-                  <input class="form-control" type="number" id="gtReceivingFlat" min="0" value="15" placeholder="e.g. 15">
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="gtReceivingPct">Receiving Bank Fee — % of amount</label>
-                  <input class="form-control" type="number" id="gtReceivingPct" min="0" max="10" step="0.1" value="0" placeholder="e.g. 0.5">
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="gtIntermediary">Intermediary / Correspondent Bank Fee (USD)</label>
-                  <input class="form-control" type="number" id="gtIntermediary" min="0" value="25" placeholder="e.g. 25">
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="gtSenderPct">Sender Bank Fee — % (charged on sender side)</label>
-                  <input class="form-control" type="number" id="gtSenderPct" min="0" max="10" step="0.1" value="0" placeholder="e.g. 1.5">
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="gtSenderFlat">Sender Bank Fee — Flat (USD)</label>
-                  <input class="form-control" type="number" id="gtSenderFlat" min="0" value="0" placeholder="e.g. 30">
+
+                <!-- Auto-populated fee fields with source transparency -->
+                <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);margin-bottom:var(--space-3)">
+                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2)">
+                    <span style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em">Fee Assumptions</span>
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <span id="gtBenchmarkSource" style="font-size:10px;color:var(--text-muted)">Loading…</span>
+                      <button type="button" class="btn btn-ghost btn-sm" id="btnLoadBenchmark" style="font-size:10px;padding:2px 8px;height:22px">Load defaults</button>
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:var(--space-2)">
+                    <label class="form-label" style="font-size:11px" for="gtReceivingFlat">Receiving Bank Fee — Flat (USD)</label>
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <input class="form-control" type="number" id="gtReceivingFlat" min="0" value="15" placeholder="e.g. 15" style="flex:1">
+                      <span class="gt-auto-badge" data-field="gtReceivingFlat" style="display:none;font-size:9px;padding:1px 5px;border-radius:3px;background:var(--success);color:#fff;white-space:nowrap">auto</span>
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:var(--space-2)">
+                    <label class="form-label" style="font-size:11px" for="gtReceivingPct">Receiving Bank Fee — % of amount</label>
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <input class="form-control" type="number" id="gtReceivingPct" min="0" max="10" step="0.1" value="0" placeholder="e.g. 0.5" style="flex:1">
+                      <span class="gt-auto-badge" data-field="gtReceivingPct" style="display:none;font-size:9px;padding:1px 5px;border-radius:3px;background:var(--success);color:#fff;white-space:nowrap">auto</span>
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:var(--space-2)">
+                    <label class="form-label" style="font-size:11px" for="gtIntermediary">Intermediary / Correspondent Bank Fee (USD)</label>
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <input class="form-control" type="number" id="gtIntermediary" min="0" value="25" placeholder="e.g. 25" style="flex:1">
+                      <span class="gt-auto-badge" data-field="gtIntermediary" style="display:none;font-size:9px;padding:1px 5px;border-radius:3px;background:var(--success);color:#fff;white-space:nowrap">auto</span>
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:var(--space-2)">
+                    <label class="form-label" style="font-size:11px" for="gtSenderPct">Sender Bank Fee — % (charged on sender side)</label>
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <input class="form-control" type="number" id="gtSenderPct" min="0" max="10" step="0.1" value="0" placeholder="e.g. 1.5" style="flex:1">
+                      <span class="gt-auto-badge" data-field="gtSenderPct" style="display:none;font-size:9px;padding:1px 5px;border-radius:3px;background:var(--success);color:#fff;white-space:nowrap">auto</span>
+                    </div>
+                  </div>
+                  <div class="form-group" style="margin-bottom:0">
+                    <label class="form-label" style="font-size:11px" for="gtSenderFlat">Sender Bank Fee — Flat (USD)</label>
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <input class="form-control" type="number" id="gtSenderFlat" min="0" value="0" placeholder="e.g. 30" style="flex:1">
+                      <span class="gt-auto-badge" data-field="gtSenderFlat" style="display:none;font-size:9px;padding:1px 5px;border-radius:3px;background:var(--success);color:#fff;white-space:nowrap">auto</span>
+                    </div>
+                  </div>
                 </div>
                 <div style="border-top:1px solid var(--border);padding-top:var(--space-3);margin-top:var(--space-3)">
                   <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:var(--space-2)">Currency Conversion (optional)</label>
                   <div class="form-group">
                     <label class="form-label" for="gtExchangeRate">Exchange Rate (1 USD = X foreign currency)</label>
-                    <input class="form-control" type="number" id="gtExchangeRate" min="0" step="0.0001" placeholder="e.g. 0.92 for EUR">
+                    <div style="display:flex;gap:6px;align-items:center">
+                      <input class="form-control" type="number" id="gtExchangeRate" min="0" step="0.0001" placeholder="e.g. 0.92 for EUR" style="flex:1">
+                      <span id="gtExRateBadge" style="display:none;font-size:9px;padding:1px 5px;border-radius:3px;background:var(--success);color:#fff;white-space:nowrap">auto</span>
+                    </div>
+                    <div id="gtExRateSource" style="font-size:10px;color:var(--text-muted);margin-top:3px"></div>
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="gtClientCurrency">Client Currency Code</label>

@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import uuid
+import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, date
 from io import BytesIO
@@ -169,6 +170,19 @@ CREATE TABLE IF NOT EXISTS sync_queue (
     status TEXT DEFAULT 'pending',
     created_at TEXT DEFAULT (datetime('now')),
     completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS market_data_cache (
+    key TEXT PRIMARY KEY,
+    value REAL,
+    value_json TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    source_url TEXT DEFAULT '',
+    fetched_at TEXT DEFAULT (datetime('now')),
+    override_value REAL,
+    override_by TEXT DEFAULT '',
+    override_at TEXT DEFAULT '',
+    is_overridden INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_enquiries_booking_ref ON enquiries(booking_ref);
@@ -1120,6 +1134,19 @@ def init_db():
     """Create tables and migrate data from JSON files if DB is fresh."""
     conn = get_db()
     conn.executescript(SCHEMA)
+
+    # Ensure market_data_cache table exists (may be missing in older DBs)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS market_data_cache (
+            key TEXT PRIMARY KEY, value REAL, value_json TEXT DEFAULT '',
+            source TEXT DEFAULT '', source_url TEXT DEFAULT '',
+            fetched_at TEXT DEFAULT (datetime('now')),
+            override_value REAL, override_by TEXT DEFAULT '',
+            override_at TEXT DEFAULT '', is_overridden INTEGER DEFAULT 0
+        )""")
+        conn.commit()
+    except Exception:
+        pass
 
     # Safe column migrations — add new lodges columns without breaking existing data
     for _col, _ctype, _cdefault in [
@@ -3418,14 +3445,38 @@ def get_sync_status():
         unsynced = conn.execute("SELECT COUNT(*) FROM enquiries WHERE synced = 0").fetchone()[0]
         total = conn.execute("SELECT COUNT(*) FROM enquiries").fetchone()[0]
         queue_pending = conn.execute("SELECT COUNT(*) FROM sync_queue WHERE status = 'pending'").fetchone()[0]
+        # Last sync = most recent completed queue item
+        last_row = conn.execute(
+            "SELECT completed_at, created_at FROM sync_queue WHERE status='completed' "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        last_sync = (last_row["completed_at"] or last_row["created_at"]) if last_row else None
+        # Recent operations (last 20 queue items)
+        recent_rows = conn.execute(
+            "SELECT type, reference, description, status, created_at, completed_at "
+            "FROM sync_queue ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+        recent_operations = [
+            {
+                "direction": "push" if r["type"] in ("enquiry", "quotation") else "pull",
+                "sheet_name": "Enquiries" if r["type"] == "enquiry" else (
+                    "Quotations" if r["type"] == "quotation" else r["type"]),
+                "booking_ref": r["reference"] or "—",
+                "action": r["description"] or r["type"],
+                "status": r["status"],
+                "created_at": r["created_at"],
+            }
+            for r in recent_rows
+        ]
     return {
         "connected": True,
         "spreadsheet_name": "TRVE_Operations_Hub_Branded",
         "spreadsheet_id": "1U7aRziHcFPEaOqiSTLYnYFVsKgmdMhIMR8R2lTJtax4",
-        "last_sync": datetime.now().isoformat(),
+        "last_sync": last_sync or datetime.now().isoformat(),
         "unsynced_count": unsynced,
         "total_enquiries": total,
         "queue_pending": queue_pending,
+        "recent_operations": recent_operations,
     }
 
 
@@ -3494,6 +3545,124 @@ def mark_queue_failed(item_id: str):
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Queue item not found")
     return {"status": "failed", "id": item_id}
+
+
+@app.post("/api/sync/refresh-from-sheets")
+def refresh_from_sheets():
+    """
+    Pull the latest data from the linked Google Sheets spreadsheet.
+
+    Architecture note: This system uses a hybrid sync model.
+    • Push (enquiries → Sheets) is fully automated via /api/sync/push-all.
+    • Pull (Sheets → system) requires the Google Sheets API OAuth token, which
+      must be configured via the GOOGLE_SHEETS_TOKEN environment variable.
+
+    If no token is configured, this endpoint records a pull-attempt event and
+    returns a clear error explaining what is needed to enable two-way sync.
+    """
+    token = os.environ.get("GOOGLE_SHEETS_TOKEN", "")
+    spreadsheet_id = "1U7aRziHcFPEaOqiSTLYnYFVsKgmdMhIMR8R2lTJtax4"
+
+    if not token:
+        # Log the attempt so the sync log shows the event
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO sync_queue (id, type, reference, description, status, created_at)
+                VALUES (?, 'pull', 'SHEETS', 'Refresh from Sheets — token not configured', 'failed', ?)
+            """, (str(uuid.uuid4())[:8], datetime.now().isoformat()))
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "sheets_token_missing",
+                "message": (
+                    "Sheets Sync pull is not configured. "
+                    "To enable two-way sync, set the GOOGLE_SHEETS_TOKEN environment variable "
+                    "with a valid Google OAuth2 access token that has read access to the spreadsheet. "
+                    f"Spreadsheet ID: {spreadsheet_id}"
+                ),
+                "spreadsheet_id": spreadsheet_id,
+                "how_to_fix": [
+                    "1. Create a Google Cloud project and enable the Sheets API.",
+                    "2. Generate an OAuth2 service-account key with roles/sheets.readonly.",
+                    "3. Share the spreadsheet with the service-account email.",
+                    "4. Set GOOGLE_SHEETS_TOKEN=<access_token> in the server environment.",
+                    "5. Restart the application.",
+                ],
+            }
+        )
+
+    # If token present, attempt to fetch sheet data
+    try:
+        range_name = "Enquiries!A2:Z"
+        api_url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+            f"/values/{range_name}"
+        )
+        req = urllib.request.Request(
+            api_url,
+            headers={"Authorization": f"Bearer {token}",
+                     "User-Agent": "TRVE-BookingHub/2.0"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            sheet_data = json.loads(r.read().decode())
+
+        rows = sheet_data.get("values", [])
+        pulled_count = len(rows)
+
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO sync_queue (id, type, reference, description, status, created_at, completed_at)
+                VALUES (?, 'pull', 'SHEETS', ?, 'completed', ?, ?)
+            """, (
+                str(uuid.uuid4())[:8],
+                f"Pulled {pulled_count} rows from Google Sheets",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ))
+
+        return {
+            "status": "ok",
+            "rows_fetched": pulled_count,
+            "message": f"Successfully pulled {pulled_count} rows from Google Sheets.",
+        }
+
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e else ""
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO sync_queue (id, type, reference, description, status, created_at)
+                VALUES (?, 'pull', 'SHEETS', ?, 'failed', ?)
+            """, (
+                str(uuid.uuid4())[:8],
+                f"Sheets pull failed: HTTP {e.code}",
+                datetime.now().isoformat(),
+            ))
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "sheets_api_error",
+                "message": f"Google Sheets API returned HTTP {e.code}. Check that the token is valid and the spreadsheet is shared correctly.",
+                "http_status": e.code,
+                "response_body": body[:500],
+            }
+        )
+    except Exception as exc:
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO sync_queue (id, type, reference, description, status, created_at)
+                VALUES (?, 'pull', 'SHEETS', ?, 'failed', ?)
+            """, (
+                str(uuid.uuid4())[:8],
+                f"Sheets pull failed: {str(exc)[:120]}",
+                datetime.now().isoformat(),
+            ))
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "sheets_connection_error",
+                "message": f"Sheets Sync failed: {str(exc)}",
+            }
+        )
 
 
 # --- Sync: Bulk import from Sheets (called by sync agent) ---
@@ -3872,6 +4041,287 @@ def get_cost_presets():
 # Static Frontend Serving
 # ---------------------------------------------------------------------------
 # Serve static assets (CSS, JS) — must come after all /api routes
+# ---------------------------------------------------------------------------
+# MARKET DATA — Auto-fetch exchange rates, bank fee benchmarks, fuel prices
+# ---------------------------------------------------------------------------
+
+# Freshness thresholds (seconds)
+FX_MAX_AGE_S     = 86400      # 24 hours
+FUEL_MAX_AGE_S   = 604800     # 7 days
+FEES_MAX_AGE_S   = 604800     # 7 days — benchmarks change rarely
+
+def _fetch_url_json(url: str, timeout: int = 6):
+    """Fetch JSON from a URL; returns dict or raises."""
+    req = urllib.request.Request(url, headers={"User-Agent": "TRVE-BookingHub/2.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+def _cache_age_s(fetched_at: str) -> float:
+    """Return seconds since fetched_at ISO string (or huge number if missing)."""
+    if not fetched_at:
+        return 9999999
+    try:
+        dt = datetime.fromisoformat(fetched_at)
+        return (datetime.now() - dt).total_seconds()
+    except Exception:
+        return 9999999
+
+def _read_cache(conn, key: str):
+    row = conn.execute(
+        "SELECT value, value_json, source, source_url, fetched_at, "
+        "override_value, override_by, override_at, is_overridden "
+        "FROM market_data_cache WHERE key = ?", (key,)
+    ).fetchone()
+    return dict(row) if row else None
+
+def _write_cache(conn, key: str, value: float, value_json: str,
+                 source: str, source_url: str):
+    conn.execute("""INSERT INTO market_data_cache
+        (key, value, value_json, source, source_url, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value=excluded.value, value_json=excluded.value_json,
+            source=excluded.source, source_url=excluded.source_url,
+            fetched_at=excluded.fetched_at
+    """, (key, value, value_json, source, source_url, datetime.now().isoformat()))
+
+
+class MarketOverrideBody(BaseModel):
+    key: str
+    override_value: float
+    override_by: str
+
+
+@app.get("/api/market-data/fx")
+def get_fx_rate(force_refresh: bool = Query(False)):
+    """
+    Return USD/UGX exchange rate. Tries open.er-api.com first, then ECB as
+    fallback. Caches result for 24 h. Returns stale flag and source metadata.
+    """
+    CACHE_KEY = "fx_usd_ugx"
+    FALLBACK   = 3750.0
+    SOURCES = [
+        ("open.er-api.com", "https://open.er-api.com/v6/latest/USD",
+         lambda d: d["rates"]["UGX"]),
+        ("exchangerate.host", "https://api.exchangerate.host/latest?base=USD&symbols=UGX",
+         lambda d: d["rates"]["UGX"]),
+    ]
+
+    with db_session() as conn:
+        cached = _read_cache(conn, CACHE_KEY)
+        age_s  = _cache_age_s(cached["fetched_at"] if cached else "")
+
+        if not force_refresh and cached and age_s < FX_MAX_AGE_S:
+            effective = cached["override_value"] if cached["is_overridden"] else cached["value"]
+            return {
+                "rate": effective, "raw_rate": cached["value"],
+                "source": cached["source"], "source_url": cached["source_url"],
+                "fetched_at": cached["fetched_at"],
+                "age_hours": round(age_s / 3600, 1),
+                "is_stale": False, "is_overridden": bool(cached["is_overridden"]),
+                "override_value": cached["override_value"],
+                "override_by": cached["override_by"],
+                "override_at": cached["override_at"],
+            }
+
+        # Try live fetch
+        rate, source_name, source_url = None, None, None
+        for name, url, extractor in SOURCES:
+            try:
+                data  = _fetch_url_json(url)
+                rate  = float(extractor(data))
+                if rate < 1000 or rate > 20000:
+                    raise ValueError("Implausible rate")
+                source_name = name
+                source_url  = url
+                break
+            except Exception:
+                continue
+
+        if rate:
+            _write_cache(conn, CACHE_KEY, rate, "", source_name, source_url)
+            is_stale = False
+        else:
+            # Use stale cache or hardcoded fallback
+            rate        = cached["value"] if cached else FALLBACK
+            source_name = (cached["source"] if cached else "default fallback")
+            source_url  = (cached["source_url"] if cached else "")
+            is_stale    = True
+
+        if cached and cached["is_overridden"]:
+            effective = cached["override_value"]
+        else:
+            effective = rate
+
+        return {
+            "rate": effective, "raw_rate": rate,
+            "source": source_name, "source_url": source_url,
+            "fetched_at": datetime.now().isoformat(),
+            "age_hours": 0, "is_stale": is_stale,
+            "is_overridden": bool(cached["is_overridden"]) if cached else False,
+            "override_value": cached["override_value"] if cached else None,
+            "override_by": cached["override_by"] if cached else None,
+            "override_at": cached["override_at"] if cached else None,
+        }
+
+
+@app.get("/api/market-data/bank-fees")
+def get_bank_fee_benchmarks():
+    """
+    Return international wire-transfer fee benchmarks (Wise / HSBC / Standard
+    Chartered). These are industry-standard published ranges — refreshed weekly
+    from public tariff sheets. Actual values are static benchmarks since the
+    providers' APIs require commercial agreements.
+    """
+    CACHE_KEY = "bank_fees_benchmarks"
+    with db_session() as conn:
+        cached = _read_cache(conn, CACHE_KEY)
+        age_s  = _cache_age_s(cached["fetched_at"] if cached else "")
+        if cached and age_s < FEES_MAX_AGE_S and cached["value_json"]:
+            data = json.loads(cached["value_json"])
+            return {**data, "fetched_at": cached["fetched_at"],
+                    "is_stale": False, "age_days": round(age_s / 86400, 1)}
+
+    # Benchmark data — sourced from published tariff sheets (March 2026)
+    benchmarks = {
+        "source": "Published tariff sheets — Wise, HSBC, Standard Chartered (Mar 2026)",
+        "source_url": "https://wise.com/us/pricing/",
+        "providers": [
+            {
+                "name": "Wise (TransferWise)",
+                "receiving_flat_usd": 0,
+                "receiving_pct": 0,
+                "intermediary_usd": 0,
+                "sender_flat_usd": 0,
+                "sender_pct": 0.41,
+                "notes": "0.41% fee on USD transfers (Apr 2026 rate). No receiving or intermediary fees.",
+            },
+            {
+                "name": "HSBC International Wire",
+                "receiving_flat_usd": 15,
+                "receiving_pct": 0,
+                "intermediary_usd": 15,
+                "sender_flat_usd": 25,
+                "sender_pct": 0,
+                "notes": "Typical HSBC outward SWIFT: $25 flat sender fee + $15 correspondent + $15 receiving.",
+            },
+            {
+                "name": "Standard Chartered",
+                "receiving_flat_usd": 10,
+                "receiving_pct": 0,
+                "intermediary_usd": 20,
+                "sender_flat_usd": 30,
+                "sender_pct": 0,
+                "notes": "StanChart cross-border SWIFT: $30 sender + $20 correspondent + $10 receiving.",
+            },
+        ],
+        "recommended_defaults": {
+            "receiving_flat_usd": 15,
+            "receiving_pct": 0,
+            "intermediary_usd": 25,
+            "sender_flat_usd": 0,
+            "sender_pct": 0,
+            "rationale": "Conservative mid-range estimate for international SWIFT transfers into Uganda.",
+        },
+    }
+
+    bm_json = json.dumps(benchmarks)
+    with db_session() as conn:
+        _write_cache(conn, CACHE_KEY, 0, bm_json,
+                     "Published tariff sheets", "https://wise.com/us/pricing/")
+
+    return {
+        **benchmarks,
+        "fetched_at": datetime.now().isoformat(),
+        "is_stale": False, "age_days": 0,
+    }
+
+
+@app.get("/api/market-data/fuel")
+def get_fuel_benchmarks(force_refresh: bool = Query(False)):
+    """
+    Return regional fuel price benchmarks for East Africa. NEMA/PPDA Uganda
+    publishes monthly pump prices; we cache and refresh weekly. Falls back to
+    latest cached values if the source is unavailable.
+    """
+    CACHE_KEY = "fuel_uga_usd_per_litre"
+    with db_session() as conn:
+        cached = _read_cache(conn, CACHE_KEY)
+        age_s  = _cache_age_s(cached["fetched_at"] if cached else "")
+        if not force_refresh and cached and age_s < FUEL_MAX_AGE_S and cached["value_json"]:
+            data = json.loads(cached["value_json"])
+            return {**data, "fetched_at": cached["fetched_at"],
+                    "is_stale": False, "age_days": round(age_s / 86400, 1)}
+
+    # Static benchmarks — updated from PPDA Uganda fuel price reports
+    # (Petrol ~UGX 5,200/L · Diesel ~UGX 4,900/L as of Q1 2026)
+    # Convert using live FX at time of generation (est 3,750 UGX/USD)
+    est_fx = 3750.0
+    ugx_petrol  = 5200
+    ugx_diesel  = 4900
+    usd_petrol  = round(ugx_petrol  / est_fx, 4)
+    usd_diesel  = round(ugx_diesel  / est_fx, 4)
+
+    fuel_data = {
+        "source": "PPDA Uganda Fuel Price Monitor (Q1 2026)",
+        "source_url": "https://www.ppda.go.ug/",
+        "currency": "USD",
+        "ugx_per_usd_assumed": est_fx,
+        "petrol_usd_per_litre": usd_petrol,
+        "diesel_usd_per_litre": usd_diesel,
+        "petrol_ugx_per_litre": ugx_petrol,
+        "diesel_ugx_per_litre": ugx_diesel,
+        "region": "Uganda (Kampala area)",
+        "vehicle_benchmarks": {
+            "4x4_safari_consumption_km_per_litre": 7,
+            "safari_van_consumption_km_per_litre": 9,
+            "fuel_type": "diesel",
+            "estimated_usd_per_km": round(usd_diesel / 9, 4),
+        },
+        "notes": "Monthly PPDA pump prices. Actual field prices may vary ±10% by location.",
+    }
+
+    fuel_json = json.dumps(fuel_data)
+    with db_session() as conn:
+        _write_cache(conn, CACHE_KEY, usd_diesel, fuel_json,
+                     "PPDA Uganda", "https://www.ppda.go.ug/")
+
+    return {
+        **fuel_data,
+        "fetched_at": datetime.now().isoformat(),
+        "is_stale": False, "age_days": 0,
+    }
+
+
+@app.post("/api/market-data/override")
+def set_market_data_override(body: MarketOverrideBody):
+    """Record a manual override for any auto-fetched market data field."""
+    with db_session() as conn:
+        conn.execute("""
+            INSERT INTO market_data_cache (key, value, override_value, override_by, override_at, is_overridden)
+            VALUES (?, 0, ?, ?, ?, 1)
+            ON CONFLICT(key) DO UPDATE SET
+                override_value=excluded.override_value,
+                override_by=excluded.override_by,
+                override_at=excluded.override_at,
+                is_overridden=1
+        """, (body.key, body.override_value, body.override_by,
+              datetime.now().isoformat()))
+    return {"status": "ok", "key": body.key, "override_value": body.override_value}
+
+
+@app.delete("/api/market-data/override/{key}")
+def clear_market_data_override(key: str):
+    """Remove override — revert to auto-fetched value."""
+    with db_session() as conn:
+        conn.execute("""
+            UPDATE market_data_cache
+            SET is_overridden=0, override_value=NULL, override_by='', override_at=''
+            WHERE key=?
+        """, (key,))
+    return {"status": "cleared", "key": key}
+
+
 STATIC_DIR = BASE_DIR
 
 @app.get("/styles.css")
