@@ -469,8 +469,11 @@
   }
 
   function removeToast(el) {
+    if (el._removing) return;
+    el._removing = true;
     el.classList.add('removing');
-    el.addEventListener('transitionend', () => el.remove(), { once: true });
+    // Use setTimeout as reliable fallback — transitionend can fail if element is hidden
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 250);
   }
 
   /* ============================================================
@@ -532,18 +535,8 @@
     // Lazy load data
     if (viewId === 'pipeline') loadPipeline();
     if (viewId === 'curation') loadCurationEnquiries();
-    if (viewId === 'pricing') loadPricingItineraries();
+    if (viewId === 'pricing') loadPricingItineraries(); // handles curation pre-select internally after data loads
     if (viewId === 'tools') initToolsView();
-    if (viewId === 'pricing' && state.curation && state.curation.selectedItineraryId) {
-      // Wait for dropdown to populate, then pre-select
-      setTimeout(() => {
-        const sel = document.getElementById('pricingItinerary');
-        if (sel) {
-          sel.value = state.curation.selectedItineraryId;
-          sel.dispatchEvent(new Event('change'));
-        }
-      }, 500);
-    }
     if (viewId === 'quotations') loadQuotations();
     if (viewId === 'sync') renderSyncView();
     if (viewId === 'lodges') { loadLodgesView(); }
@@ -1829,7 +1822,19 @@
         }
       });
 
-      toast('success', 'Itinerary approved!', `${state.curation.selectedItineraryName} linked to enquiry.`);
+      // Pre-load enquiry data into pricing form fields NOW, before user navigates
+      const approvedEnq = state.enquiries.find(e => e.id === state.curation.enquiryId);
+      if (approvedEnq) {
+        const natSel = document.getElementById('pricingNationality');
+        if (natSel && approvedEnq.nationality_tier) natSel.value = approvedEnq.nationality_tier;
+        const paxEl = document.getElementById('pricingPax');
+        if (paxEl && approvedEnq.pax) paxEl.value = approvedEnq.pax;
+        const dateEl = document.getElementById('pricingTravelStartDate');
+        if (dateEl && approvedEnq.travel_start_date) dateEl.value = approvedEnq.travel_start_date;
+      }
+
+      const tierLabel = approvedEnq && approvedEnq.nationality_tier ? ` · Nationality: ${approvedEnq.nationality_tier}` : '';
+      toast('success', 'Itinerary approved!', `${state.curation.selectedItineraryName} linked to enquiry${tierLabel}.`);
 
       // Update approval panel to show confirmed state
       const panel = document.getElementById('approvalPanel');
@@ -1903,9 +1908,33 @@
           const parkB = document.querySelector('[name="permit_park_b"]');
           if (parkB) parkB.checked = /semuliki|rwenzori|mt elgon|elgon/.test(combined);
 
+          // Sync nationality tier from linked enquiry (critical for UWA permit pricing)
+          if (state.curation && state.curation.enquiryId) {
+            const enq = state.enquiries.find(e => e.id === state.curation.enquiryId);
+            if (enq) {
+              if (enq.nationality_tier) {
+                const natSel = document.getElementById('pricingNationality');
+                if (natSel) {
+                  natSel.value = enq.nationality_tier;
+                }
+              }
+              if (enq.pax) document.getElementById('pricingPax').value = enq.pax;
+              if (enq.travel_start_date) document.getElementById('pricingTravelStartDate').value = enq.travel_start_date;
+            }
+          }
+
           // Update permit labels for the new date/tier context
           updatePermitLabels();
-          toast('info', 'Itinerary loaded', `${itn.name || itn.id} — ${itn.duration_days || '?'} days, auto-filled permits & vehicle days`);
+
+          // Validate nationality is set — warn if missing
+          const tierVal = document.getElementById('pricingNationality').value;
+          if (!tierVal) {
+            toast('warning', 'Nationality tier not set',
+              'Set the guest nationality tier. UWA permit rates differ significantly by category (FNR / FR / EAC).');
+          } else {
+            toast('info', 'Itinerary loaded',
+              `${itn.name || itn.id} — ${itn.duration_days || '?'} days · Permits & vehicle days auto-filled · Nationality: ${tierVal}`);
+          }
 
           // Generate AI day-by-day itinerary description
           if (itn.highlights || itn.description) {
@@ -1913,6 +1942,16 @@
           }
         }
       });
+
+      // After data loads, apply pre-selected itinerary from curation approval
+      // This replaces the fragile 500ms setTimeout in navigate()
+      if (state.curation && state.curation.selectedItineraryId) {
+        const preId = state.curation.selectedItineraryId;
+        if (state.itineraries.find(i => i.id === preId)) {
+          sel.value = preId;
+          sel.dispatchEvent(new Event('change'));
+        }
+      }
     } catch (e) { void e; }
 
     // Load lodges
@@ -1952,17 +1991,25 @@
       : '<option value="" disabled>⚠ No lodges — check backend connection</option>';
 
     el.innerHTML = `
-      <div style="flex:1;min-width:0">
-        <select class="form-control" name="lodge_name_${idx}" style="margin-bottom:4px">
+      <div class="lodge-item-body">
+        <select class="form-control" name="lodge_name_${idx}" style="margin-bottom:6px">
           <option value="">— Select lodge —</option>
           ${lodgeOptions}
         </select>
-        <div style="display:flex;gap:8px">
-          <select class="form-control" name="room_type_${idx}" style="flex:1;height:32px;font-size:var(--text-xs)">
-            <option value="">— select lodge first —</option>
-          </select>
-          <input type="number" class="form-control" name="nights_${idx}" min="1" value="1" placeholder="Nights"
-            style="width:80px;height:32px;font-size:var(--text-xs)">
+        <select class="form-control" name="room_type_${idx}" style="font-size:var(--text-xs);margin-bottom:8px">
+          <option value="">— select lodge first —</option>
+        </select>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+          <span class="lodge-nights-pill" title="Number of nights at this lodge">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v1.5M5.5 8.5V10M1 5.5h1.5M8.5 5.5H10M2.6 2.6l1 1M7.4 7.4l1 1M2.6 8.4l1-1M7.4 3.6l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
+            <input type="number" name="nights_${idx}" min="1" value="1" title="Nights at this lodge">
+            nights
+          </span>
+          <span class="lodge-rooms-badge" title="Number of rooms of this type">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="3" width="9" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 6h9" stroke="currentColor" stroke-width="1.2"/><path d="M4 6V9" stroke="currentColor" stroke-width="1.2"/></svg>
+            <input type="number" name="rooms_${idx}" min="1" value="1" title="Rooms of this type">
+            room(s)
+          </span>
         </div>
       </div>
       <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.lodge-item').remove()" title="Remove lodge">
@@ -2061,49 +2108,92 @@
     const destinations = itn.destinations || [];
     const highlights = (itn.highlights || '').split(',').map(h => h.trim()).filter(Boolean);
 
-    // Generate a simple day-by-day structure
-    let dayTexts = [];
-
-    // Day 1: always arrival
-    dayTexts.push(`<strong>Day 1:</strong> Arrive ${destinations[0] || 'Entebbe'}. Transfer to lodge, evening briefing.`);
-
-    // Distribute highlights across remaining days
+    // Generate day-by-day plain text (editable)
+    const lines = [];
+    lines.push(`Day 1: Arrive ${destinations[0] || 'Entebbe'}. Transfer to lodge, evening briefing.`);
     const destCycle = destinations.slice(1);
-
     for (let d = 2; d <= days - 1; d++) {
       const dest = destCycle[(d - 2) % Math.max(1, destCycle.length)] || destinations[0];
       const highlight = highlights[(d - 2) % Math.max(1, highlights.length)] || 'Game drive and wildlife viewing';
-      dayTexts.push(`<strong>Day ${d}:</strong> ${dest}. ${highlight}.`);
+      lines.push(`Day ${d}: ${dest}. ${highlight}.`);
     }
+    lines.push(`Day ${days}: Transfer to Entebbe / Kigali for departure flight.`);
+    const defaultText = lines.join('\n');
 
-    // Last day: departure
-    dayTexts.push(`<strong>Day ${days}:</strong> Transfer to Entebbe / Kigali for departure flight.`);
+    // Keep existing saved text if user already edited
+    const existingTA = panel.querySelector('.ai-itn-body');
+    const textContent = existingTA ? existingTA.value : defaultText;
 
-    const html = `
-      <div class="ai-panel">
-        <div class="ai-panel-header">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
-            <path d="M5 7l2 2 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          AI Itinerary Outline — ${itn.name || 'Safari Itinerary'}
+    const itnId = itn.id || 'current';
+
+    panel.innerHTML = `
+      <div class="ai-itn-panel">
+        <div class="ai-itn-header">
+          <div class="ai-itn-title">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M5 7l2 2 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            AI Itinerary Outline — ${escapeHtml(itn.name || 'Safari Itinerary')}
+            <span id="aiItnSavedBadge" style="display:none" class="ai-itn-saved-badge">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              Saved as working itinerary
+            </span>
+          </div>
+          <div class="ai-itn-actions">
+            <button type="button" class="btn btn-secondary btn-sm" id="btnSaveWorkingItn" title="Save this text as the working itinerary for this booking">
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 10h9M2 2h6l3 3v5H2V2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><rect x="4.5" y="6" width="4" height="4" rx=".5" stroke="currentColor" stroke-width="1.3"/></svg>
+              Save Working Itinerary
+            </button>
+            <button type="button" class="btn btn-gold btn-sm" id="btnFastCreateInvoice" title="Convert this itinerary into a quotation">
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 10h9M2 1.5h9v9H2v-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M4.5 5.5h4M4.5 7.5h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              Fast Create Invoice
+            </button>
+          </div>
         </div>
         <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-2)">
-          ${days}-day suggested structure · Edit as needed
+          ${days}-day outline · Click in the text below to edit · Changes are saved per session
         </div>
-        <div style="font-size:var(--text-sm);line-height:1.8;color:var(--text-base)">
-          ${dayTexts.join('<br>')}
-        </div>
-        <div style="margin-top:var(--space-3)">
-          <span style="font-size:var(--text-xs);color:var(--text-muted)">Key activities: </span>
+        <textarea class="ai-itn-body" id="aiItnTextarea" spellcheck="true">${escapeHtml(textContent)}</textarea>
+        <div style="margin-top:var(--space-3);display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+          <span style="font-size:var(--text-xs);color:var(--text-muted)">Key highlights: </span>
           ${highlights.map(h => `<span class="ai-suggestion-chip">${escapeHtml(h)}</span>`).join('')}
         </div>
         <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-2)">
-          <em>AI-generated outline based on TRVE itinerary library. All text is editable before sending to client.</em>
+          <em>AI-generated outline from TRVE library. Edit freely — saved version becomes the working itinerary for this booking.</em>
         </div>
       </div>
     `;
-    panel.innerHTML = html;
+
+    // Save Working Itinerary
+    document.getElementById('btnSaveWorkingItn').addEventListener('click', () => {
+      const text = document.getElementById('aiItnTextarea').value.trim();
+      if (!text) { toast('warning', 'Nothing to save', 'Write the itinerary text first.'); return; }
+      state.workingItinerary = {
+        itnId,
+        enquiryId: state.curation ? state.curation.enquiryId : null,
+        itnName: itn.name || 'Safari Itinerary',
+        text,
+        savedAt: new Date().toISOString()
+      };
+      const badge = document.getElementById('aiItnSavedBadge');
+      if (badge) badge.style.display = 'inline-flex';
+      toast('success', 'Working itinerary saved', `"${itn.name || 'Itinerary'}" is now the working itinerary for this booking. It will be included when generating a quotation.`);
+    });
+
+    // Fast Create Invoice
+    document.getElementById('btnFastCreateInvoice').addEventListener('click', () => {
+      const text = document.getElementById('aiItnTextarea')?.value || defaultText;
+      // Ensure working itinerary is saved
+      state.workingItinerary = state.workingItinerary || {
+        itnId, enquiryId: state.curation ? state.curation.enquiryId : null,
+        itnName: itn.name || 'Safari Itinerary', text, savedAt: new Date().toISOString()
+      };
+      // Navigate to quotations
+      navigate('quotations');
+      toast('info', 'Ready to invoice',
+        `Itinerary loaded: "${itn.name || 'Safari'}". Complete the quotation form and click Generate.`);
+    });
   }
 
   async function loadActivities() {
@@ -2303,6 +2393,17 @@
       `;
     }
 
+    // Validate nationality tier before calculating
+    const tierCheck = document.getElementById('pricingNationality').value;
+    if (!tierCheck) {
+      toast('warning', 'Nationality tier required',
+        'Select the guest nationality tier (FNR / FR / EAC). UWA permit rates differ by up to 9× between categories.');
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      btn.innerHTML = originalBtnText;
+      return;
+    }
+
     try {
       // Build accommodations array
       const accommodations = [];
@@ -2310,7 +2411,8 @@
         const lodge = row.querySelector(`[name^="lodge_name_"]`)?.value;
         const roomType = row.querySelector(`[name^="room_type_"]`)?.value || 'standard';
         const nights = parseInt(row.querySelector(`[name^="nights_"]`)?.value) || 1;
-        if (lodge) accommodations.push({ lodge, room_type: roomType, nights });
+        const rooms = parseInt(row.querySelector(`[name^="rooms_"]`)?.value) || 1;
+        if (lodge) accommodations.push({ lodge, room_type: roomType, nights, rooms });
       });
 
       // Build permits array

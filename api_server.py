@@ -2447,7 +2447,12 @@ def calculate_price(body: PricingRequest):
                 })
 
     # 2. Vehicle
-    v_days = (body.extra_vehicle_days or 0) + (days - 1 if days > 1 else days)
+    # If extra_vehicle_days is explicitly set (>0) the frontend sends total vehicle days;
+    # otherwise derive from duration (arrival day has no full game drive).
+    if body.extra_vehicle_days and body.extra_vehicle_days > 0:
+        v_days = body.extra_vehicle_days
+    else:
+        v_days = max(1, days - 1)
     vehicle_rate = CONFIG["vehicle_rate_per_day"]
     vehicle_total = v_days * vehicle_rate
     # Apply fuel buffer
@@ -2464,8 +2469,9 @@ def calculate_price(body: PricingRequest):
             qty = pm.get("quantity", 1)
             price = get_permit_price_usd(pkey, tier, travel_date)
             line_total = price * qty * pax
+            permit_label = PERMIT_PRICES.get(pkey, {}).get("label", pkey)
             permit_lines.append({
-                "description": PERMIT_PRICES.get(pkey, {}).get("label", pkey),
+                "description": f"{permit_label} [{tier}]",
                 "qty": qty,
                 "price_per_unit": round(price, 2),
                 "pax": pax,
