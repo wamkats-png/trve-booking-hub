@@ -1429,6 +1429,44 @@
       </div>
       <div class="divider"></div>` : ''}
 
+      <!-- Payment Recording -->
+      ${(() => {
+        const invoiceAmt = enquiry.quoted_usd;
+        const reqTransfer = enquiry.required_transfer_amount;
+        const bankChargesOnInvoice = !!enquiry.include_bank_charges_in_invoice;
+        const threshold = bankChargesOnInvoice && reqTransfer ? reqTransfer : invoiceAmt;
+        const received  = enquiry.revenue_usd;
+        const shortfall = threshold && received != null ? round2(threshold - received) : null;
+        const isUnderpaid = shortfall != null && shortfall > 0.01;
+        function round2(v) { return Math.round(v * 100) / 100; }
+        return `
+        <div class="detail-financial-summary mb-4" id="paymentRecordingSection">
+          <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--teal-700);margin-bottom:var(--space-3)">
+            Record Payment
+          </div>
+          ${threshold ? `
+          <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-2)">
+            Required: <strong class="mono">${fmtMoney(threshold)}</strong>
+            ${bankChargesOnInvoice && reqTransfer ? ' (includes bank charges)' : ''}
+          </div>` : ''}
+          <div class="form-group mb-2">
+            <label class="form-label" for="detailPaymentReceived" style="font-size:var(--text-xs)">Amount Received (USD)</label>
+            <input class="form-control" type="number" id="detailPaymentReceived" min="0" step="0.01"
+              value="${received != null ? received : ''}"
+              placeholder="${threshold ? threshold.toFixed(2) : 'e.g. 5000'}"
+              style="font-family:var(--font-mono)">
+          </div>
+          <div id="detailPaymentWarning" style="display:${isUnderpaid ? 'block' : 'none'};background:#FEF2F2;border:1px solid var(--danger);border-radius:var(--radius-md);padding:var(--space-3);font-size:var(--text-xs);color:var(--danger);margin-bottom:var(--space-2)">
+            ⚠ Underpaid — shortfall of <strong class="mono">${isUnderpaid ? fmtMoney(shortfall) : ''}</strong>.
+            Invoice settlement blocked until full amount is received.
+          </div>
+          <div id="detailPaymentOk" style="display:${received != null && !isUnderpaid && threshold ? 'block' : 'none'};background:#F0FAF6;border:1px solid #6ee7c7;border-radius:var(--radius-md);padding:var(--space-3);font-size:var(--text-xs);color:#0d7a5f;margin-bottom:var(--space-2)">
+            ✓ Payment sufficient — invoice can be settled.
+          </div>
+        </div>
+        <div class="divider"></div>`;
+      })()}
+
       <div class="form-group mb-4">
         <label class="form-label" for="detailNotes">Notes</label>
         <textarea class="form-control" id="detailNotes" rows="3">${escapeHtml(enquiry.notes || '')}</textarea>
@@ -1496,19 +1534,62 @@
         if (!confirm(msg)) return;
       }
 
+      // Payment validation before save
+      const receivedInput = document.getElementById('detailPaymentReceived');
+      const receivedAmt = receivedInput && receivedInput.value !== '' ? parseFloat(receivedInput.value) : null;
+      const reqTransfer = enquiry.required_transfer_amount;
+      const bankChargesOnInvoice = !!enquiry.include_bank_charges_in_invoice;
+      const threshold = bankChargesOnInvoice && reqTransfer ? reqTransfer : (enquiry.quoted_usd || null);
+
+      if (receivedAmt != null && threshold != null && receivedAmt < threshold - 0.01) {
+        const shortfall = Math.round((threshold - receivedAmt) * 100) / 100;
+        const payWarn = document.getElementById('detailPaymentWarning');
+        if (payWarn) {
+          payWarn.style.display = 'block';
+          payWarn.innerHTML = `⚠ Underpaid — shortfall of <strong class="mono">${fmtMoney(shortfall)}</strong>. Invoice settlement blocked until full amount is received.`;
+        }
+        const payOk = document.getElementById('detailPaymentOk');
+        if (payOk) payOk.style.display = 'none';
+        // If moving to Completed, block it
+        if (newStatus === 'Completed') {
+          toast('warning', 'Payment insufficient', `Received ${fmtMoney(receivedAmt)} but ${fmtMoney(threshold)} is required. Cannot mark as Completed.`);
+          return;
+        }
+      } else if (receivedAmt != null && threshold != null) {
+        const payOk = document.getElementById('detailPaymentOk');
+        if (payOk) payOk.style.display = 'block';
+        const payWarn = document.getElementById('detailPaymentWarning');
+        if (payWarn) payWarn.style.display = 'none';
+      }
+
+      // Determine payment_status from received amount
+      let paymentStatus = enquiry.payment_status;
+      if (receivedAmt != null && threshold != null) {
+        if (receivedAmt >= threshold - 0.01) paymentStatus = 'paid';
+        else if (receivedAmt > 0) paymentStatus = 'partial';
+        else paymentStatus = 'unpaid';
+      } else if (receivedAmt != null && receivedAmt > 0) {
+        paymentStatus = 'partial';
+      }
+
       const btn = document.getElementById('detailSaveBtn');
       btn.classList.add('loading');
       btn.disabled = true;
+      const patchBody = { status: newStatus, notes: notesEl.value };
+      if (receivedAmt != null) { patchBody.revenue_usd = receivedAmt; }
+      if (paymentStatus) { patchBody.payment_status = paymentStatus; }
       try {
         await apiFetch(`/api/enquiries/${enquiry.id}`, {
           method: 'PATCH',
-          body: { status: newStatus, notes: notesEl.value }
+          body: patchBody,
         });
         // Update local state
         const idx = state.enquiries.findIndex(e => e.id === enquiry.id);
         if (idx !== -1) {
           state.enquiries[idx].status = newStatus;
           state.enquiries[idx].notes = notesEl.value;
+          if (receivedAmt != null) state.enquiries[idx].revenue_usd = receivedAmt;
+          if (paymentStatus) state.enquiries[idx].payment_status = paymentStatus;
         }
         toast('success', 'Enquiry updated');
         renderPipeline();
@@ -1520,6 +1601,28 @@
         btn.disabled = false;
       }
     });
+
+    // Live payment validation as user types received amount
+    const livePayInput = document.getElementById('detailPaymentReceived');
+    if (livePayInput) {
+      const bcOnInvoice = !!enquiry.include_bank_charges_in_invoice;
+      const reqXfer = enquiry.required_transfer_amount;
+      const invoiceThreshold = bcOnInvoice && reqXfer ? reqXfer : (enquiry.quoted_usd || null);
+      livePayInput.addEventListener('input', () => {
+        const amt = livePayInput.value !== '' ? parseFloat(livePayInput.value) : null;
+        const warnEl = document.getElementById('detailPaymentWarning');
+        const okEl   = document.getElementById('detailPaymentOk');
+        if (amt == null || invoiceThreshold == null) { if (warnEl) warnEl.style.display = 'none'; if (okEl) okEl.style.display = 'none'; return; }
+        const sf = Math.round((invoiceThreshold - amt) * 100) / 100;
+        if (sf > 0.01) {
+          if (warnEl) { warnEl.style.display = 'block'; warnEl.innerHTML = `⚠ Underpaid — shortfall of <strong class="mono">${fmtMoney(sf)}</strong>. Invoice settlement blocked until full amount is received.`; }
+          if (okEl) okEl.style.display = 'none';
+        } else {
+          if (warnEl) warnEl.style.display = 'none';
+          if (okEl) okEl.style.display = 'block';
+        }
+      });
+    }
 
     document.getElementById('detailCurationBtn').addEventListener('click', async () => {
       closeSlideover();
@@ -2724,6 +2827,8 @@
       const result = await apiFetch('/api/calculate-price', { method: 'POST', body: payload });
       renderPricingResults(result, payload);
       toast('success', 'Price calculated!');
+      // Auto-calculate bank charges in background — non-blocking
+      _autoCalculateBankCharges(result);
 
     } catch (err) {
       toast('error', 'Calculation failed', err.message);
@@ -2903,6 +3008,14 @@
         ${result.fx_buffer_pct ? ` FX buffer: ${result.fx_buffer_pct}% noted.` : ''}
       </div>
 
+      <!-- Bank Charges Notice (populated asynchronously after price calc) -->
+      <div id="pricingBankChargesNotice" style="margin-bottom:var(--space-4)">
+        <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);font-size:var(--text-xs);color:var(--text-muted);text-align:center">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="vertical-align:middle;margin-right:4px" class="spin-icon"><path d="M6 1a5 5 0 100 10A5 5 0 006 1z" stroke="currentColor" stroke-width="1.5" stroke-dasharray="26" stroke-dashoffset="8"/></svg>
+          Calculating transfer fees…
+        </div>
+      </div>
+
       <!-- Generate Quotation Button -->
       <div id="quotationGenerateWrap">
         <button class="btn btn-gold w-full" id="btnGenerateQuotation">
@@ -2916,6 +3029,66 @@
     document.getElementById('btnGenerateQuotation').addEventListener('click', () => {
       generateQuotationPdf(result, payload);
     });
+  }
+
+  // Default fee assumptions matching the Finance Tools form defaults
+  const BC_DEFAULTS = { receiving_flat: 15, receiving_pct: 0, intermediary: 25, sender_pct: 0, sender_flat: 0 };
+
+  async function _autoCalculateBankCharges(result) {
+    const invoiceTotal = result.total_usd;
+    if (!invoiceTotal || invoiceTotal <= 0) return;
+    try {
+      const bcRes = await apiFetch('/api/calculate-transfer-fees', {
+        method: 'POST',
+        body: {
+          invoice_total: invoiceTotal,
+          receiving_bank_fee_flat: BC_DEFAULTS.receiving_flat,
+          receiving_bank_fee_pct: BC_DEFAULTS.receiving_pct,
+          intermediary_bank_fee: BC_DEFAULTS.intermediary,
+          sender_bank_fee_pct: BC_DEFAULTS.sender_pct,
+          sender_bank_fee_flat: BC_DEFAULTS.sender_flat,
+          approved_by: 'auto',
+        },
+      });
+      result.bank_charges = {
+        invoice_total: invoiceTotal,
+        estimated_bank_charges: bcRes.total_transfer_fees_usd,
+        required_client_transfer_amount: bcRes.gross_amount_usd || bcRes.client_must_send_usd,
+        exchange_rate: null,
+        fee_assumptions: BC_DEFAULTS,
+      };
+      _updatePricingBankChargesNotice(result.bank_charges, null);
+    } catch (e) {
+      _updatePricingBankChargesNotice(null, e.message);
+    }
+  }
+
+  function _updatePricingBankChargesNotice(bc, err) {
+    const el = document.getElementById('pricingBankChargesNotice');
+    if (!el) return;
+    if (err || !bc) {
+      el.innerHTML = `
+        <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);font-size:var(--text-xs);color:var(--text-muted)">
+          Transfer fees could not be auto-calculated. Use <a href="#" onclick="window.TRVE.navigate('tools');return false" style="color:var(--brand-gold-dark)">Finance Tools → Transfer Calculator</a> manually.
+        </div>`;
+      return;
+    }
+    el.innerHTML = `
+      <div style="background:#edfaf5;border:1px solid #6ee7c7;border-radius:var(--radius-md);padding:var(--space-4)">
+        <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#0d7a5f;margin-bottom:var(--space-3)">Transfer Fees (auto-calculated)</div>
+        <div style="display:grid;grid-template-columns:1fr auto;gap:4px var(--space-3);font-size:var(--text-sm);align-items:center">
+          <span style="color:var(--text-secondary)">Invoice Total</span>
+          <span style="font-family:var(--font-mono);text-align:right">${fmtMoney(bc.invoice_total)}</span>
+          <span style="color:var(--text-secondary)">Estimated bank charges</span>
+          <span style="font-family:var(--font-mono);text-align:right;color:var(--danger)">+ ${fmtMoney(bc.estimated_bank_charges)}</span>
+          <span style="font-weight:600;border-top:1px solid #6ee7c7;padding-top:4px">Client must send</span>
+          <span style="font-family:var(--font-mono);text-align:right;font-weight:700;border-top:1px solid #6ee7c7;padding-top:4px">${fmtMoney(bc.required_client_transfer_amount)}</span>
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-2)">
+          Assumes: USD ${bc.fee_assumptions.receiving_flat} receiving flat + USD ${bc.fee_assumptions.intermediary} intermediary.
+          <a href="#" onclick="window.TRVE.navigate('tools');return false" style="color:var(--brand-gold-dark)">Adjust in Finance Tools</a>
+        </div>
+      </div>`;
   }
 
   function generateQuotationPdf(result, payload) {
@@ -2954,30 +3127,27 @@
     closeBtn.onclick = closeModal;
     modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
-    // Reset safeguard fields
-    const transferInput = document.getElementById('qmRequiredTransfer');
-    const bankFeesAck = document.getElementById('qmBankFeesAck');
-    const transferWarning = document.getElementById('qmTransferWarning');
-    if (transferInput) transferInput.value = '';
-    if (bankFeesAck) bankFeesAck.checked = false;
-    if (transferWarning) transferWarning.style.display = 'none';
-
-    // Pre-fill transfer amount from last calculation if available
-    if (transferInput && result) {
-      const suggestedTransfer = result.total_usd || 0;
-      // Show placeholder based on invoice total (user should run gross-up calculator)
-      transferInput.placeholder = `≥ ${suggestedTransfer.toFixed(2)} (run Finance Tools → Transfer Calculator)`;
-    }
-
-    // Show warning when transfer field is blurred empty
-    if (transferInput) {
-      transferInput.addEventListener('blur', () => {
-        if (!transferInput.value && transferWarning) {
-          transferWarning.style.display = 'block';
-        } else if (transferWarning) {
-          transferWarning.style.display = 'none';
-        }
-      });
+    // Pre-fill bank charges display from auto-calculated result
+    const bc = result.bank_charges;
+    const qmInvTotal = document.getElementById('qmInvoiceTotal');
+    const qmEstBC = document.getElementById('qmEstBankCharges');
+    const qmMustSend = document.getElementById('qmClientMustSend');
+    const qmBCNote = document.getElementById('qmBankChargesNote');
+    if (bc) {
+      if (qmInvTotal) qmInvTotal.textContent = fmtMoney(bc.invoice_total);
+      if (qmEstBC) qmEstBC.textContent = '+ ' + fmtMoney(bc.estimated_bank_charges);
+      if (qmMustSend) qmMustSend.textContent = fmtMoney(bc.required_client_transfer_amount);
+      if (qmBCNote) qmBCNote.textContent = `Assumes: USD ${bc.fee_assumptions.receiving_flat} receiving flat + USD ${bc.fee_assumptions.intermediary} intermediary.`;
+    } else {
+      if (qmInvTotal) qmInvTotal.textContent = fmtMoney(result.total_usd);
+      if (qmEstBC) qmEstBC.textContent = 'calculating…';
+      if (qmMustSend) qmMustSend.textContent = '—';
+      if (qmBCNote) qmBCNote.textContent = 'Bank charges not yet available — use Finance Tools → Transfer Calculator if needed.';
+      // Style block as pending
+      const bcBlock = document.getElementById('qmBankChargesBlock');
+      if (bcBlock) { bcBlock.style.background = '#FFF8E7'; bcBlock.style.borderColor = 'var(--brand-gold)'; }
+      const noteEl = document.getElementById('qmBankChargesNote');
+      if (noteEl) noteEl.style.color = 'var(--brand-gold-dark)';
     }
 
     // Submit handler (one-time)
@@ -2990,24 +3160,6 @@
       }
       nameInput.style.borderColor = '';
 
-      // Safeguard: required transfer amount must be filled
-      const reqTransfer = parseFloat(transferInput?.value);
-      if (!reqTransfer || reqTransfer <= 0) {
-        if (transferWarning) transferWarning.style.display = 'block';
-        if (transferInput) { transferInput.style.borderColor = 'var(--danger)'; transferInput.focus(); }
-        toast('warning', 'Transfer amount required', 'Enter the required client transfer amount. Use Finance Tools → Transfer Calculator.');
-        return;
-      }
-      if (transferInput) transferInput.style.borderColor = '';
-      if (transferWarning) transferWarning.style.display = 'none';
-
-      // Safeguard: acknowledgment checkbox
-      if (bankFeesAck && !bankFeesAck.checked) {
-        toast('warning', 'Acknowledgment required', 'Confirm the bank charge assumptions and transfer amount before generating');
-        bankFeesAck.focus();
-        return;
-      }
-
       closeModal();
 
       const wrap = document.getElementById('quotationGenerateWrap');
@@ -3015,13 +3167,21 @@
       genBtn.classList.add('loading');
       genBtn.disabled = true;
 
-      const reqTransferAmt = parseFloat(document.getElementById('qmRequiredTransfer')?.value) || null;
+      const bcData = result.bank_charges || {};
+      const includeBankCharges = (document.getElementById('qmIncludeBankCharges')?.value ?? 'yes') === 'yes';
+      function round2(v) { return Math.round(v * 100) / 100; }
       const quotationPayload = {
         pricing_data: {
           ...(result.pricing_data || result),
-          // Embed transfer fee info for PDF footer
-          required_transfer_amount: reqTransferAmt,
-          transfer_fees_estimated: reqTransferAmt ? round2(reqTransferAmt - (result.total_usd || 0)) : null,
+          // Bank charge data — always stored internally regardless of invoice option
+          invoice_total: result.total_usd,
+          estimated_bank_charges: bcData.estimated_bank_charges || null,
+          required_client_transfer_amount: bcData.required_client_transfer_amount || null,
+          required_transfer_amount: bcData.required_client_transfer_amount || null,
+          transfer_fees_estimated: bcData.estimated_bank_charges || null,
+          exchange_rate_at_quote: bcData.exchange_rate || null,
+          fee_assumptions: bcData.fee_assumptions || null,
+          include_bank_charges_in_invoice: includeBankCharges,
         },
         client_name: clientName || 'Guest',
         client_email: emailInput.value.trim() || null,
@@ -3032,8 +3192,8 @@
         nationality_tier: payload.nationality_tier,
         extra_vehicle_days: payload.extra_vehicle_days || 0,
         commission_type: payload.commission_type || null,
+        include_bank_charges_in_invoice: includeBankCharges,
       };
-      function round2(v) { return Math.round(v * 100) / 100; }
 
     try {
       const data = await apiFetch('/api/generate-quotation', { method: 'POST', body: quotationPayload });
