@@ -2297,7 +2297,7 @@
 
     // Initial render
     _autoSyncRoomGuests(el);
-    _renderAccommPricingSummary();
+    if (!cfg.skipRender) _renderAccommPricingSummary();
   }
 
   // Update the computed-occupancy summary bar on a lodge row.
@@ -2305,8 +2305,7 @@
   function _updateLodgeTotalGuestsHint(row) {
     const occEl = row.querySelector('.lodge-computed-occ');
     if (!occEl) return;
-    const totalAdults   = parseInt(document.getElementById('pricingAdults')?.value)   || 0;
-    const totalChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
+    const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests   = totalAdults + totalChildren;
     const rooms         = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
     const perRoom       = totalGuests > 0 ? Math.ceil(totalGuests / rooms) : 0;
@@ -2470,9 +2469,8 @@
   function renderGuestRoster() {
     const panel = document.getElementById('pricingGuestRoster');
     if (!panel) return;
-    const adults   = parseInt(document.getElementById('pricingAdults')?.value)   || 0;
-    const children = parseInt(document.getElementById('pricingChildren')?.value) || 0;
-    const total    = adults + children;
+    const { adults, children } = _getBasicPax();
+    const total = adults + children;
     if (total === 0) { panel.style.display = 'none'; return; }
     panel.style.display = '';
 
@@ -2527,7 +2525,7 @@
   function renderChildAgeInputs() {
     const section = document.getElementById('childAgesSection');
     if (!section) return;
-    const children = parseInt(document.getElementById('pricingChildren')?.value) || 0;
+    const children = _getBasicPax().children;
     if (children === 0) { section.style.display = 'none'; section.innerHTML = ''; return; }
 
     // Keep childAges array aligned with current child count
@@ -2549,7 +2547,7 @@
                 min="0" max="17" value="${age !== null ? age : ''}" placeholder="age"
                 style="width:52px;height:26px;font-size:var(--text-xs);text-align:center"
                 oninput="window.TRVE._updateChildAge(${i}, this.value)">
-              ${isYoung ? `<span style="font-size:9px;padding:1px 4px;border-radius:4px;background:var(--brand-gold,#f59e0b);color:#fff;font-weight:600">Young</span>` : ''}
+              ${isYoung ? `<span class="child-young-badge" style="font-size:9px;padding:1px 4px;border-radius:4px;background:var(--brand-gold,#f59e0b);color:#fff;font-weight:600">Young</span>` : ''}
             </div>`;
           }).join('')}
         </div>
@@ -2563,7 +2561,23 @@
   function _updateChildAge(idx, value) {
     if (!state.childAges) state.childAges = [];
     state.childAges[idx] = value !== '' ? parseInt(value) : null;
-    renderChildAgeInputs(); // re-render to refresh "Young" badges
+    // Only update the "Young" badge for this child — do NOT rebuild the whole section
+    // (full innerHTML replace would destroy focus on the currently-typed input).
+    const input = document.querySelector(`.child-age-input[data-child-idx="${idx}"]`);
+    if (input) {
+      const badge = input.nextElementSibling;
+      const isYoung = state.childAges[idx] !== null && state.childAges[idx] < 5;
+      if (isYoung && (!badge || !badge.classList.contains('child-young-badge'))) {
+        const span = document.createElement('span');
+        span.className = 'child-young-badge';
+        span.style.cssText = 'font-size:9px;padding:1px 4px;border-radius:4px;background:var(--brand-gold,#f59e0b);color:#fff;font-weight:600';
+        span.textContent = 'Young';
+        input.insertAdjacentElement('afterend', span);
+      } else if (!isYoung && badge && badge.classList.contains('child-young-badge')) {
+        badge.remove();
+      }
+    }
+    _distCache.clear(); // young-child count affects sharing logic
     _syncLodgeGuestAssignments();
     _checkCapacityMismatch();
   }
@@ -2592,6 +2606,22 @@
   // COMPUTED OCCUPANCY MODEL
   // Derive all occupancy values from Basic Details.  No manual per-room entry.
   // ---------------------------------------------------------------------------
+
+  // Single read of Basic Details guest counts — avoids duplicate DOM reads.
+  function _getBasicPax() {
+    return {
+      adults:   parseInt(document.getElementById('pricingAdults')?.value)   || 0,
+      children: parseInt(document.getElementById('pricingChildren')?.value) || 0,
+    };
+  }
+
+  // Memoised distribution cache — cleared whenever Basic Details change.
+  const _distCache = new Map();
+  function _computeDistributionCached(totalGuests, rooms) {
+    const key = `${totalGuests}-${rooms}`;
+    if (!_distCache.has(key)) _distCache.set(key, _computeDistribution(totalGuests, rooms));
+    return _distCache.get(key);
+  }
 
   // Spread N guests across M rooms as evenly as possible.
   // Front-loads remainders so first rooms are fuller: [2,2,1] for 5/3.
@@ -2659,9 +2689,9 @@
     const container = document.getElementById('lodgeItems');
     if (!container) return;
     container.innerHTML = '';
-    (snap || []).forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true }));
+    (snap || []).forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true, skipRender: true }));
+    _renderAccommPricingSummary(); // single render after all rows are restored
     _checkCapacityMismatch();
-    _renderAccommPricingSummary();
   }
 
   function _updateUndoRedoButtons() {
@@ -2698,9 +2728,8 @@
     const maxOcc      = _getMaxOccupancy(roomTypeVal, lodgeName) || 2;
 
     // Single source of truth: Basic Details
-    const totalAdults   = parseInt(document.getElementById('pricingAdults')?.value)   || 0;
-    const totalChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
-    const totalGuests   = totalAdults + totalChildren;
+    const { adults: totalAdults, children: totalChildren } = _getBasicPax();
+    const totalGuests = totalAdults + totalChildren;
 
     if (totalGuests === 0) {
       container.innerHTML = '<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Set guest count in Basic Details above to see room distribution.</span>';
@@ -2709,7 +2738,7 @@
     }
 
     // Compute how many guests go in each physical room
-    const distribution = _computeDistribution(totalGuests, rooms);
+    const distribution = _computeDistributionCached(totalGuests, rooms);
     const split        = _computeAdultChildSplit(distribution, totalAdults, totalChildren);
 
     const adultIcon = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="3" r="1.8" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 9.5c0-1.9 1.6-3.5 3.5-3.5s3.5 1.6 3.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
@@ -3028,8 +3057,7 @@
     if (!panel) return;
 
     // Compute guest room costs — adults/children from Basic Details (single source of truth)
-    const globalAdults   = parseInt(document.getElementById('pricingAdults')?.value)   || 0;
-    const globalChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
+    const { adults: globalAdults, children: globalChildren } = _getBasicPax();
     let guestTotal = 0;
     document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
       const lodge    = row.querySelector('[name^="lodge_name_"]')?.value;
@@ -3113,8 +3141,7 @@
       row.querySelector('[name^="room_type_"]')?.value,
       row.querySelector('[name^="lodge_name_"]')?.value
     ) || 2;
-    const totalAdults   = parseInt(document.getElementById('pricingAdults')?.value)   || 0;
-    const totalChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
+    const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests   = totalAdults + totalChildren;
     const perRoom       = totalGuests > 0 ? Math.ceil(totalGuests / rooms) : 0;
 
@@ -3153,9 +3180,8 @@
   // Checks that room configuration (rooms × maxOcc across all lodge rows) can fit
   // totalGuests from Basic Details. Uses computed model — no manual per-room inputs.
   function _checkCapacityMismatch() {
-    const totalAdults   = parseInt(document.getElementById('pricingAdults')?.value)   || 0;
-    const totalChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
-    const totalGuests   = totalAdults + totalChildren;
+    const { adults: totalAdults, children: totalChildren } = _getBasicPax();
+    const totalGuests = totalAdults + totalChildren;
 
     let alertEl = document.getElementById('accommodationMismatchAlert');
     if (!alertEl) {
@@ -3789,6 +3815,7 @@
     const adultsInput = document.getElementById('pricingAdults');
     const childrenInput = document.getElementById('pricingChildren');
     function _syncGuestsFromForm() {
+      _distCache.clear(); // invalidate memoised distribution for new guest totals
       const total = (parseInt(adultsInput?.value) || 0) + (parseInt(childrenInput?.value) || 0);
       syncGuestRecords(total);
       renderChildAgeInputs();
@@ -3926,9 +3953,8 @@
     // Validate accommodation covers all guests before proceeding.
     // Uses computed model: capacity = rooms × maxOcc per row.
     {
-      const valAdults   = parseInt(document.getElementById('pricingAdults')?.value)   || 0;
-      const valChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
-      const valTotal    = valAdults + valChildren;
+      const { adults: valAdults, children: valChildren } = _getBasicPax();
+      const valTotal = valAdults + valChildren;
       let   valCapacity = 0;
       let   hasRooms    = false;
       let   hasOvercrowded = false;
@@ -3967,8 +3993,7 @@
     }
 
     try {
-      const adults = parseInt(document.getElementById('pricingAdults').value) || 2;
-      const children = parseInt(document.getElementById('pricingChildren').value) || 0;
+      const { adults, children } = _getBasicPax();
 
       // Build accommodations array.
       // adults/children always come from Basic Details (single source of truth).
