@@ -317,7 +317,46 @@ a:hover { text-decoration: underline; }
 }
 
 .nav-icon { flex-shrink: 0; display: flex; align-items: center; }
-.nav-label { font-size: var(--text-sm); transition: opacity var(--transition); }
+.nav-label { font-size: var(--text-sm); transition: opacity var(--transition); flex: 1; }
+
+/* Pipeline notification badge — count of enquiries awaiting action */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--danger, #dc2626);
+  border-radius: 9px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Keyboard shortcut badge — displayed as a key hint, not a count or priority */
+.nav-shortcut {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: rgba(255,255,255,0.45);
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+  transition: opacity var(--transition), background var(--transition);
+}
+.nav-item:hover .nav-shortcut { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.28); }
+.nav-item.active .nav-shortcut { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.35); }
 
 .sidebar-footer {
   padding: var(--space-4);
