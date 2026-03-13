@@ -66,6 +66,36 @@
 
   /* Topbar */
   --topbar-height: 52px;
+
+  /* Status colours */
+  --success:           #16a34a;
+  --success-bg:        #f0fdf4;
+  --danger:            #dc2626;
+  --danger-bg:         #fef2f2;
+  --warning:           #d97706;
+  --warning-bg:        #fffbeb;
+  --color-warning:     #d97706;
+  --info:              #2563eb;
+  --info-bg:           #eff6ff;
+
+  /* Teal palette (used in detail views) */
+  --teal-50:           #f0fdfa;
+  --teal-100:          #ccfbf1;
+  --teal-500:          #14b8a6;
+  --teal-700:          #0f766e;
+
+  /* Gold palette */
+  --gold-100:          #fef3c7;
+  --gold-500:          #f59e0b;
+  --gold-700:          #b45309;
+
+  /* Surface alias */
+  --surface:           #ffffff;
+  --text-primary:      #1a2e29;
+  --text-secondary:    #6b7e79;
+
+  /* Monospace font */
+  --font-mono:         'Courier New', 'SF Mono', monospace;
 }
 
 /* ── Reset ──────────────────────────────────────────────────── */
@@ -1175,4 +1205,119 @@ tr:hover td { background: var(--bg-subtle); }
   .stats-row { grid-template-columns: 1fr 1fr; }
   .kanban-board { grid-template-columns: 1fr; }
   .pipeline-toolbar { flex-direction: column; align-items: stretch; }
+}
+
+/* ── Modal Overlay ──────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.5);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.hidden { display: none; }
+
+/* ── AI Assistant Panel ─────────────────────────────────────── */
+.ai-panel {
+  background: linear-gradient(135deg, var(--teal-50) 0%, var(--brand-green-light) 100%);
+  border: 1px solid var(--teal-100);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+.ai-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-weight: 600;
+  color: var(--teal-700);
+  font-size: var(--text-sm);
+}
+.ai-suggestion-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--teal-100);
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: var(--transition);
+  margin: 2px;
+}
+.ai-suggestion-chip:hover {
+  background: var(--teal-50);
+  border-color: var(--teal-500);
+}
+
+/* ── Expiry badge ────────────────────────────────────────────── */
+.badge-expired { background: var(--danger-bg); color: var(--danger); }
+.badge-expiring { background: var(--warning-bg); color: var(--warning); }
+.badge-valid { background: var(--success-bg); color: var(--success); }
+
+/* ── Price notice ────────────────────────────────────────────── */
+.price-notice {
+  background: var(--warning-bg);
+  border: 1px solid var(--gold-100);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--warning);
+  margin-top: var(--space-3);
+}
+
+/* ── Detail field classes ────────────────────────────────────── */
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+.detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.detail-field-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.detail-field-value {
+  font-size: var(--text-sm);
+  color: var(--text-base);
+}
+
+/* ── Buffer controls ─────────────────────────────────────────── */
+.buffer-controls {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.buffer-control-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.buffer-control-item input[type=number] {
+  width: 60px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  text-align: center;
 }

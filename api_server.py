@@ -16,9 +16,17 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Any
 
+import smtplib
+import threading
+import email as email_lib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -569,6 +577,132 @@ ITINERARY_LIBRARY = [
 ]
 
 # ---------------------------------------------------------------------------
+# EMAIL NOTIFICATIONS
+# ---------------------------------------------------------------------------
+EMAIL_CFG = {
+    "enabled": os.environ.get("EMAIL_NOTIFICATIONS_ENABLED", "false").lower() == "true",
+    "smtp_host": os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+    "smtp_port": int(os.environ.get("SMTP_PORT", "587")),
+    "smtp_user": os.environ.get("SMTP_USER", ""),
+    "smtp_pass": os.environ.get("SMTP_PASS", ""),
+    "from_name": os.environ.get("EMAIL_FROM_NAME", "TRVE Booking Hub"),
+    "from_addr": os.environ.get("SMTP_USER", "noreply@trve.co.ug"),
+    "bcc": os.environ.get("EMAIL_BCC", ""),  # optional BCC to TRVE staff
+}
+
+
+def send_email(to_addr: str, subject: str, html_body: str, pdf_attachment: bytes = None, pdf_filename: str = None) -> bool:
+    """Send an email via SMTP. Returns True on success, False on failure (non-blocking)."""
+    if not EMAIL_CFG["enabled"]:
+        return False
+    if not EMAIL_CFG["smtp_user"] or not to_addr:
+        return False
+    try:
+        msg = MIMEMultipart("mixed")
+        msg["From"] = f"{EMAIL_CFG['from_name']} <{EMAIL_CFG['from_addr']}>"
+        msg["To"] = to_addr
+        msg["Subject"] = subject
+        if EMAIL_CFG["bcc"]:
+            msg["Bcc"] = EMAIL_CFG["bcc"]
+
+        # HTML body
+        body_part = MIMEMultipart("alternative")
+        body_part.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(body_part)
+
+        # Optional PDF attachment
+        if pdf_attachment and pdf_filename:
+            part = MIMEBase("application", "pdf")
+            part.set_payload(pdf_attachment)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f'attachment; filename="{pdf_filename}"')
+            msg.attach(part)
+
+        with smtplib.SMTP(EMAIL_CFG["smtp_host"], EMAIL_CFG["smtp_port"]) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(EMAIL_CFG["smtp_user"], EMAIL_CFG["smtp_pass"])
+            recipients = [to_addr]
+            if EMAIL_CFG["bcc"]:
+                recipients.append(EMAIL_CFG["bcc"])
+            server.sendmail(EMAIL_CFG["from_addr"], recipients, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"[EMAIL] Send failed: {e}")
+        return False
+
+
+def enquiry_confirmation_html(booking_ref: str, client_name: str, destinations: str, travel_start: str, pax: int) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+  body {{ font-family: Arial, sans-serif; color: #1a2e29; max-width: 600px; margin: auto; padding: 20px; }}
+  .header {{ background: #0D5E4F; color: white; padding: 24px; border-radius: 8px 8px 0 0; }}
+  .header h1 {{ margin: 0; font-size: 20px; }}
+  .header p {{ margin: 4px 0 0; font-size: 13px; opacity: 0.85; }}
+  .body {{ background: #f9fafb; padding: 24px; border: 1px solid #e2e8e6; }}
+  .ref {{ background: white; border: 2px solid #C8963E; border-radius: 6px; padding: 12px 20px; margin: 16px 0; text-align: center; font-size: 22px; font-weight: bold; color: #C8963E; letter-spacing: 2px; }}
+  .field {{ margin: 8px 0; font-size: 14px; }}
+  .label {{ color: #6b7e79; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }}
+  .footer {{ background: #e8f4f1; padding: 16px 24px; border-radius: 0 0 8px 8px; font-size: 12px; color: #6b7e79; text-align: center; }}
+</style></head>
+<body>
+  <div class="header">
+    <h1>TRVE — The Rift Valley Explorer</h1>
+    <p>Bucket List Adventures Into The Heart Of Africa</p>
+  </div>
+  <div class="body">
+    <p>Dear {client_name},</p>
+    <p>Thank you for your safari enquiry. We have received your request and our team will be in touch within 24 hours with a tailored itinerary.</p>
+    <div class="ref">{booking_ref}</div>
+    <p>Please quote your booking reference in all correspondence.</p>
+    <div class="field"><div class="label">Destinations</div>{destinations or 'To be confirmed'}</div>
+    <div class="field"><div class="label">Travel date</div>{travel_start or 'Flexible'}</div>
+    <div class="field"><div class="label">Group size</div>{pax} {'person' if pax == 1 else 'people'}</div>
+    <p style="margin-top:20px">We look forward to crafting an unforgettable African adventure for you.</p>
+    <p>Warm regards,<br><strong>The TRVE Team</strong></p>
+  </div>
+  <div class="footer">TRVE — The Rift Valley Explorer | trve.co.ug | +256 XXX XXX XXX</div>
+</body>
+</html>"""
+
+
+def quotation_email_html(client_name: str, booking_ref: str, total_usd: float, valid_days: int, itinerary_name: str) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+  body {{ font-family: Arial, sans-serif; color: #1a2e29; max-width: 600px; margin: auto; padding: 20px; }}
+  .header {{ background: #0D5E4F; color: white; padding: 24px; border-radius: 8px 8px 0 0; }}
+  .header h1 {{ margin: 0; font-size: 20px; }}
+  .body {{ background: #f9fafb; padding: 24px; border: 1px solid #e2e8e6; }}
+  .total {{ background: white; border: 2px solid #0D5E4F; border-radius: 6px; padding: 16px 20px; margin: 16px 0; text-align: center; }}
+  .total-label {{ font-size: 12px; color: #6b7e79; text-transform: uppercase; }}
+  .total-amount {{ font-size: 28px; font-weight: bold; color: #0D5E4F; }}
+  .notice {{ background: #fffbeb; border-left: 3px solid #d97706; padding: 10px 14px; font-size: 12px; color: #92400e; margin: 16px 0; border-radius: 0 4px 4px 0; }}
+  .footer {{ background: #e8f4f1; padding: 16px 24px; border-radius: 0 0 8px 8px; font-size: 12px; color: #6b7e79; text-align: center; }}
+</style></head>
+<body>
+  <div class="header">
+    <h1>TRVE — Your Safari Quotation</h1>
+  </div>
+  <div class="body">
+    <p>Dear {client_name},</p>
+    <p>Please find attached your personalised safari quotation for <strong>{itinerary_name}</strong>.</p>
+    <p>Reference: <strong>{booking_ref}</strong></p>
+    <div class="total">
+      <div class="total-label">Total Quoted Price</div>
+      <div class="total-amount">USD {total_usd:,.2f}</div>
+    </div>
+    <div class="notice">&#9888; Prices are subject to final confirmation within {valid_days} days due to fuel price and exchange rate fluctuations.</div>
+    <p>To confirm your booking, please reply to this email or contact your TRVE coordinator. A 30% deposit is required to secure permits and accommodation.</p>
+    <p>Warm regards,<br><strong>The TRVE Team</strong></p>
+  </div>
+  <div class="footer">TRVE — The Rift Valley Explorer | trve.co.ug | This quotation is valid for {valid_days} days from the date of issue.</div>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
 CONFIG = {
@@ -582,8 +716,293 @@ CONFIG = {
     "vehicle_rate_per_day": 120,
     "insurance_rate_per_person_per_day": 10,
     "coordinators": ["Desire", "Belinda", "Robert"],
+    "fx_buffer_pct": 3,          # 3% FX volatility buffer
+    "fuel_buffer_pct": 10,       # 10% fuel price buffer
+    "quotation_validity_days": 7,  # Quotations expire after 7 days
     "last_updated": datetime.now().isoformat(),
 }
+
+# ---------------------------------------------------------------------------
+# Email configuration (set via environment variables)
+# ---------------------------------------------------------------------------
+EMAIL_CONFIG = {
+    "smtp_host": os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+    "smtp_port": int(os.environ.get("SMTP_PORT", "587")),
+    "smtp_user": os.environ.get("SMTP_USER", ""),
+    "smtp_pass": os.environ.get("SMTP_PASS", ""),
+    "from_name": os.environ.get("EMAIL_FROM_NAME", "TRVE Booking Hub"),
+    "from_addr": os.environ.get("EMAIL_FROM_ADDR", ""),
+    "enabled": bool(os.environ.get("SMTP_USER", "")),
+}
+
+
+def send_email_async(to_addr: str, subject: str, html_body: str, attachments: list = None):
+    """Send an email in a background thread. Silent failure if not configured."""
+    if not EMAIL_CONFIG["enabled"] or not to_addr or "@" not in to_addr:
+        return
+
+    def _send():
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = f'{EMAIL_CONFIG["from_name"]} <{EMAIL_CONFIG["from_addr"] or EMAIL_CONFIG["smtp_user"]}>'
+            msg["To"] = to_addr
+            msg.attach(MIMEText(html_body, "html"))
+
+            if attachments:
+                for fname, fdata in attachments:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(fdata)
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", f'attachment; filename="{fname}"')
+                    msg.attach(part)
+
+            with smtplib.SMTP(EMAIL_CONFIG["smtp_host"], EMAIL_CONFIG["smtp_port"]) as server:
+                server.ehlo()
+                server.starttls()
+                server.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_pass"])
+                server.sendmail(msg["From"], [to_addr], msg.as_string())
+        except Exception as e:
+            print(f"[email] Failed to send to {to_addr}: {e}")
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
+ENQUIRY_CONFIRM_TEMPLATE = """
+<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a2e29">
+  <div style="background:#0D5E4F;padding:24px;text-align:center">
+    <h1 style="color:#C8963E;margin:0;font-size:24px">TRVE Booking Hub</h1>
+    <p style="color:#fff;margin:8px 0 0;font-size:14px">The Rift Valley Explorer — Bucket List Adventures Into The Heart Of Africa</p>
+  </div>
+  <div style="padding:32px 24px;background:#fff">
+    <h2 style="color:#0D5E4F">Enquiry Received ✓</h2>
+    <p>Dear {client_name},</p>
+    <p>Thank you for your enquiry. We have received your request and one of our safari specialists will be in touch within <strong>24 hours</strong>.</p>
+    <table style="width:100%;border-collapse:collapse;margin:20px 0">
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold;width:40%">Booking Reference</td><td style="padding:10px;color:#0D5E4F;font-weight:bold">{booking_ref}</td></tr>
+      <tr><td style="padding:10px;font-weight:bold">Travel Dates</td><td style="padding:10px">{travel_dates}</td></tr>
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold">Guests</td><td style="padding:10px">{pax} people</td></tr>
+      <tr><td style="padding:10px;font-weight:bold">Destinations</td><td style="padding:10px">{destinations}</td></tr>
+    </table>
+    <p>We will craft a personalised itinerary based on your interests and budget.</p>
+    <div style="background:#f4f6f5;padding:16px;border-radius:8px;margin-top:20px">
+      <p style="margin:0;font-size:13px;color:#6b7e79">Questions? Reply to this email or WhatsApp us. Please quote your reference <strong>{booking_ref}</strong> in all communications.</p>
+    </div>
+  </div>
+  <div style="padding:16px 24px;background:#0D5E4F;text-align:center">
+    <p style="color:#fff;font-size:12px;margin:0">The Rift Valley Explorer · Uganda & Rwanda Safari Specialists</p>
+  </div>
+</body></html>
+"""
+
+QUOTATION_EMAIL_TEMPLATE = """
+<html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a2e29">
+  <div style="background:#0D5E4F;padding:24px;text-align:center">
+    <h1 style="color:#C8963E;margin:0;font-size:24px">TRVE Booking Hub</h1>
+    <p style="color:#fff;margin:8px 0 0;font-size:14px">Safari Quotation</p>
+  </div>
+  <div style="padding:32px 24px;background:#fff">
+    <h2 style="color:#0D5E4F">Your Safari Quotation</h2>
+    <p>Dear {client_name},</p>
+    <p>Please find your personalised safari quotation attached as a PDF. We have designed this itinerary specifically for you.</p>
+    <table style="width:100%;border-collapse:collapse;margin:20px 0">
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold;width:40%">Quotation Reference</td><td style="padding:10px;color:#0D5E4F;font-weight:bold">{quotation_id}</td></tr>
+      <tr><td style="padding:10px;font-weight:bold">Total (USD)</td><td style="padding:10px;font-size:18px;font-weight:bold;color:#0D5E4F">${total_usd}</td></tr>
+      <tr style="background:#f4f6f5"><td style="padding:10px;font-weight:bold">Valid Until</td><td style="padding:10px;color:#dc2626">{expires_at}</td></tr>
+    </table>
+    <div style="background:#fffbeb;border:1px solid #fef3c7;border-left:3px solid #d97706;padding:12px 16px;border-radius:6px;margin:16px 0">
+      <p style="margin:0;font-size:13px;color:#d97706"><strong>⚠️ Price Validity:</strong> Prices are subject to confirmation within 7 days due to fuel price and exchange rate fluctuations.</p>
+    </div>
+    <p>To confirm your booking, please reply to this email or contact your safari specialist directly.</p>
+    <p>A 30% deposit is required to secure your reservation.</p>
+  </div>
+  <div style="padding:16px 24px;background:#0D5E4F;text-align:center">
+    <p style="color:#fff;font-size:12px;margin:0">The Rift Valley Explorer · Uganda & Rwanda Safari Specialists</p>
+  </div>
+</body></html>
+"""
+
+# ---------------------------------------------------------------------------
+# Lodge seed data
+# ---------------------------------------------------------------------------
+LODGE_SEED = [
+    # --- Uganda: Bwindi ---
+    {"lodge_name": "Bwindi Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 350, "meal_plan": "Full Board"},
+    {"lodge_name": "Bwindi Lodge", "room_type": "Single Supplement", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 175, "meal_plan": "Full Board"},
+    {"lodge_name": "Mahogany Springs", "room_type": "Deluxe Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 400, "meal_plan": "Full Board"},
+    {"lodge_name": "Mahogany Springs", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 220, "meal_plan": "Full Board"},
+    {"lodge_name": "Gorilla Forest Camp", "room_type": "Luxury Tent Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 680, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "Gorilla Forest Camp", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 380, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "Sanctuary Gorilla Forest Camp", "room_type": "Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 580, "meal_plan": "Full Board"},
+    {"lodge_name": "Sanctuary Gorilla Forest Camp", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 300, "meal_plan": "Full Board"},
+    {"lodge_name": "Clouds Mountain Gorilla Lodge", "room_type": "Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 750, "meal_plan": "Full Board"},
+    {"lodge_name": "Clouds Mountain Gorilla Lodge", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 400, "meal_plan": "Full Board"},
+    {"lodge_name": "Gorillas Nest Lodge", "room_type": "Double", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 320, "meal_plan": "Full Board"},
+    {"lodge_name": "Gorillas Nest Lodge", "room_type": "Single", "country": "Uganda", "location": "Bwindi", "rack_rate_usd": 175, "meal_plan": "Full Board"},
+    # --- Uganda: Kibale ---
+    {"lodge_name": "Kibale Forest Camp", "room_type": "Double", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 320, "meal_plan": "Full Board"},
+    {"lodge_name": "Kibale Forest Camp", "room_type": "Single", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 180, "meal_plan": "Full Board"},
+    {"lodge_name": "Primate Lodge Kibale", "room_type": "Double", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 280, "meal_plan": "Full Board"},
+    {"lodge_name": "Primate Lodge Kibale", "room_type": "Single", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 160, "meal_plan": "Full Board"},
+    {"lodge_name": "Kyaninga Lodge", "room_type": "Double", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 550, "meal_plan": "Full Board"},
+    {"lodge_name": "Kyaninga Lodge", "room_type": "Single", "country": "Uganda", "location": "Kibale", "rack_rate_usd": 300, "meal_plan": "Full Board"},
+    # --- Uganda: Queen Elizabeth NP ---
+    {"lodge_name": "Mweya Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "QENP", "rack_rate_usd": 220, "meal_plan": "Half Board"},
+    {"lodge_name": "Mweya Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "QENP", "rack_rate_usd": 130, "meal_plan": "Half Board"},
+    {"lodge_name": "Jacana Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "QENP", "rack_rate_usd": 200, "meal_plan": "Full Board"},
+    {"lodge_name": "Jacana Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "QENP", "rack_rate_usd": 110, "meal_plan": "Full Board"},
+    {"lodge_name": "Ishasha Wilderness Camp", "room_type": "Double", "country": "Uganda", "location": "QENP/Ishasha", "rack_rate_usd": 320, "meal_plan": "Full Board"},
+    {"lodge_name": "Ishasha Wilderness Camp", "room_type": "Single", "country": "Uganda", "location": "QENP/Ishasha", "rack_rate_usd": 180, "meal_plan": "Full Board"},
+    # --- Uganda: Murchison Falls ---
+    {"lodge_name": "Paraa Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 180, "meal_plan": "Half Board"},
+    {"lodge_name": "Paraa Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 100, "meal_plan": "Half Board"},
+    {"lodge_name": "Chobe Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 200, "meal_plan": "Full Board"},
+    {"lodge_name": "Chobe Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 110, "meal_plan": "Full Board"},
+    {"lodge_name": "Baker's Lodge", "room_type": "Double", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 350, "meal_plan": "Full Board"},
+    {"lodge_name": "Baker's Lodge", "room_type": "Single", "country": "Uganda", "location": "Murchison Falls NP", "rack_rate_usd": 195, "meal_plan": "Full Board"},
+    # --- Uganda: Kidepo ---
+    {"lodge_name": "Apoka Safari Lodge", "room_type": "Double", "country": "Uganda", "location": "Kidepo Valley NP", "rack_rate_usd": 480, "meal_plan": "Full Board"},
+    {"lodge_name": "Apoka Safari Lodge", "room_type": "Single", "country": "Uganda", "location": "Kidepo Valley NP", "rack_rate_usd": 260, "meal_plan": "Full Board"},
+    # --- Uganda: Jinja ---
+    {"lodge_name": "Wildwaters Lodge", "room_type": "Double", "country": "Uganda", "location": "Jinja", "rack_rate_usd": 280, "meal_plan": "Full Board"},
+    {"lodge_name": "Wildwaters Lodge", "room_type": "Single", "country": "Uganda", "location": "Jinja", "rack_rate_usd": 155, "meal_plan": "Full Board"},
+    # --- Uganda: Lake Mburo ---
+    {"lodge_name": "Lake Mburo Camp", "room_type": "Double", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 180, "meal_plan": "Full Board"},
+    {"lodge_name": "Lake Mburo Camp", "room_type": "Single", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 100, "meal_plan": "Full Board"},
+    {"lodge_name": "Mihingo Lodge", "room_type": "Double", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 260, "meal_plan": "Full Board"},
+    {"lodge_name": "Mihingo Lodge", "room_type": "Single", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 145, "meal_plan": "Full Board"},
+    # --- Uganda: Lake Bunyonyi ---
+    {"lodge_name": "Arcadia Cottages", "room_type": "Double", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 90, "meal_plan": "Breakfast"},
+    {"lodge_name": "Arcadia Cottages", "room_type": "Single", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 55, "meal_plan": "Breakfast"},
+    {"lodge_name": "Bird Nest Resort", "room_type": "Double", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 120, "meal_plan": "Half Board"},
+    {"lodge_name": "Bird Nest Resort", "room_type": "Single", "country": "Uganda", "location": "Lake Bunyonyi", "rack_rate_usd": 70, "meal_plan": "Half Board"},
+    # --- Rwanda: Volcanoes NP ---
+    {"lodge_name": "Bisate Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 2200, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "Bisate Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1200, "meal_plan": "Full Board", "notes": "Wilderness Safaris"},
+    {"lodge_name": "One&Only Gorilla's Nest", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1800, "meal_plan": "Full Board"},
+    {"lodge_name": "One&Only Gorilla's Nest", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 950, "meal_plan": "Full Board"},
+    {"lodge_name": "Singita Kwitonda Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 2500, "meal_plan": "Full Board"},
+    {"lodge_name": "Singita Kwitonda Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1300, "meal_plan": "Full Board"},
+    {"lodge_name": "Sabyinyo Silverback Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1500, "meal_plan": "Full Board"},
+    {"lodge_name": "Sabyinyo Silverback Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 800, "meal_plan": "Full Board"},
+    {"lodge_name": "Virunga Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 1200, "meal_plan": "Full Board"},
+    {"lodge_name": "Virunga Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 650, "meal_plan": "Full Board"},
+    {"lodge_name": "Mountain Gorilla View Lodge", "room_type": "Double", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 450, "meal_plan": "Full Board"},
+    {"lodge_name": "Mountain Gorilla View Lodge", "room_type": "Single", "country": "Rwanda", "location": "Volcanoes NP", "rack_rate_usd": 250, "meal_plan": "Full Board"},
+    # --- Rwanda: Kigali ---
+    {"lodge_name": "Kigali Serena Hotel", "room_type": "Double", "country": "Rwanda", "location": "Kigali", "rack_rate_usd": 180, "meal_plan": "Breakfast"},
+    {"lodge_name": "Kigali Serena Hotel", "room_type": "Single", "country": "Rwanda", "location": "Kigali", "rack_rate_usd": 130, "meal_plan": "Breakfast"},
+]
+
+
+def _seed_lodges(conn):
+    """Seed the lodges table with TRVE partner lodge rates (detailed, fixed IDs)."""
+    lodges = [
+        # ── BWINDI IMPENETRABLE NP ──────────────────────────────────
+        ("lodge-bwindi-1", "Gorilla Safari Lodge", "Double Room", "Uganda", "Bwindi — Buhoma", 590, 450, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-bwindi-1b", "Gorilla Safari Lodge", "Single Room", "Uganda", "Bwindi — Buhoma", 720, 580, "Full Board", "2025-01-01", "2025-12-31", "Single supplement"),
+        ("lodge-bwindi-2", "Gorilla Safari Lodge", "Double Room", "Uganda", "Bwindi — Buhoma", 610, 470, "Full Board", "2026-01-01", "2026-12-31", "2026 rates"),
+        ("lodge-bwindi-2b", "Gorilla Safari Lodge", "Single Room", "Uganda", "Bwindi — Buhoma", 750, 600, "Full Board", "2026-01-01", "2026-12-31", "2026 rates"),
+        ("lodge-clouds-1", "Clouds Mountain Gorilla Lodge", "Cottage (Double)", "Uganda", "Bwindi — Nkuringo", 1050, 820, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-clouds-2", "Clouds Mountain Gorilla Lodge", "Cottage (Single)", "Uganda", "Bwindi — Nkuringo", 1260, 980, "Full Board", "2025-01-01", "2025-12-31", "Luxury single"),
+        ("lodge-mahogany-1", "Mahogany Springs Lodge", "Forest Suite (Double)", "Uganda", "Bwindi — Buhoma", 780, 610, "Full Board", "2025-01-01", "2025-12-31", "Premium"),
+        ("lodge-mahogany-2", "Mahogany Springs Lodge", "Forest Suite (Single)", "Uganda", "Bwindi — Buhoma", 940, 730, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-buhoma-1", "Buhoma Lodge", "Banda (Double)", "Uganda", "Bwindi — Buhoma", 490, 380, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-buhoma-2", "Buhoma Lodge", "Banda (Single)", "Uganda", "Bwindi — Buhoma", 590, 460, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-nkuringo-1", "Nkuringo Bwindi Gorilla Lodge", "Bandas (Double)", "Uganda", "Bwindi — Nkuringo", 530, 415, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-nkuringo-2", "Nkuringo Bwindi Gorilla Lodge", "Bandas (Single)", "Uganda", "Bwindi — Nkuringo", 640, 495, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-sanctuary-1", "Sanctuary Gorilla Forest Camp", "Tent (Double)", "Uganda", "Bwindi — Buhoma", 1200, 960, "Full Board", "2025-01-01", "2025-12-31", "Luxury tented"),
+        ("lodge-rushaga-1", "Rushaga Gorilla Camp", "Double Room", "Uganda", "Bwindi — Rushaga", 320, 250, "Full Board", "2025-01-01", "2025-12-31", "Budget option"),
+        ("lodge-rushaga-2", "Rushaga Gorilla Camp", "Single Room", "Uganda", "Bwindi — Rushaga", 390, 300, "Full Board", "2025-01-01", "2025-12-31", ""),
+        # ── KIBALE NATIONAL PARK ───────────────────────────────────
+        ("lodge-kibale-kyan-1", "Kyaninga Lodge", "Cottage (Double)", "Uganda", "Kibale NP", 820, 650, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-kibale-kyan-2", "Kyaninga Lodge", "Cottage (Single)", "Uganda", "Kibale NP", 980, 780, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-primate-1", "Primate Lodge Kibale", "Bandas (Double)", "Uganda", "Kibale NP — Kanyanchu", 480, 375, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-primate-2", "Primate Lodge Kibale", "Bandas (Single)", "Uganda", "Kibale NP — Kanyanchu", 580, 450, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-papaya-1", "Papaya Lake Lodge", "Suite (Double)", "Uganda", "Kibale NP — Fort Portal", 560, 440, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-papaya-2", "Papaya Lake Lodge", "Suite (Single)", "Uganda", "Kibale NP — Fort Portal", 680, 530, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kibale-forest-1", "Kibale Forest Camp", "Tent (Double)", "Uganda", "Kibale NP", 430, 340, "Full Board", "2025-01-01", "2025-12-31", ""),
+        # ── QUEEN ELIZABETH NATIONAL PARK ──────────────────────────
+        ("lodge-qenp-mweya-1", "Mweya Safari Lodge", "Standard Double", "Uganda", "Queen Elizabeth NP — Mweya", 460, 360, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-mweya-2", "Mweya Safari Lodge", "Standard Single", "Uganda", "Queen Elizabeth NP — Mweya", 550, 430, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-kyambura-1", "Kyambura Gorge Lodge", "Cottage (Double)", "Uganda", "Queen Elizabeth NP — Kyambura", 780, 610, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-qenp-kyambura-2", "Kyambura Gorge Lodge", "Cottage (Single)", "Uganda", "Queen Elizabeth NP — Kyambura", 940, 730, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-jacana-1", "Jacana Safari Lodge", "Banda (Double)", "Uganda", "Queen Elizabeth NP — Mweya", 390, 305, "Full Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-qenp-jacana-2", "Jacana Safari Lodge", "Banda (Single)", "Uganda", "Queen Elizabeth NP — Mweya", 470, 365, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-ishasha-1", "Ishasha Wilderness Camp", "Tent (Double)", "Uganda", "Queen Elizabeth NP — Ishasha", 680, 530, "Full Board", "2025-01-01", "2025-12-31", "Premium tented"),
+        ("lodge-qenp-ishasha-2", "Ishasha Wilderness Camp", "Tent (Single)", "Uganda", "Queen Elizabeth NP — Ishasha", 820, 640, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-qenp-kazinga-1", "Kazinga Channel Tented Lodge", "Tent (Double)", "Uganda", "Queen Elizabeth NP — Kazinga", 340, 265, "Half Board", "2025-01-01", "2025-12-31", ""),
+        # ── MURCHISON FALLS NP ─────────────────────────────────────
+        ("lodge-mfc-bakers-1", "Baker's Lodge", "Luxury Tent (Double)", "Uganda", "Murchison Falls NP", 920, 720, "Full Board", "2025-01-01", "2025-12-31", "Luxury, Nile views"),
+        ("lodge-mfc-bakers-2", "Baker's Lodge", "Luxury Tent (Single)", "Uganda", "Murchison Falls NP", 1100, 860, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-paraa-1", "Paraa Safari Lodge", "Standard Double", "Uganda", "Murchison Falls NP — Paraa", 450, 355, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-paraa-2", "Paraa Safari Lodge", "Standard Single", "Uganda", "Murchison Falls NP — Paraa", 540, 420, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-pakuba-1", "Pakuba Safari Lodge", "Banda (Double)", "Uganda", "Murchison Falls NP — Pakuba", 320, 250, "Half Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-mfc-chobe-1", "Chobe Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP — Chobe", 380, 300, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-nile-1", "Nile Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP", 520, 405, "Full Board", "2025-01-01", "2025-12-31", ""),
+        # ── LAKE MBURO NATIONAL PARK ────────────────────────────────
+        ("lodge-mburo-mihingo-1", "Mihingo Lodge", "Tent (Double)", "Uganda", "Lake Mburo NP", 620, 485, "Full Board", "2025-01-01", "2025-12-31", "Premium, hillside"),
+        ("lodge-mburo-mihingo-2", "Mihingo Lodge", "Tent (Single)", "Uganda", "Lake Mburo NP", 745, 580, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mburo-mantana-1", "Mantana Tented Camp", "Tent (Double)", "Uganda", "Lake Mburo NP", 290, 225, "Full Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-mburo-arcadia-1", "Arcadia Cottages", "Cottage (Double)", "Uganda", "Lake Bunyonyi", 180, 140, "Bed & Breakfast", "2025-01-01", "2025-12-31", "Budget-friendly"),
+        # ── KIDEPO VALLEY NP ────────────────────────────────────────
+        ("lodge-kidepo-apoka-1", "Apoka Safari Lodge", "Cottage (Double)", "Uganda", "Kidepo Valley NP", 820, 640, "Full Board", "2025-01-01", "2025-12-31", "Luxury, remote"),
+        ("lodge-kidepo-apoka-2", "Apoka Safari Lodge", "Cottage (Single)", "Uganda", "Kidepo Valley NP", 980, 765, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kidepo-wild-1", "Kidepo Savannah Lodge", "Cottage (Double)", "Uganda", "Kidepo Valley NP", 380, 295, "Full Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        # ── ENTEBBE / KAMPALA ───────────────────────────────────────
+        ("lodge-entebbe-boma-1", "The Boma Entebbe", "Superior Double", "Uganda", "Entebbe", 180, 140, "Bed & Breakfast", "2025-01-01", "2025-12-31", "City hotel"),
+        ("lodge-entebbe-lake-1", "Lake Victoria Hotel", "Standard Double", "Uganda", "Entebbe", 120, 95, "Bed & Breakfast", "2025-01-01", "2025-12-31", ""),
+        ("lodge-kampala-serena-1", "Kampala Serena Hotel", "Superior Double", "Uganda", "Kampala", 240, 190, "Bed & Breakfast", "2025-01-01", "2025-12-31", "5-star city"),
+        # ── ZIWA RHINO SANCTUARY ────────────────────────────────────
+        ("lodge-ziwa-1", "Amuka Safari Lodge", "Banda (Double)", "Uganda", "Ziwa Rhino Sanctuary", 220, 170, "Half Board", "2025-01-01", "2025-12-31", "At sanctuary"),
+        # ── RWANDA — VOLCANOES NP ───────────────────────────────────
+        ("lodge-rwa-singita-1", "Singita Kwitonda Lodge", "Suite (Double)", "Rwanda", "Volcanoes NP", 2200, 1760, "Full Board", "2025-01-01", "2025-12-31", "Ultra-luxury"),
+        ("lodge-rwa-wilderness-1", "Wilderness Bisate Lodge", "Villa (Double)", "Rwanda", "Volcanoes NP", 1850, 1480, "Full Board", "2025-01-01", "2025-12-31", "Luxury eco"),
+        ("lodge-rwa-sabyinyo-1", "Sabyinyo Silverback Lodge", "Cottage (Double)", "Rwanda", "Volcanoes NP", 1480, 1185, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        ("lodge-rwa-mountain-1", "Mountain Gorilla View Lodge", "Double Room", "Rwanda", "Volcanoes NP", 720, 575, "Full Board", "2025-01-01", "2025-12-31", "Premium"),
+        ("lodge-rwa-mountain-2", "Mountain Gorilla View Lodge", "Single Room", "Rwanda", "Volcanoes NP", 860, 690, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-rwa-five-1", "Five Volcanoes Boutique Hotel", "Double Room", "Rwanda", "Volcanoes NP — Musanze", 320, 255, "Bed & Breakfast", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-rwa-gorillas-1", "One&Only Gorilla's Nest", "Suite (Double)", "Rwanda", "Volcanoes NP", 1650, 1320, "Full Board", "2025-01-01", "2025-12-31", "Luxury"),
+        # ── RWANDA — NYUNGWE / AKAGERA ──────────────────────────────
+        ("lodge-rwa-nyungwe-1", "Nyungwe House", "Double Room", "Rwanda", "Nyungwe Forest NP", 620, 495, "Full Board", "2025-01-01", "2025-12-31", "One&Only property"),
+        ("lodge-rwa-akagera-1", "Akagera Game Lodge", "Standard Double", "Rwanda", "Akagera NP", 280, 220, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-rwa-ruzizi-1", "Ruzizi Tented Lodge", "Tent (Double)", "Rwanda", "Akagera NP", 350, 275, "Full Board", "2025-01-01", "2025-12-31", "Tented luxury"),
+    ]
+    for l in lodges:
+        conn.execute("""
+            INSERT OR IGNORE INTO lodges (id, lodge_name, room_type, country, location,
+                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, l)
+
+
+def seed_lodges(conn):
+    """Seed the lodges table with Uganda/Rwanda safari lodge data if empty."""
+    count = conn.execute("SELECT COUNT(*) FROM lodges").fetchone()[0]
+    if count > 0:
+        return
+    for lodge in LODGE_SEED:
+        rack = lodge["rack_rate_usd"]
+        net = round(rack * 0.7, 2)
+        conn.execute("""
+            INSERT INTO lodges (id, lodge_name, room_type, country, location,
+                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, source_file, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(uuid.uuid4())[:8],
+            lodge["lodge_name"],
+            lodge.get("room_type", "Double"),
+            lodge.get("country", "Uganda"),
+            lodge.get("location", ""),
+            rack,
+            net,
+            lodge.get("meal_plan", "Full Board"),
+            "2025-01-01",
+            "2026-12-31",
+            "seed_data",
+            lodge.get("notes", ""),
+        ))
+
 
 # ---------------------------------------------------------------------------
 # Database initialization + migration from JSON
@@ -614,6 +1033,14 @@ def init_db():
             itn.get("season", "year_round"), itn["description"],
             itn.get("highlights", ""), json.dumps(itn.get("nationality_tiers", []))
         ))
+
+    # Seed lodges if table is empty
+    seed_lodges(conn)
+
+    # Seed detailed partner lodge data (INSERT OR IGNORE — safe to always call)
+    lodge_count = conn.execute("SELECT COUNT(*) FROM lodges").fetchone()[0]
+    if lodge_count == 0:
+        _seed_lodges(conn)
 
     conn.commit()
     conn.close()
@@ -734,6 +1161,188 @@ def _migrate_from_json(conn):
 # ---------------------------------------------------------------------------
 # PDF Generation (branded TRVE quotation)
 # ---------------------------------------------------------------------------
+
+class _MiniPDF:
+    """
+    Minimal pure-Python PDF writer (A4, stdlib only).
+    Mimics the fpdf2 API subset used by generate_quotation_pdf.
+    Coordinates in mm, font sizes in points.
+    """
+    MM = 2.8346
+    PAGE_W_MM = 210.0
+    PAGE_H_MM = 297.0
+    PAGE_W = PAGE_W_MM * MM
+    PAGE_H = PAGE_H_MM * MM
+    _FONT_KEYS = {
+        ('helvetica', ''):   'F1', ('helvetica', 'b'):  'F2',
+        ('helvetica', 'i'):  'F3', ('helvetica', 'bi'): 'F4',
+        ('helvetica', 'ib'): 'F4',
+    }
+    _CHAR_W = 0.45  # char_width ≈ font_size_pt * _CHAR_W * 0.352778 mm
+
+    def __init__(self):
+        self._pages: list = []
+        self._cur: bytearray = bytearray()
+        self._in_page = False
+        self._in_hf = False  # inside header/footer (suppress auto-break)
+        self._page_count = 0
+        self._left_m = 10.0; self._right_m = 10.0; self._top_m = 10.0
+        self._break_m = 25.0; self._auto_break = True
+        self._font_key = 'F1'; self._font_size = 10.0
+        self._x = self._left_m; self._y = self._top_m
+        self._tc = (0.0, 0.0, 0.0)
+        self._fc = (1.0, 1.0, 1.0)
+        self._dc = (0.0, 0.0, 0.0)
+        self._lw_mm = 0.2
+
+    def _pt(self, mm): return mm * self.MM
+    def _yp(self, y_top_mm): return self.PAGE_H - y_top_mm * self.MM
+    def _esc(self, s):
+        return str(s).replace('\\','\\\\').replace('(','\\(').replace(')','\\)').replace('\n',' ').replace('\r',' ')
+    def _sw(self, s): return len(str(s)) * self._font_size * self._CHAR_W * 0.352778
+    def _ew(self): return self.PAGE_W_MM - self._left_m - self._right_m
+    def _emit(self, line):
+        self._cur.extend(line.encode('latin-1', errors='replace'))
+        self._cur.extend(b'\n')
+
+    def alias_nb_pages(self): pass
+    def set_auto_page_break(self, auto=True, margin=25):
+        self._auto_break = auto; self._break_m = float(margin)
+    def header(self): pass
+    def footer(self): pass
+
+    def add_page(self):
+        if self._in_page:
+            self._close_page()
+        self._in_page = True
+        self._page_count += 1
+        self._cur = bytearray()
+        self._x = self._left_m; self._y = self._top_m
+        self._in_hf = True; self.header(); self._in_hf = False
+
+    def _close_page(self):
+        self._in_hf = True; self.footer(); self._in_hf = False
+        self._pages.append(bytes(self._cur))
+
+    def _check_pb(self, h):
+        if self._auto_break and not self._in_hf and self._y + h > self.PAGE_H_MM - self._break_m:
+            self._close_page()
+            self._in_page = True; self._page_count += 1
+            self._cur = bytearray()
+            self._x = self._left_m; self._y = self._top_m
+            self._in_hf = True; self.header(); self._in_hf = False
+
+    def set_font(self, family='Helvetica', style='', size=10):
+        self._font_key = self._FONT_KEYS.get((family.lower(), style.upper().replace('U','').lower()), 'F1')
+        self._font_size = float(size)
+    def set_text_color(self, r, g, b): self._tc = (r/255, g/255, b/255)
+    def set_fill_color(self, r, g, b): self._fc = (r/255, g/255, b/255)
+    def set_draw_color(self, r, g, b): self._dc = (r/255, g/255, b/255)
+    def set_line_width(self, w): self._lw_mm = float(w)
+    def set_y(self, y):
+        self._x = self._left_m
+        self._y = self.PAGE_H_MM + float(y) if y < 0 else float(y)
+    def get_y(self): return self._y
+    def ln(self, h=None):
+        if h is None: h = self._font_size * 0.352778 * 1.5
+        self._x = self._left_m; self._y += float(h)
+    def page_no(self): return self._page_count
+
+    def rect(self, x, y, w, h, style=''):
+        xp, wp, hp = self._pt(x), self._pt(w), self._pt(h)
+        yp = self._yp(y + h)
+        lw = max(0.1, self._pt(self._lw_mm))
+        self._emit(f'{lw:.2f} w')
+        if 'F' in style:
+            r, g, b = self._fc
+            self._emit(f'{r:.3f} {g:.3f} {b:.3f} rg {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re f')
+        else:
+            r, g, b = self._dc
+            self._emit(f'{r:.3f} {g:.3f} {b:.3f} RG {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re S')
+
+    def line(self, x1, y1, x2, y2):
+        r, g, b = self._dc; lw = max(0.1, self._pt(self._lw_mm))
+        self._emit(f'{lw:.2f} w {r:.3f} {g:.3f} {b:.3f} RG '
+                   f'{self._pt(x1):.2f} {self._yp(y1):.2f} m {self._pt(x2):.2f} {self._yp(y2):.2f} l S')
+
+    def cell(self, w, h=0, text='', border=0, ln=False, align='L', fill=False, **kw):
+        if w == 0: w = self._ew() - (self._x - self._left_m)
+        if not h: h = self._font_size * 0.352778 * 1.5
+        w, h = float(w), float(h)
+        self._check_pb(h)
+        x, y = self._x, self._y
+        xp, wp, hp = self._pt(x), self._pt(w), self._pt(h)
+        yp = self._yp(y + h); lw = max(0.1, self._pt(self._lw_mm))
+        if fill:
+            r, g, b = self._fc
+            self._emit(f'{r:.3f} {g:.3f} {b:.3f} rg {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re f')
+        if border:
+            r, g, b = self._dc
+            self._emit(f'{lw:.2f} w {r:.3f} {g:.3f} {b:.3f} RG {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re S')
+        if text:
+            text = str(text); r, g, b = self._tc
+            fs = self._font_size
+            bl = self._yp(y + (h + fs * 0.352778) / 2)
+            tw = self._sw(text)
+            if align == 'R': tx = x + w - tw - 1.5
+            elif align == 'C': tx = x + (w - tw) / 2
+            else: tx = x + 1.0
+            self._emit(f'BT /{self._font_key} {fs:.1f} Tf {r:.3f} {g:.3f} {b:.3f} rg '
+                       f'{self._pt(max(tx,x)):.2f} {bl:.2f} Td ({self._esc(text)}) Tj ET')
+        if ln: self._x = self._left_m; self._y = y + h
+        else: self._x = x + w
+
+    def multi_cell(self, w, h, text='', border=0, fill=False, **kw):
+        if not text: return
+        text = str(text)
+        if w == 0: w = self._ew()
+        if not h: h = self._font_size * 0.352778 * 1.5
+        w, h = float(w), float(h)
+        cw = self._font_size * self._CHAR_W * 0.352778
+        mc = max(1, int((w - 3) / max(0.001, cw)))
+        words = text.split(' '); line = ''
+        for word in words:
+            test = (line + ' ' + word).strip() if line else word
+            if len(test) <= mc: line = test
+            else:
+                if line: self.cell(w, h, line, ln=True, fill=fill, border=border)
+                line = word
+        if line: self.cell(w, h, line, ln=True, fill=fill, border=border)
+
+    def output(self) -> bytes:
+        import io as _io
+        if self._in_page: self._close_page()
+        nb = str(len(self._pages)).encode('ascii')
+        pages = [p.replace(b'{nb}', nb) for p in self._pages]
+        N = len(pages) or 1
+        if not pages: pages = [b'']
+        page_ids = list(range(3, 3+N)); stream_ids = list(range(3+N, 3+2*N))
+        fb = 3+2*N
+        fdefs = [('F1','Helvetica'),('F2','Helvetica-Bold'),('F3','Helvetica-Oblique'),('F4','Helvetica-BoldOblique')]
+        total = fb + len(fdefs)
+        buf = _io.BytesIO(); pos = {}
+        def w(d): buf.write(d.encode('latin-1', errors='replace') if isinstance(d, str) else d)
+        def obj(n): pos[n] = buf.tell(); w(f'{n} 0 obj\n')
+        def eo(): w('endobj\n')
+        w('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
+        obj(1); w('<< /Type /Catalog /Pages 2 0 R >>\n'); eo()
+        obj(2); w(f'<< /Type /Pages /Kids [{" ".join(f"{i} 0 R" for i in page_ids)}] /Count {N} >>\n'); eo()
+        fr = ' '.join(f'/{a} {fb+i} 0 R' for i,(a,_) in enumerate(fdefs))
+        for i in range(N):
+            c = pages[i]
+            obj(stream_ids[i]); w(f'<< /Length {len(c)} >>\nstream\n'); buf.write(c); w('\nendstream\n'); eo()
+            obj(page_ids[i])
+            w(f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {self.PAGE_W:.2f} {self.PAGE_H:.2f}] '
+              f'/Contents {stream_ids[i]} 0 R /Resources << /Font << {fr} >> >> >>\n'); eo()
+        for i,(alias,name) in enumerate(fdefs):
+            obj(fb+i); w(f'<< /Type /Font /Subtype /Type1 /BaseFont /{name} /Encoding /WinAnsiEncoding >>\n'); eo()
+        xp = buf.tell()
+        w(f'xref\n0 {total+1}\n0000000000 65535 f \n')
+        for i in range(1, total+1): w(f'{pos.get(i,0):010d} 00000 n \n')
+        w(f'trailer\n<< /Size {total+1} /Root 1 0 R >>\nstartxref\n{xp}\n%%EOF\n')
+        return buf.getvalue()
+
+
 def _sanitize_pdf_text(text: str) -> str:
     """Replace Unicode chars not supported by Helvetica."""
     replacements = {
@@ -749,10 +1358,9 @@ def _sanitize_pdf_text(text: str) -> str:
 
 
 def generate_quotation_pdf(quotation: dict) -> bytes:
-    """Generate a branded TRVE quotation PDF."""
-    from fpdf import FPDF
+    """Generate a branded TRVE quotation PDF (pure Python, no external deps)."""
 
-    class TRVEQuotationPDF(FPDF):
+    class TRVEQuotationPDF(_MiniPDF):
         def cell(self, w, h=0, text='', *args, **kwargs):
             return super().cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
 
@@ -964,6 +1572,8 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     pdf.set_font('Helvetica', '', 8)
     pdf.set_text_color(80, 80, 80)
     terms = [
+        "PRICES ARE SUBJECT TO CONFIRMATION WITHIN 7 DAYS due to fuel price and exchange rate fluctuations.",
+        "All prices are quoted in USD unless otherwise stated.",
         f"This quotation is valid for {valid} days from the date of issue.",
         "A 30% deposit is required to confirm the booking. Balance due 45 days before travel.",
         "Permit availability is subject to UWA/RDB allocation and is not guaranteed until confirmed.",
@@ -991,6 +1601,36 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     ]
     for p in payment:
         pdf.cell(0, 5, f"  {p}", ln=True)
+
+    # --- Bold Disclaimer ---
+    pdf.ln(4)
+    pdf.set_font("Helvetica", style="B", size=9)
+    pdf.set_text_color(180, 50, 50)  # Red for urgency
+    pdf.cell(0, 6, "IMPORTANT: Prices valid for 7 days only. Subject to change without notice due to", ln=True)
+    pdf.cell(0, 6, "fuel price fluctuations and exchange rate movements.", ln=True)
+    pdf.set_text_color(0, 0, 0)
+
+    # --- Price Validity Notice ---
+    pdf.ln(6)
+    validity_days = CONFIG.get("quotation_validity_days", 7)
+    try:
+        created_dt = datetime.fromisoformat(created[:10])
+    except (ValueError, TypeError):
+        created_dt = datetime.now()
+    from datetime import timedelta
+    expiry_date_str = (created_dt + timedelta(days=validity_days)).strftime("%d %B %Y")
+    pdf.set_fill_color(255, 243, 205)  # Light amber background
+    pdf.set_draw_color(200, 150, 62)
+    pdf.set_line_width(0.4)
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_text_color(120, 80, 0)
+    notice_text = (
+        f"! PRICE VALIDITY: Prices are subject to final confirmation within {validity_days} days "
+        f"due to fuel price and foreign exchange rate fluctuations. "
+        f"This quotation expires on {expiry_date_str}. "
+        f"After expiry, prices must be recalculated."
+    )
+    pdf.multi_cell(0, 5.5, notice_text, border=1, fill=True)
 
     return pdf.output()
 
@@ -1116,6 +1756,43 @@ class SyncPushQuotation(BaseModel):
     quotation_id: str
 
 
+class ConfigUpdate(BaseModel):
+    fx_rate: Optional[float] = None
+    fx_buffer_pct: Optional[float] = None
+    fuel_buffer_pct: Optional[float] = None
+    vehicle_rate_per_day: Optional[float] = None
+    service_fee_pct: Optional[float] = None
+    quotation_validity_days: Optional[int] = None
+
+
+class LodgeCreate(BaseModel):
+    lodge_name: str
+    room_type: Optional[str] = "Double"
+    country: Optional[str] = "Uganda"
+    location: Optional[str] = ""
+    rack_rate_usd: Optional[float] = 0
+    net_rate_usd: Optional[float] = None
+    meal_plan: Optional[str] = "Full Board"
+    valid_from: Optional[str] = "2025-01-01"
+    valid_to: Optional[str] = "2026-12-31"
+    source_file: Optional[str] = ""
+    notes: Optional[str] = ""
+
+
+class LodgeUpdate(BaseModel):
+    lodge_name: Optional[str] = None
+    room_type: Optional[str] = None
+    country: Optional[str] = None
+    location: Optional[str] = None
+    rack_rate_usd: Optional[float] = None
+    net_rate_usd: Optional[float] = None
+    meal_plan: Optional[str] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    source_file: Optional[str] = None
+    notes: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # ENDPOINTS
 # ---------------------------------------------------------------------------
@@ -1137,7 +1814,40 @@ def health():
 @app.get("/api/config")
 def get_config():
     CONFIG["last_updated"] = datetime.now().isoformat()
+    return {**CONFIG, "email_enabled": EMAIL_CONFIG["enabled"]}
+
+
+@app.patch("/api/config")
+def update_config(body: ConfigUpdate):
+    updates = body.model_dump(exclude_none=True)
+    CONFIG.update(updates)
+    CONFIG["last_updated"] = datetime.now().isoformat()
     return CONFIG
+
+
+@app.post("/api/config/update")
+def update_config_post(body: ConfigUpdate):
+    updates = body.model_dump(exclude_none=True)
+    for k, v in updates.items():
+        if k in CONFIG:
+            CONFIG[k] = v
+    CONFIG["last_updated"] = datetime.now().isoformat()
+    return CONFIG
+
+
+@app.get("/api/email/status")
+def email_status():
+    """Return current email configuration status (without exposing credentials)."""
+    return {
+        "enabled": EMAIL_CFG["enabled"],
+        "configured": bool(EMAIL_CFG["smtp_user"]),
+        "from": EMAIL_CFG["from_addr"] if EMAIL_CFG["smtp_user"] else None,
+        "smtp_host": EMAIL_CFG["smtp_host"],
+        "instructions": None if EMAIL_CFG["enabled"] else (
+            "To enable: set EMAIL_NOTIFICATIONS_ENABLED=true, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS "
+            "as environment variables in your Render dashboard."
+        ),
+    }
 
 
 # --- Enquiries ---
@@ -1194,6 +1904,25 @@ def create_enquiry(body: EnquiryCreate):
             "SELECT * FROM enquiries WHERE id = ?", (booking_ref,)
         ).fetchone())
         entry["synced"] = bool(entry["synced"])
+
+    # Send confirmation email (non-blocking)
+    if entry.get("email"):
+        dest = entry.get("destinations_requested", "")
+        try:
+            dest_clean = ', '.join(json.loads(dest)) if dest.startswith('[') else dest
+        except Exception:
+            dest_clean = dest
+        send_email(
+            to_addr=entry["email"],
+            subject=f"Safari Enquiry Confirmed — {booking_ref} | TRVE",
+            html_body=enquiry_confirmation_html(
+                booking_ref=booking_ref,
+                client_name=entry["client_name"],
+                destinations=dest_clean,
+                travel_start=entry.get("travel_start_date", ""),
+                pax=entry.get("pax", 2),
+            )
+        )
 
     return {"booking_ref": booking_ref, "id": booking_ref, **entry}
 
@@ -1285,6 +2014,123 @@ def list_lodges():
             "notes": l["notes"],
         })
     return list(lodge_map.values())
+
+
+# --- Activities & Structured Costs ---
+ACTIVITY_CATALOGUE = [
+    {"id": "boat_cruise_kazinga", "name": "Boat Cruise — Kazinga Channel", "category": "activity", "default_usd": 30, "per_person": True, "notes": "2-hour cruise, QENP"},
+    {"id": "boat_cruise_murchison", "name": "Boat Cruise — Murchison Falls", "category": "activity", "default_usd": 30, "per_person": True, "notes": "3-hour cruise to base of falls"},
+    {"id": "game_drive_half", "name": "Game Drive — Half Day", "category": "activity", "default_usd": 0, "per_person": False, "notes": "Included in vehicle hire"},
+    {"id": "rhino_tracking_ziwa", "name": "Rhino Tracking — Ziwa Sanctuary", "category": "activity", "default_usd": 40, "per_person": True, "notes": "Per person, walk-based"},
+    {"id": "community_walk", "name": "Community/Village Walk", "category": "activity", "default_usd": 20, "per_person": True, "notes": "Bigodi, Batwa Trail, etc."},
+    {"id": "canoe_bunyonyi", "name": "Canoe — Lake Bunyonyi", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Half-day canoe rental"},
+    {"id": "birdwatching_guided", "name": "Guided Birding Walk", "category": "activity", "default_usd": 25, "per_person": True, "notes": "2-3 hours with specialist guide"},
+    {"id": "cultural_batwa", "name": "Batwa Trail — Cultural Experience", "category": "activity", "default_usd": 45, "per_person": True, "notes": "Bwindi cultural immersion"},
+    {"id": "nature_walk_forest", "name": "Guided Forest Nature Walk", "category": "activity", "default_usd": 20, "per_person": True, "notes": "Self-guided or guided"},
+    {"id": "sport_fishing", "name": "Sport Fishing — Nile/Lake Victoria", "category": "activity", "default_usd": 50, "per_person": True, "notes": "Per rod per day"},
+    {"id": "white_water_jinja", "name": "White-Water Rafting — Jinja", "category": "activity", "default_usd": 140, "per_person": True, "notes": "Full day, Grade 5 Nile rapids"},
+    {"id": "bungee_jinja", "name": "Bungee Jump — Jinja", "category": "activity", "default_usd": 115, "per_person": True, "notes": "Over the Nile"},
+    {"id": "quad_bike", "name": "Quad Biking", "category": "activity", "default_usd": 90, "per_person": True, "notes": "Jinja / Entebbe"},
+    {"id": "horse_riding", "name": "Horse Riding Safari", "category": "activity", "default_usd": 80, "per_person": True, "notes": "Lake Mburo area"},
+    {"id": "internal_flight_ebb_mfc", "name": "Internal Flight — EBB to Murchison", "category": "flight", "default_usd": 280, "per_person": True, "notes": "Aerolink Uganda one-way"},
+    {"id": "internal_flight_ebb_kidepo", "name": "Internal Flight — EBB to Kidepo", "category": "flight", "default_usd": 320, "per_person": True, "notes": "Aerolink Uganda one-way"},
+    {"id": "internal_flight_ebb_bwindi", "name": "Internal Flight — EBB to Bwindi (Kihihi)", "category": "flight", "default_usd": 250, "per_person": True, "notes": "Aerolink Uganda one-way"},
+    {"id": "internal_flight_ebb_kla", "name": "Internal Flight — Kigali to Bwindi", "category": "flight", "default_usd": 300, "per_person": True, "notes": "One-way cross-border connection"},
+    {"id": "transfer_entebbe", "name": "Airport Transfer — Entebbe/Kampala", "category": "transfer", "default_usd": 80, "per_person": False, "notes": "Per vehicle one-way"},
+    {"id": "transfer_kigali", "name": "Airport Transfer — Kigali", "category": "transfer", "default_usd": 60, "per_person": False, "notes": "Per vehicle one-way"},
+    {"id": "visa_uganda", "name": "Uganda Entry Visa", "category": "visa", "default_usd": 50, "per_person": True, "notes": "EAC members exempt"},
+    {"id": "visa_rwanda", "name": "Rwanda Entry Visa", "category": "visa", "default_usd": 50, "per_person": True, "notes": "Most nationalities on arrival"},
+    {"id": "conservancy_fee", "name": "Community Conservancy Fee", "category": "conservation", "default_usd": 20, "per_person": True, "notes": "Various private conservancies"},
+    {"id": "park_dev_levy", "name": "Park Development Levy", "category": "conservation", "default_usd": 5, "per_person": True, "notes": "Per park entry in Uganda"},
+    {"id": "driver_guide_tip", "name": "Driver-Guide Gratuity (suggested)", "category": "gratuity", "default_usd": 20, "per_person": False, "notes": "Per day suggestion"},
+    {"id": "porter_bwindi", "name": "Porter — Gorilla/Chimp Trek", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Highly recommended, per trek"},
+    {"id": "covid_test", "name": "PCR / Health Certificate (if required)", "category": "health", "default_usd": 60, "per_person": True, "notes": "Check current requirements"},
+    {"id": "travel_insurance_ext", "name": "Travel Insurance (external quote)", "category": "insurance", "default_usd": 0, "per_person": True, "notes": "Client arranges — amount varies"},
+]
+
+
+@app.get("/api/activities")
+def list_activities():
+    return {"items": ACTIVITY_CATALOGUE}
+
+
+# --- Lodge CRUD ---
+@app.get("/api/lodges")
+def list_lodges_raw(
+    country: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    with db_session() as conn:
+        query = "SELECT * FROM lodges WHERE 1=1"
+        params = []
+        if country:
+            query += " AND country = ?"
+            params.append(country)
+        if location:
+            query += " AND location LIKE ?"
+            params.append(f"%{location}%")
+        query += " ORDER BY country, location, lodge_name LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
+@app.post("/api/lodges", status_code=201)
+def create_lodge(body: LodgeCreate):
+    lid = str(uuid.uuid4())[:8]
+    net = body.net_rate_usd if body.net_rate_usd is not None else round((body.rack_rate_usd or 0) * 0.7, 2)
+    with db_session() as conn:
+        conn.execute("""
+            INSERT INTO lodges (id, lodge_name, room_type, country, location,
+                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, source_file, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            lid, body.lodge_name, body.room_type or "Double",
+            body.country or "Uganda", body.location or "",
+            body.rack_rate_usd or 0, net,
+            body.meal_plan or "Full Board",
+            body.valid_from or "2025-01-01", body.valid_to or "2026-12-31",
+            body.source_file or "", body.notes or "",
+        ))
+        row = dict(conn.execute("SELECT * FROM lodges WHERE id = ?", (lid,)).fetchone())
+    return row
+
+
+@app.get("/api/lodges/{lodge_id}")
+def get_lodge(lodge_id: str):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM lodges WHERE id = ?", (lodge_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Lodge not found")
+    return dict(row)
+
+
+@app.patch("/api/lodges/{lodge_id}")
+def update_lodge(lodge_id: str, body: LodgeUpdate):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM lodges WHERE id = ?", (lodge_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Lodge not found")
+        updates = body.model_dump(exclude_none=True)
+        if not updates:
+            return dict(row)
+        set_clauses = [f"{k} = ?" for k in updates]
+        values = list(updates.values()) + [lodge_id]
+        conn.execute(
+            f"UPDATE lodges SET {', '.join(set_clauses)} WHERE id = ?", values
+        )
+        updated = dict(conn.execute("SELECT * FROM lodges WHERE id = ?", (lodge_id,)).fetchone())
+    return updated
+
+
+@app.delete("/api/lodges/{lodge_id}", status_code=204)
+def delete_lodge(lodge_id: str):
+    with db_session() as conn:
+        result = conn.execute("DELETE FROM lodges WHERE id = ?", (lodge_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Lodge not found")
+    return None
 
 
 # --- Curation (Itinerary Matching) ---
@@ -1499,6 +2345,10 @@ def calculate_price(body: PricingRequest):
     v_days = (body.extra_vehicle_days or 0) + (days - 1 if days > 1 else days)
     vehicle_rate = CONFIG["vehicle_rate_per_day"]
     vehicle_total = v_days * vehicle_rate
+    # Apply fuel buffer
+    fuel_buffer_pct = CONFIG.get("fuel_buffer_pct", 0)
+    if fuel_buffer_pct:
+        vehicle_total = vehicle_total * (1 + fuel_buffer_pct / 100)
 
     # 3. Permits
     permit_total = 0.0
@@ -1557,7 +2407,8 @@ def calculate_price(body: PricingRequest):
     commission_amount = subtotal * (commission_pct / 100) if commission_pct else 0
     grand_total = subtotal + service_fee + commission_amount
     per_person = grand_total / pax if pax else grand_total
-    fx_rate = CONFIG["fx_rate"]
+    fx_buffer_pct = CONFIG.get("fx_buffer_pct", 0)
+    fx_rate = CONFIG["fx_rate"] * (1 + fx_buffer_pct / 100)
     grand_total_ugx = grand_total * fx_rate
 
     # Build flat line_items array
@@ -1565,7 +2416,8 @@ def calculate_price(body: PricingRequest):
     for line in accommodation_lines:
         line_items.append({"item": line["description"] + f" ({line['nights']} nights)", "total_usd": line["total"]})
     if vehicle_total > 0:
-        line_items.append({"item": f"4x4 Safari Vehicle ({v_days} days @ ${vehicle_rate}/day)", "total_usd": round(vehicle_total, 2)})
+        fuel_pct = CONFIG["fuel_buffer_pct"]
+        line_items.append({"item": f"4x4 Safari Vehicle ({v_days} days @ ${vehicle_rate}/day + {fuel_pct}% fuel buffer)", "total_usd": round(vehicle_total, 2)})
     for line in permit_lines:
         line_items.append({"item": line["description"] + f" (x{line['qty']})", "total_usd": line["total"]})
     if insurance_total > 0:
@@ -1591,7 +2443,9 @@ def calculate_price(body: PricingRequest):
         "service_fee_label": f"TRVE Service Fee ({service_fee_pct}%)",
         "service_fee_pct": service_fee_pct,
         "tmsf_usd": round(service_fee, 2),
-        "fx_rate": fx_rate,
+        "fx_rate": round(fx_rate, 2),
+        "fx_buffer_pct": fx_buffer_pct,
+        "fuel_buffer_pct": fuel_buffer_pct,
         "fx_timestamp": "2026 avg",
         "duration_days": days,
         "pax": pax,
@@ -1616,6 +2470,10 @@ def calculate_price(body: PricingRequest):
             "per_person_usd": round(per_person, 2),
             "fx_rate": fx_rate,
             "grand_total_ugx": round(grand_total_ugx, 0),
+            "buffers": {
+                "fx_buffer_pct": CONFIG["fx_buffer_pct"],
+                "fuel_buffer_pct": CONFIG["fuel_buffer_pct"],
+            },
         },
     }
 
@@ -1652,6 +2510,41 @@ def generate_quotation(body: QuotationRequest):
             body.booking_ref or "", body.valid_days or 14,
             datetime.now().isoformat(), json.dumps(body.pricing_data), "draft"
         ))
+
+    # Send quotation PDF to client by email (only when email is configured)
+    if EMAIL_CONFIG["enabled"] and body.client_email and "@" in body.client_email:
+        from datetime import timedelta
+        pricing = body.pricing_data or {}
+        total_usd = pricing.get("grand_total_usd", 0) if isinstance(pricing, dict) else 0
+        expires_dt = (datetime.now() + timedelta(days=body.valid_days or 14)).strftime("%d %B %Y")
+        html = QUOTATION_EMAIL_TEMPLATE.format(
+            client_name=body.client_name,
+            quotation_id=qid,
+            total_usd=f"{total_usd:,.2f}" if total_usd else "See attached",
+            expires_at=expires_dt,
+        )
+        # Attempt to attach PDF
+        try:
+            q_doc = {
+                "quotation_id": qid,
+                "client_name": body.client_name,
+                "client_email": body.client_email,
+                "booking_ref": body.booking_ref or qid,
+                "valid_days": body.valid_days or 14,
+                "created_at": datetime.now().isoformat(),
+                "pricing_data": body.pricing_data or {},
+            }
+            pdf_bytes = generate_quotation_pdf(q_doc)
+            attachments = [(f"TRVE_Quotation_{qid}.pdf", pdf_bytes)]
+        except (ModuleNotFoundError, Exception):
+            attachments = None
+        send_email_async(
+            body.client_email,
+            f"Your TRVE Safari Quotation — {qid}",
+            html,
+            attachments=attachments,
+        )
+
     return {
         "id": qid,
         "quotation_id": qid,
@@ -1703,6 +2596,170 @@ def get_quotation_pdf(quotation_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{filename}"'}
     )
+
+
+@app.post("/api/quotations/{quotation_id}/email")
+def email_quotation(quotation_id: str):
+    """Generate PDF and email it to the client on the quotation."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotations WHERE id = ? OR quotation_id = ?",
+            (quotation_id, quotation_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+
+    q = dict(row)
+    if not q.get("client_email"):
+        raise HTTPException(status_code=400, detail="No client email on this quotation")
+
+    try:
+        q["pricing_data"] = json.loads(q["pricing_data"]) if isinstance(q["pricing_data"], str) else q["pricing_data"]
+    except (json.JSONDecodeError, TypeError):
+        q["pricing_data"] = {}
+
+    # Generate PDF
+    try:
+        pdf_bytes = generate_quotation_pdf(q)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
+    pd = q.get("pricing_data", {})
+    total = pd.get("grand_total_usd", 0)
+    itn_name = pd.get("summary", {}).get("itinerary_name", "Safari Itinerary") if isinstance(pd.get("summary"), dict) else "Safari Itinerary"
+    valid_days = q.get("valid_days", 7)
+
+    sent = send_email(
+        to_addr=q["client_email"],
+        subject=f"Your TRVE Safari Quotation — {q.get('booking_ref', quotation_id)}",
+        html_body=quotation_email_html(
+            client_name=q["client_name"],
+            booking_ref=q.get("booking_ref", quotation_id),
+            total_usd=total,
+            valid_days=valid_days,
+            itinerary_name=itn_name,
+        ),
+        pdf_attachment=pdf_bytes,
+        pdf_filename=f"TRVE_Quotation_{quotation_id}.pdf",
+    )
+
+    if not sent and not EMAIL_CFG["enabled"]:
+        return {
+            "status": "not_configured",
+            "message": "Email not sent — set EMAIL_NOTIFICATIONS_ENABLED=true and SMTP_* environment variables on Render to enable.",
+            "quotation_id": quotation_id,
+            "client_email": q["client_email"],
+        }
+
+    if not sent:
+        raise HTTPException(status_code=500, detail="Email send failed — check SMTP configuration")
+
+    return {"status": "sent", "to": q["client_email"], "quotation_id": quotation_id}
+
+
+# --- Quotation Status / Expiry ---
+@app.get("/api/quotations/{quotation_id}/status")
+def get_quotation_status(quotation_id: str):
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotations WHERE id = ? OR quotation_id = ?",
+            (quotation_id, quotation_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    q = dict(row)
+    created_at = q.get("created_at", "")
+    valid_days = q.get("valid_days", CONFIG.get("quotation_validity_days", 7))
+    try:
+        created_dt = datetime.fromisoformat(created_at)
+    except (ValueError, TypeError):
+        created_dt = datetime.now()
+    from datetime import timedelta
+    expiry_dt = created_dt + timedelta(days=valid_days)
+    now = datetime.now()
+    expired = now > expiry_dt
+    days_remaining = max(0, (expiry_dt - now).days)
+    current_status = q.get("status", "draft")
+    if expired and current_status not in ("expired", "confirmed"):
+        with db_session() as conn2:
+            conn2.execute(
+                "UPDATE quotations SET status = 'expired' WHERE id = ?", (q["id"],)
+            )
+        current_status = "expired"
+    return {
+        "id": q["id"],
+        "quotation_id": q.get("quotation_id", q["id"]),
+        "status": current_status,
+        "expired": expired,
+        "days_remaining": days_remaining,
+        "expiry_date": expiry_dt.isoformat(),
+        "created_at": created_at,
+        "valid_days": valid_days,
+        "requires_recalculation": expired,
+    }
+
+
+@app.get("/api/quotations/check-expiry")
+def check_quotation_expiry():
+    """Bulk check and mark all expired quotations."""
+    from datetime import timedelta
+    expired_ids = []
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM quotations WHERE status NOT IN ('expired', 'confirmed')"
+        ).fetchall()
+        now = datetime.now()
+        for row in rows:
+            q = dict(row)
+            created_at = q.get("created_at", "")
+            valid_days = q.get("valid_days", CONFIG.get("quotation_validity_days", 7))
+            try:
+                created_dt = datetime.fromisoformat(created_at)
+            except (ValueError, TypeError):
+                continue
+            expiry_dt = created_dt + timedelta(days=valid_days)
+            if now > expiry_dt:
+                conn.execute(
+                    "UPDATE quotations SET status = 'expired' WHERE id = ?", (q["id"],)
+                )
+                expired_ids.append(q["id"])
+    return {
+        "expired_count": len(expired_ids),
+        "expired_ids": expired_ids,
+        "checked_at": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/quotations/{quotation_id}/check-expiry")
+def check_quotation_expiry_by_id(quotation_id: str):
+    """Check expiry status for a specific quotation by ID."""
+    from datetime import timedelta
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotations WHERE id = ? OR quotation_id = ?",
+            (quotation_id, quotation_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    q = dict(row)
+    created = q.get("created_at", datetime.now().isoformat())
+    valid_days = q.get("valid_days", 14)
+    try:
+        created_dt = datetime.fromisoformat(created)
+    except (ValueError, TypeError):
+        created_dt = datetime.now()
+    expires_at = created_dt + timedelta(days=valid_days)
+    is_expired = datetime.now() > expires_at
+    days_remaining = (expires_at - datetime.now()).days
+    return {
+        "quotation_id": quotation_id,
+        "created_at": q.get("created_at", ""),
+        "valid_days": valid_days,
+        "expires_at": expires_at.isoformat(),
+        "is_expired": is_expired,
+        "days_remaining": max(0, days_remaining),
+        "status": "expired" if is_expired else ("warning" if days_remaining <= 2 else "valid"),
+    }
 
 
 # --- Sync ---
@@ -2003,6 +3060,180 @@ def sync_export(unsynced_only: bool = Query(False)):
                 "row_array": [_sheets_safe(str(v)) for v in raw],
             })
     return {"items": items, "total": len(items)}
+
+
+@app.get("/api/enquiries.csv")
+def export_enquiries_csv(status: str = Query(None), coordinator: str = Query(None)):
+    """Export enquiries as a downloadable CSV file."""
+    import io, csv
+    with db_session() as conn:
+        query = "SELECT * FROM enquiries WHERE 1=1"
+        params = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if coordinator:
+            query += " AND coordinator = ?"
+            params.append(coordinator)
+        query += " ORDER BY created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    columns = [
+        "booking_ref", "client_name", "email", "phone", "country", "nationality_tier",
+        "channel", "agent_name", "inquiry_date", "tour_type", "pax",
+        "destinations_requested", "travel_start_date", "travel_end_date", "duration_days",
+        "status", "coordinator", "budget_range", "interests",
+        "quoted_usd", "revenue_usd", "balance_usd", "payment_status",
+        "special_requests", "last_updated",
+    ]
+    writer.writerow(columns)
+    for r in rows:
+        d = dict(r)
+        writer.writerow([d.get(c, "") for c in columns])
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # utf-8-sig for Excel compatibility
+    filename = f"TRVE_Pipeline_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@app.get("/api/enquiries/export.csv")
+def export_enquiries_csv_v2():
+    """Export all enquiries as a downloadable CSV file."""
+    import csv
+    import io
+    with db_session() as conn:
+        rows = conn.execute("SELECT * FROM enquiries ORDER BY booking_ref").fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header row
+    writer.writerow([
+        "Booking Ref", "Date", "Client Name", "Email", "Phone", "Country",
+        "Nationality Tier", "Channel", "Agent", "Tour Type", "PAX",
+        "Start Date", "End Date", "Duration (Days)", "Status", "Coordinator",
+        "Budget Range", "Destinations", "Interests", "Quoted USD",
+        "Revenue USD", "Balance USD", "Payment Status", "Special Requests",
+        "Notes", "Last Updated", "Synced"
+    ])
+
+    for r in rows:
+        d = dict(r)
+        # Parse JSON fields for CSV
+        interests = d.get("interests", "")
+        try:
+            interests = ", ".join(json.loads(interests)) if interests else ""
+        except Exception:
+            pass
+        destinations = d.get("destinations_requested", "")
+        try:
+            if destinations.startswith("["):
+                destinations = ", ".join(json.loads(destinations))
+        except Exception:
+            pass
+
+        writer.writerow([
+            d.get("booking_ref", ""),
+            d.get("inquiry_date", ""),
+            d.get("client_name", ""),
+            d.get("email", ""),
+            d.get("phone", ""),
+            d.get("country", ""),
+            d.get("nationality_tier", ""),
+            d.get("channel", ""),
+            d.get("agent_name", ""),
+            d.get("tour_type", ""),
+            d.get("pax", ""),
+            d.get("travel_start_date", ""),
+            d.get("travel_end_date", ""),
+            d.get("duration_days", ""),
+            d.get("status", ""),
+            d.get("coordinator", ""),
+            d.get("budget_range", ""),
+            destinations,
+            interests,
+            d.get("quoted_usd", ""),
+            d.get("revenue_usd", ""),
+            d.get("balance_usd", ""),
+            d.get("payment_status", ""),
+            d.get("special_requests", ""),
+            d.get("internal_flags", ""),
+            d.get("last_updated", ""),
+            "Yes" if d.get("synced") else "No",
+        ])
+
+    csv_content = output.getvalue()
+    filename = f"TRVE_Pipeline_{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+# --- Cost Presets ---
+@app.get("/api/cost-presets")
+def get_cost_presets():
+    """Return structured cost presets for Uganda/Rwanda safari pricing calculator."""
+    return {
+        "activities": [
+            {"id": "boat_cruise_kazinga", "label": "Boat Cruise — Kazinga Channel (QENP)", "price_usd": 30, "unit": "per_person", "duration_hrs": 2},
+            {"id": "boat_cruise_murchison", "label": "Boat Cruise — Murchison Falls (Nile)", "price_usd": 40, "unit": "per_person", "duration_hrs": 3},
+            {"id": "game_drive_half_day", "label": "Game Drive — Half Day (private)", "price_usd": 0, "unit": "included_in_vehicle", "notes": "Covered by vehicle rate"},
+            {"id": "game_drive_full_day", "label": "Game Drive — Full Day (private)", "price_usd": 0, "unit": "included_in_vehicle", "notes": "Covered by vehicle rate"},
+            {"id": "rhino_tracking_ziwa", "label": "Rhino Tracking — Ziwa Rhino Sanctuary", "price_usd": 40, "unit": "per_person"},
+            {"id": "nature_walk_bwindi", "label": "Nature Walk — Bwindi Forest", "price_usd": 40, "unit": "per_person"},
+            {"id": "bigodi_wetland_walk", "label": "Bigodi Wetland Sanctuary Walk", "price_usd": 15, "unit": "per_person"},
+            {"id": "batwa_trail", "label": "Batwa Cultural Trail — Bwindi", "price_usd": 80, "unit": "per_person"},
+            {"id": "community_visit_karamojong", "label": "Karamojong Village Visit — Kidepo", "price_usd": 20, "unit": "per_person"},
+            {"id": "sport_fishing_nile", "label": "Sport Fishing — Nile (Murchison)", "price_usd": 50, "unit": "per_person"},
+            {"id": "hot_spring_kanangorok", "label": "Kanangorok Hot Springs Visit — Kidepo", "price_usd": 10, "unit": "per_person"},
+            {"id": "source_nile_boat", "label": "Source of the Nile Boat Ride — Jinja", "price_usd": 25, "unit": "per_person"},
+            {"id": "white_water_rafting", "label": "White Water Rafting Grade 5 — Nile (Jinja)", "price_usd": 125, "unit": "per_person"},
+            {"id": "bungee_jumping", "label": "Bungee Jumping — Jinja", "price_usd": 115, "unit": "per_person"},
+            {"id": "canoe_lake_bunyonyi", "label": "Canoe Hire — Lake Bunyonyi", "price_usd": 15, "unit": "per_person_per_hour"},
+            {"id": "coffee_farm_tour", "label": "Coffee Farm Tour — Kibale region", "price_usd": 20, "unit": "per_person"},
+            {"id": "golden_monkey_rwanda", "label": "Golden Monkey Tracking — Volcanoes NP", "price_usd": 100, "unit": "per_person"},
+            {"id": "cultural_performance_rwanda", "label": "Cultural Performance — Intore Dance", "price_usd": 30, "unit": "per_group"},
+        ],
+        "transfers": [
+            {"id": "transfer_entebbe_airport", "label": "Entebbe Airport Transfer (one way)", "price_usd": 50, "unit": "per_vehicle"},
+            {"id": "transfer_entebbe_kampala", "label": "Entebbe — Kampala City Transfer", "price_usd": 60, "unit": "per_vehicle"},
+            {"id": "transfer_kampala_entebbe", "label": "Kampala — Entebbe Transfer", "price_usd": 60, "unit": "per_vehicle"},
+            {"id": "transfer_kigali_airport", "label": "Kigali Airport Transfer (one way)", "price_usd": 40, "unit": "per_vehicle"},
+            {"id": "transfer_kigali_volcanoes", "label": "Kigali — Volcanoes NP Transfer", "price_usd": 120, "unit": "per_vehicle"},
+            {"id": "border_crossing_gatuna", "label": "Uganda/Rwanda Border Crossing (Gatuna/Katuna)", "price_usd": 30, "unit": "per_vehicle", "notes": "Handling fee"},
+        ],
+        "internal_flights": [
+            {"id": "flight_entebbe_kidepo", "label": "Entebbe — Kidepo Valley (one way)", "price_usd": 280, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_kidepo_entebbe", "label": "Kidepo Valley — Entebbe (one way)", "price_usd": 280, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_entebbe_murchison", "label": "Entebbe — Murchison Falls (one way)", "price_usd": 220, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_entebbe_bwindi", "label": "Entebbe — Bwindi/Kihihi (one way)", "price_usd": 240, "unit": "per_person", "operator": "AeroLink/Eagle Air"},
+            {"id": "flight_entebbe_rwenzori", "label": "Entebbe — Kasese/Rwenzori (one way)", "price_usd": 200, "unit": "per_person", "operator": "AeroLink"},
+        ],
+        "guide_fees": [
+            {"id": "local_guide_bwindi", "label": "Local Guide — Bwindi (gorilla trek)", "price_usd": 20, "unit": "per_group_per_day"},
+            {"id": "local_guide_kibale", "label": "Local Guide — Kibale (chimp trek)", "price_usd": 15, "unit": "per_group_per_day"},
+            {"id": "ranger_escort_kidepo", "label": "Armed Ranger Escort — Kidepo", "price_usd": 30, "unit": "per_group_per_day"},
+            {"id": "birding_guide", "label": "Specialist Birding Guide", "price_usd": 80, "unit": "per_day"},
+        ],
+        "conservation_fees": [
+            {"id": "uwa_dev_levy", "label": "UWA Conservation Development Levy", "price_usd": 10, "unit": "per_person_per_day", "notes": "Some parks include in entry"},
+            {"id": "community_levy_bwindi", "label": "Bwindi Community Levy", "price_usd": 10, "unit": "per_person_per_trek"},
+            {"id": "rwanda_tourism_levy", "label": "Rwanda Tourism Levy", "price_usd": 30, "unit": "per_person_per_night", "notes": "Applicable to luxury lodges"},
+        ],
+        "government_taxes": [
+            {"id": "uganda_vat", "label": "Uganda VAT", "rate_pct": 18, "unit": "percentage", "notes": "Applied to goods/services — tours typically exempt for non-residents"},
+            {"id": "rwanda_vat", "label": "Rwanda VAT", "rate_pct": 18, "unit": "percentage", "notes": "Applied to goods/services in Rwanda"},
+            {"id": "tourism_development_levy_ug", "label": "Tourism Development Levy (Uganda)", "rate_pct": 1, "unit": "percentage"},
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

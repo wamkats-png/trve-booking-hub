@@ -181,7 +181,8 @@
     liveFx: 3575,          // live USD/UGX — updated on init from open.er-api.com
     liveFxAt: null,        // ISO timestamp of last fetch
     apiConfig: null,
-    syncInterval: null
+    syncInterval: null,
+    activities: []
   };
 
   /* ============================================================
@@ -315,7 +316,7 @@
         if (permit.post_july_2026 && d >= new Date('2026-07-01') && permit.post_july_2026[tier]) {
           badge = ' <span style="color:var(--color-warning);font-size:var(--text-xs)">(Jul 2026+ rate)</span>';
         } else if (permit.low_season && LOW_SEASON_MONTHS.includes(month) && permit.low_season[tier]) {
-          badge = ' <span style="color:var(--color-success);font-size:var(--text-xs)">(low season)</span>';
+          badge = ' <span style="color:var(--success);font-size:var(--text-xs)">(low season)</span>';
         }
       }
 
@@ -545,10 +546,11 @@
     }
     if (viewId === 'quotations') loadQuotations();
     if (viewId === 'sync') renderSyncView();
+    if (viewId === 'lodges') { loadLodgesView(); }
   }
 
   // Expose for inline onclick use
-  window.TRVE = { navigate, loadPipeline };
+  window.TRVE = { navigate, loadPipeline, saveFxRateAtQuote, addActivityCost };
 
   /* ============================================================
      SIDEBAR TOGGLE
@@ -1105,7 +1107,7 @@
     const totalPos   = totalDelta >= 0;
 
     panel.innerHTML = `
-      <div style="margin:12px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-raised)">
+      <div style="margin:12px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface)">
         <!-- Header -->
         <div style="display:flex;justify-content:space-between;align-items:center;
                     padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border)">
@@ -1244,6 +1246,20 @@
       pill.classList.add('active');
       renderPipeline();
     });
+
+    const exportCsvBtn = document.getElementById('exportCsvBtn');
+    if (exportCsvBtn) {
+      exportCsvBtn.addEventListener('click', () => {
+        const url = `${API}/api/enquiries/export.csv`;
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `TRVE_Pipeline_${new Date().toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        toast('info', 'Downloading CSV', 'Pipeline export started');
+      });
+    }
   }
 
   /* ============================================================
@@ -1396,7 +1412,7 @@
                 placeholder="${state.liveFx}"
                 min="1000" max="10000" step="1"
                 style="width:110px;padding:4px 8px;font-family:'Courier New',monospace;font-size:13px;border:1px solid ${enquiry.fx_rate_at_quote ? 'var(--teal-500)' : 'var(--border)'};border-radius:6px;background:var(--surface);color:var(--text-primary)"
-                onchange="saveFxRateAtQuote('${enquiry.id}', this.value)"
+                onchange="window.TRVE.saveFxRateAtQuote('${enquiry.id}', this.value)"
               />
               ${enquiry.fx_rate_at_quote && enquiry.quoted_usd ? (() => {
                 const q = parseFloat(enquiry.quoted_usd);
@@ -1890,6 +1906,11 @@
           // Update permit labels for the new date/tier context
           updatePermitLabels();
           toast('info', 'Itinerary loaded', `${itn.name || itn.id} — ${itn.duration_days || '?'} days, auto-filled permits & vehicle days`);
+
+          // Generate AI day-by-day itinerary description
+          if (itn.highlights || itn.description) {
+            generateItineraryText(itn);
+          }
         }
       });
     } catch (e) { void e; }
@@ -1897,8 +1918,22 @@
     // Load lodges
     try {
       const lodges = await apiFetch('/api/lodge-rates/lodges');
-      state.lodges = Array.isArray(lodges) ? lodges.map(l => l.name || l.lodge_name || (typeof l === 'string' ? l : '')).filter(Boolean) : [];
       state.lodgeData = Array.isArray(lodges) ? lodges : [];
+      state.lodges = state.lodgeData.map(l => l.name || l.lodge_name || '').filter(Boolean);
+      if (state.lodges.length === 0) {
+        // Try the /api/lodges endpoint as fallback
+        const lodges2 = await apiFetch('/api/lodges?limit=200');
+        const items = lodges2.items || lodges2 || [];
+        // Build same structure as lodge-rates/lodges
+        const lodgeMap = {};
+        for (const l of items) {
+          const n = l.lodge_name;
+          if (!lodgeMap[n]) lodgeMap[n] = { name: n, country: l.country, location: l.location, room_types: [] };
+          lodgeMap[n].room_types.push({ room_type: l.room_type, net_rate_usd: l.net_rate_usd, rack_rate_usd: l.rack_rate_usd, meal_plan: l.meal_plan, valid_from: l.valid_from, valid_to: l.valid_to });
+        }
+        state.lodgeData = Object.values(lodgeMap);
+        state.lodges = state.lodgeData.map(l => l.name).filter(Boolean);
+      }
       addLodgeItem(); // Add first lodge row
     } catch (_) {
       addLodgeItem();
@@ -1914,7 +1949,7 @@
 
     const lodgeOptions = state.lodges.length > 0
       ? state.lodges.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')
-      : '<option value="">No lodges loaded</option>';
+      : '<option value="" disabled>⚠ No lodges — check backend connection</option>';
 
     el.innerHTML = `
       <div style="flex:1;min-width:0">
@@ -2016,6 +2051,95 @@
     container.appendChild(el);
   }
 
+  function generateItineraryText(itn) {
+    const panel = document.getElementById('aiItineraryPanel');
+    if (!panel) return;
+    panel.style.display = 'block';
+
+    const days = itn.duration_days || 7;
+    const destinations = itn.destinations || [];
+    const highlights = (itn.highlights || '').split(',').map(h => h.trim()).filter(Boolean);
+
+    // Generate a simple day-by-day structure
+    let dayTexts = [];
+
+    // Day 1: always arrival
+    dayTexts.push(`<strong>Day 1:</strong> Arrive ${destinations[0] || 'Entebbe'}. Transfer to lodge, evening briefing.`);
+
+    // Distribute highlights across remaining days
+    const destCycle = destinations.slice(1);
+
+    for (let d = 2; d <= days - 1; d++) {
+      const dest = destCycle[(d - 2) % Math.max(1, destCycle.length)] || destinations[0];
+      const highlight = highlights[(d - 2) % Math.max(1, highlights.length)] || 'Game drive and wildlife viewing';
+      dayTexts.push(`<strong>Day ${d}:</strong> ${dest}. ${highlight}.`);
+    }
+
+    // Last day: departure
+    dayTexts.push(`<strong>Day ${days}:</strong> Transfer to Entebbe / Kigali for departure flight.`);
+
+    const html = `
+      <div class="ai-panel">
+        <div class="ai-panel-header">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M5 7l2 2 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          AI Itinerary Outline — ${itn.name || 'Safari Itinerary'}
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-2)">
+          ${days}-day suggested structure · Edit as needed
+        </div>
+        <div style="font-size:var(--text-sm);line-height:1.8;color:var(--text-base)">
+          ${dayTexts.join('<br>')}
+        </div>
+        <div style="margin-top:var(--space-3)">
+          <span style="font-size:var(--text-xs);color:var(--text-muted)">Key activities: </span>
+          ${highlights.map(h => `<span class="ai-suggestion-chip">${escapeHtml(h)}</span>`).join('')}
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-2)">
+          <em>AI-generated outline based on TRVE itinerary library. All text is editable before sending to client.</em>
+        </div>
+      </div>
+    `;
+    panel.innerHTML = html;
+  }
+
+  async function loadActivities() {
+    try {
+      const data = await apiFetch('/api/activities');
+      state.activities = data.items || [];
+      renderActivityPresets();
+    } catch (_) { /* silent */ }
+  }
+
+  function renderActivityPresets() {
+    const container = document.getElementById('activityPresets');
+    if (!container || !state.activities) return;
+    const categories = [...new Set(state.activities.map(a => a.category))];
+    let html = '';
+    for (const cat of categories) {
+      const items = state.activities.filter(a => a.category === cat);
+      html += `<div style="margin-bottom:var(--space-2)">
+        <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:4px">${cat}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${items.map(a => `
+            <button type="button" class="ai-suggestion-chip"
+              onclick="window.TRVE.addActivityCost('${escapeHtml(a.id)}', '${escapeHtml(a.name)}', ${a.default_usd}, ${a.per_person})"
+              title="${escapeHtml(a.notes || '')}">
+              ${escapeHtml(a.name)}${a.default_usd > 0 ? ` ($${a.default_usd})` : ''}
+            </button>
+          `).join('')}
+        </div>
+      </div>`;
+    }
+    container.innerHTML = html;
+  }
+
+  function addActivityCost(actId, name, amount, perPerson) {
+    addExtraCost(name, amount);
+  }
+
   function initPricingForm() {
     document.getElementById('btnAddLodge').addEventListener('click', addLodgeItem);
     document.getElementById('btnAddExtra').addEventListener('click', addExtraCost);
@@ -2075,6 +2199,26 @@
       fuelTypeEl.addEventListener('change', toggleFuelInputs);
       toggleFuelInputs();
     }
+
+    const applyBuffersBtn = document.getElementById('applyBuffersBtn');
+    if (applyBuffersBtn) {
+      applyBuffersBtn.addEventListener('click', async () => {
+        const fuelBuf = parseFloat(document.getElementById('fuelBufferInput')?.value || '5');
+        const fxBuf = parseFloat(document.getElementById('fxBufferInput')?.value || '3');
+        try {
+          await apiFetch('/api/config/update', {
+            method: 'POST',
+            body: { fuel_buffer_pct: fuelBuf, fx_buffer_pct: fxBuf }
+          });
+          toast('success', 'Buffers updated', `Fuel: ${fuelBuf}%, FX: ${fxBuf}%`);
+        } catch (e) {
+          toast('error', 'Could not update buffers', e.message);
+        }
+      });
+    }
+
+    // Load activities for preset cost buttons
+    loadActivities();
 
     document.getElementById('pricingForm').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -2190,7 +2334,7 @@
         <tr${isFuelLine ? ' style="background:rgba(234,179,8,0.06)"' : ''}>
           <td>${escapeHtml(item.item || '—')}${item.note ? ` <span style="font-size:var(--text-xs);color:var(--text-muted)">(${escapeHtml(item.note)})</span>` : ''}</td>
           <td class="amount-col">${usdDisplay}</td>
-          <td class="amount-col" style="color:${isFuelLine ? 'var(--color-gold)' : 'var(--text-muted)'};font-size:var(--text-xs)">${ugxDisplay}</td>
+          <td class="amount-col" style="color:${isFuelLine ? 'var(--brand-gold)' : 'var(--text-muted)'};font-size:var(--text-xs)">${ugxDisplay}</td>
         </tr>
       `;
     }
@@ -2250,6 +2394,13 @@
             </tbody>
           </table>
         </div>
+      </div>
+
+      <!-- Price Notice -->
+      <div class="price-notice">
+        ⚠️ <strong>Prices are subject to confirmation within 7 days</strong> due to fuel price and exchange rate fluctuations.
+        ${result.fuel_buffer_pct ? `Fuel buffer: ${result.fuel_buffer_pct}% applied to vehicle costs.` : ''}
+        ${result.fx_buffer_pct ? `FX buffer: ${result.fx_buffer_pct}% noted.` : ''}
       </div>
 
       <!-- Generate Quotation Button -->
@@ -2336,28 +2487,65 @@
       const data = await apiFetch('/api/generate-quotation', { method: 'POST', body: quotationPayload });
       toast('success', 'Quotation generated!', `${data.quotation_id || 'QTN'} is ready for download.`);
 
-      // Show download link
+      // Show delivery options
+      const qtnId = escapeHtml(data.id || data.quotation_id);
+      const clientEmail = escapeHtml(data.client_email || '');
+      const validDays = data.valid_days || 14;
       wrap.innerHTML = `
-        <div style="background:var(--status-confirmed-bg);border:1.5px solid var(--success);border-radius:var(--radius-xl);padding:var(--space-5);text-align:center">
+        <div style="background:var(--success-bg);border:1.5px solid var(--success);border-radius:var(--radius-lg);padding:var(--space-5);text-align:center">
           <div style="color:var(--success);font-weight:600;margin-bottom:var(--space-2)">
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style="vertical-align:middle;margin-right:6px"><circle cx="9" cy="9" r="7.5" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 9l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Quotation Ready
           </div>
           <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3)">
-            ${escapeHtml(data.quotation_id || '')} &middot; Valid for 14 days
+            ${qtnId} &middot; Valid for ${validDays} days
+          </div>
+          <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)">
+            How would you like to deliver this quotation?
           </div>
           <div style="display:flex;gap:var(--space-2);justify-content:center;flex-wrap:wrap">
-            <a href="${API}/api/quotations/${escapeHtml(data.id || data.quotation_id)}/pdf"
+            <a href="${API}/api/quotations/${qtnId}/pdf"
                target="_blank" rel="noopener" class="btn btn-gold">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v9M3 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Download PDF
             </a>
+            <button class="btn btn-primary" id="btnSendQuotationEmail" data-qid="${qtnId}" data-email="${clientEmail}">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="3" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M1 4l6 4 6-4" stroke="currentColor" stroke-width="1.3"/></svg>
+              Send to Client by Email
+            </button>
             <button class="btn btn-secondary" onclick="window.TRVE.navigate('quotations')">
               View All Quotations
             </button>
           </div>
+          <div id="emailDeliveryStatus" style="margin-top:var(--space-3);font-size:var(--text-sm)"></div>
         </div>
       `;
+
+      // Wire up email send button
+      const emailBtn = document.getElementById('btnSendQuotationEmail');
+      if (emailBtn) {
+        emailBtn.addEventListener('click', async () => {
+          const qid = emailBtn.dataset.qid;
+          const email = emailBtn.dataset.email;
+          const statusEl = document.getElementById('emailDeliveryStatus');
+          if (!email || !email.includes('@')) {
+            statusEl.innerHTML = '<span style="color:var(--danger)">No valid email address on this quotation. Edit the quotation to add one.</span>';
+            return;
+          }
+          emailBtn.disabled = true;
+          emailBtn.textContent = 'Sending…';
+          try {
+            await apiFetch(`/api/quotations/${qid}/email`, { method: 'POST' });
+            emailBtn.innerHTML = '✓ Email Sent';
+            emailBtn.style.background = 'var(--success)';
+            statusEl.innerHTML = `<span style="color:var(--success)">Quotation emailed to ${escapeHtml(email)}</span>`;
+          } catch (err) {
+            emailBtn.disabled = false;
+            emailBtn.innerHTML = 'Send to Client by Email';
+            statusEl.innerHTML = `<span style="color:var(--danger)">Email failed: ${escapeHtml(err.message)}</span>`;
+          }
+        });
+      }
     } catch (err) {
       toast('error', 'Failed to generate quotation', err.message);
       genBtn.classList.remove('loading');
@@ -2478,6 +2666,15 @@
                   <span class="badge ${QUOTATION_STATUS_BADGE[q.status] || 'badge-quot-draft'}">
                     ${escapeHtml(q.status || 'draft')}
                   </span>
+                  ${(() => {
+                    const createdMs = new Date(q.created_at).getTime();
+                    const expiresMs = createdMs + (q.valid_days || 14) * 86400000;
+                    const now = Date.now();
+                    const daysLeft = Math.ceil((expiresMs - now) / 86400000);
+                    const expiryClass = daysLeft <= 0 ? 'badge-expired' : daysLeft <= 2 ? 'badge-expiring' : 'badge-valid';
+                    const expiryText = daysLeft <= 0 ? 'EXPIRED' : daysLeft <= 2 ? `Expires in ${daysLeft}d` : `Valid ${daysLeft}d`;
+                    return `<span class="badge ${expiryClass}" style="margin-left:4px">${expiryText}</span>`;
+                  })()}
                 </td>
                 <td style="white-space:nowrap">
                   <a href="${API}/api/quotations/${escapeHtml(q.id)}/pdf"
@@ -2882,6 +3079,161 @@
     } catch (_) { /* silent — fall back to state.liveFx default 3575 */ }
   }
 
+  /* ============================================================
+     VIEW: LODGE RATE MANAGEMENT
+     ============================================================ */
+  let _editingLodgeId = null;
+  let _allLodges = [];
+
+  async function loadLodgesView() {
+    try {
+      const data = await apiFetch('/api/lodges?limit=500');
+      _allLodges = data.items || [];
+      renderLodgeTable(_allLodges);
+      document.getElementById('lodgeCount').textContent = `${_allLodges.length} lodge rates`;
+    } catch (e) {
+      const tb = document.getElementById('lodgeTableBody');
+      if (tb) tb.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--danger)">Failed to load lodges: ${escapeHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  function renderLodgeTable(lodges) {
+    const tbody = document.getElementById('lodgeTableBody');
+    if (!tbody) return;
+    if (!lodges.length) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text-muted)">No lodges found. Add one above.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = lodges.map(l => `
+      <tr>
+        <td><strong>${escapeHtml(l.lodge_name)}</strong></td>
+        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.room_type || '')}</span></td>
+        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.country || '')} ${l.location ? '· ' + l.location : ''}</span></td>
+        <td style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs)">$${(l.rack_rate_usd || 0).toFixed(0)}</td>
+        <td style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--teal-700)"><strong>$${(l.net_rate_usd || 0).toFixed(0)}</strong></td>
+        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.meal_plan || '')}</span></td>
+        <td><span style="font-size:10px;color:var(--text-muted)">${l.valid_from ? l.valid_from.slice(0,7) : ''} – ${l.valid_to ? l.valid_to.slice(0,7) : ''}</span></td>
+        <td><span style="font-size:10px;color:var(--text-muted)">${escapeHtml(l.notes || '')}</span></td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-ghost btn-icon" title="Edit" onclick="window.TRVE.editLodge('${l.id}')">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M9 2l2 2-7 7H2v-2L9 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="btn btn-ghost btn-icon" title="Delete" style="color:var(--danger)" onclick="window.TRVE.deleteLodge('${l.id}', '${escapeHtml(l.lodge_name)} – ${escapeHtml(l.room_type || '')}')">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 3h9M5 3V2h3v1M4 3v7h5V3H4z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  function initLodgesView() {
+    const saveBtn = document.getElementById('lodgeSaveBtn');
+    const clearBtn = document.getElementById('lodgeClearBtn');
+    const cancelBtn = document.getElementById('lodgeFormCancelBtn');
+    const search = document.getElementById('lodgeSearch');
+    const filterCountry = document.getElementById('lodgeFilterCountry');
+
+    if (!saveBtn) return;
+
+    function clearForm() {
+      _editingLodgeId = null;
+      document.getElementById('lodgeFormTitle').textContent = 'Add New Lodge Rate';
+      cancelBtn.style.display = 'none';
+      ['lf_name','lf_room_type','lf_location','lf_rack','lf_net','lf_notes'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      document.getElementById('lf_country').value = 'Uganda';
+      document.getElementById('lf_meal').value = 'Full Board';
+      document.getElementById('lf_valid_from').value = '2025-01-01';
+      document.getElementById('lf_valid_to').value = '2026-12-31';
+    }
+
+    function filterLodges() {
+      const q = (search.value || '').toLowerCase();
+      const country = filterCountry.value;
+      const filtered = _allLodges.filter(l => {
+        const matchText = !q || (l.lodge_name || '').toLowerCase().includes(q) || (l.location || '').toLowerCase().includes(q) || (l.room_type || '').toLowerCase().includes(q);
+        const matchCountry = !country || l.country === country;
+        return matchText && matchCountry;
+      });
+      renderLodgeTable(filtered);
+      document.getElementById('lodgeCount').textContent = `${filtered.length} of ${_allLodges.length} lodge rates`;
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      const name = document.getElementById('lf_name').value.trim();
+      const room = document.getElementById('lf_room_type').value.trim();
+      if (!name || !room) { toast('warning', 'Required fields', 'Lodge name and room type are required'); return; }
+      const rack = parseFloat(document.getElementById('lf_rack').value) || 0;
+      const net = parseFloat(document.getElementById('lf_net').value) || null;
+      const payload = {
+        lodge_name: name,
+        room_type: room,
+        country: document.getElementById('lf_country').value,
+        location: document.getElementById('lf_location').value.trim(),
+        rack_rate_usd: rack,
+        net_rate_usd: net,
+        meal_plan: document.getElementById('lf_meal').value,
+        valid_from: document.getElementById('lf_valid_from').value,
+        valid_to: document.getElementById('lf_valid_to').value,
+        notes: document.getElementById('lf_notes').value.trim(),
+      };
+      try {
+        if (_editingLodgeId) {
+          await apiFetch(`/api/lodges/${_editingLodgeId}`, { method: 'PATCH', body: payload });
+          toast('success', 'Lodge updated');
+        } else {
+          await apiFetch('/api/lodges', { method: 'POST', body: payload });
+          toast('success', 'Lodge added');
+        }
+        clearForm();
+        await loadLodgesView();
+        // Refresh lodge list in pricing calculator too
+        const lodgesData = await apiFetch('/api/lodge-rates/lodges');
+        state.lodgeData = Array.isArray(lodgesData) ? lodgesData : [];
+        state.lodges = state.lodgeData.map(l => l.name || l.lodge_name || '').filter(Boolean);
+      } catch (e) {
+        toast('error', 'Save failed', e.message);
+      }
+    });
+
+    clearBtn.addEventListener('click', clearForm);
+    cancelBtn.addEventListener('click', clearForm);
+    search.addEventListener('input', filterLodges);
+    filterCountry.addEventListener('change', filterLodges);
+  }
+
+  window.TRVE.editLodge = function(id) {
+    const lodge = _allLodges.find(l => l.id === id);
+    if (!lodge) return;
+    _editingLodgeId = id;
+    document.getElementById('lodgeFormTitle').textContent = 'Edit Lodge Rate';
+    document.getElementById('lodgeFormCancelBtn').style.display = '';
+    document.getElementById('lf_name').value = lodge.lodge_name || '';
+    document.getElementById('lf_room_type').value = lodge.room_type || '';
+    document.getElementById('lf_country').value = lodge.country || 'Uganda';
+    document.getElementById('lf_location').value = lodge.location || '';
+    document.getElementById('lf_rack').value = lodge.rack_rate_usd || '';
+    document.getElementById('lf_net').value = lodge.net_rate_usd || '';
+    document.getElementById('lf_meal').value = lodge.meal_plan || 'Full Board';
+    document.getElementById('lf_valid_from').value = lodge.valid_from || '2025-01-01';
+    document.getElementById('lf_valid_to').value = lodge.valid_to || '2026-12-31';
+    document.getElementById('lf_notes').value = lodge.notes || '';
+    document.getElementById('lodgeFormCard').scrollIntoView({ behavior: 'smooth' });
+  };
+
+  window.TRVE.deleteLodge = async function(id, label) {
+    if (!confirm(`Delete "${label}"? This cannot be undone.`)) return;
+    try {
+      await apiFetch(`/api/lodges/${id}`, { method: 'DELETE' });
+      toast('success', 'Lodge deleted');
+      await loadLodgesView();
+    } catch (e) {
+      toast('error', 'Delete failed', e.message);
+    }
+  };
+
   async function init() {
     initSidebar();
     initEnquiryForm();
@@ -2889,6 +3241,7 @@
     initCurationPanel();
     initPricingForm();
     initQuotations();
+    initLodgesView();
 
     // Fetch live USD/UGX rate for FX exposure calculations
     await fetchLiveFx();
@@ -2896,6 +3249,11 @@
     // Load API config
     try {
       state.apiConfig = await apiFetch('/api/config');
+      // Update buffer UI with server values
+      const fb = document.getElementById('fuelBufferInput');
+      const xb = document.getElementById('fxBufferInput');
+      if (fb && state.apiConfig?.fuel_buffer_pct != null) fb.value = state.apiConfig.fuel_buffer_pct;
+      if (xb && state.apiConfig?.fx_buffer_pct != null) xb.value = state.apiConfig.fx_buffer_pct;
     } catch (e) {
       toast('warning', 'Config not loaded', 'Some features may use default values');
     }
@@ -3181,7 +3539,7 @@
 
     document.getElementById('bankChargeResult').innerHTML = `
       <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.06em">${escapeHtml(bankName)} · ${escapeHtml(tariff.label)}</div>
-      <div style="font-family:var(--font-mono);font-size:var(--text-2xl);color:var(--color-gold);font-weight:700;margin-bottom:4px">UGX ${fmtNum(r.total)}</div>
+      <div style="font-family:var(--font-mono);font-size:var(--text-2xl);color:var(--brand-gold);font-weight:700;margin-bottom:4px">UGX ${fmtNum(r.total)}</div>
       <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:8px">incl. 15% excise duty (UGX ${fmtNum(r.excise)})</div>
       <div style="font-size:var(--text-xs);color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px">${escapeHtml(r.breakdown)}</div>
     `;
@@ -3210,7 +3568,7 @@
               <tr style="background:${i % 2 === 0 ? 'transparent' : 'var(--bg-surface)'}">
                 <td style="padding:var(--space-2) var(--space-4);font-size:var(--text-sm)">${escapeHtml(label)}</td>
                 <td style="padding:var(--space-2) var(--space-4);font-family:var(--font-mono);font-size:var(--text-xs);text-align:right;color:var(--text-secondary)">${escapeHtml(fee)}</td>
-                <td style="padding:var(--space-2) var(--space-4);font-family:var(--font-mono);font-size:var(--text-xs);text-align:right;color:var(--color-gold)">${exciseDisplay}</td>
+                <td style="padding:var(--space-2) var(--space-4);font-family:var(--font-mono);font-size:var(--text-xs);text-align:right;color:var(--brand-gold)">${exciseDisplay}</td>
                 <td style="padding:var(--space-2) var(--space-4);font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(type)}</td>
               </tr>
             `;

@@ -1,10 +1,10 @@
 services:
   - type: web
-      name: trve-booking-hub
-          runtime: python
-              buildCommand: pip install -r requirements.txt
-                  startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
-                      disk:
-                            name: data
-                                  mountPath: /opt/render/project/src/data
-                                        sizeGB: 1
+    name: trve-booking-hub
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
