@@ -891,3 +891,126 @@ class TestActivityCatalogueUnit:
         required = {"id", "name", "category", "default_usd", "per_person"}
         for act in _ACT_CAT:
             assert not (required - set(act.keys())), f"Activity {act.get('id')} missing fields"
+
+
+# ===========================================================================
+# Market Data
+# ===========================================================================
+class TestMarketData:
+    def test_fx_rate_returns_200(self, client):
+        resp = client.get("/api/market-data/fx")
+        assert resp.status_code == 200
+
+    def test_fx_rate_has_required_fields(self, client):
+        data = client.get("/api/market-data/fx").json()
+        assert "rate" in data
+        assert "source" in data
+        assert "fetched_at" in data
+        assert "is_stale" in data
+        assert "is_overridden" in data
+
+    def test_fx_rate_value_plausible(self, client):
+        data = client.get("/api/market-data/fx").json()
+        # Fallback is 3750; any value between 1000-20000 is sane
+        assert 1000 <= data["rate"] <= 20000
+
+    def test_bank_fees_returns_200(self, client):
+        resp = client.get("/api/market-data/bank-fees")
+        assert resp.status_code == 200
+
+    def test_bank_fees_has_providers(self, client):
+        data = client.get("/api/market-data/bank-fees").json()
+        assert "providers" in data
+        assert len(data["providers"]) >= 2
+        assert "recommended_defaults" in data
+
+    def test_bank_fees_recommended_defaults(self, client):
+        data = client.get("/api/market-data/bank-fees").json()
+        d = data["recommended_defaults"]
+        assert "receiving_flat_usd" in d
+        assert "intermediary_usd" in d
+        assert d["receiving_flat_usd"] >= 0
+        assert d["intermediary_usd"] >= 0
+
+    def test_fuel_returns_200(self, client):
+        resp = client.get("/api/market-data/fuel")
+        assert resp.status_code == 200
+
+    def test_fuel_has_required_fields(self, client):
+        data = client.get("/api/market-data/fuel").json()
+        assert "petrol_usd_per_litre" in data
+        assert "diesel_usd_per_litre" in data
+        assert "source" in data
+        assert "fetched_at" in data
+
+    def test_fuel_values_plausible(self, client):
+        data = client.get("/api/market-data/fuel").json()
+        assert 0.5 <= data["diesel_usd_per_litre"] <= 5.0
+
+    def test_market_override_saves(self, client):
+        resp = client.post("/api/market-data/override", json={
+            "key": "fx_usd_ugx",
+            "override_value": 3900.0,
+            "override_by": "test_user",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["override_value"] == 3900.0
+
+    def test_market_override_reflected_in_fx(self, client):
+        client.post("/api/market-data/override", json={
+            "key": "fx_usd_ugx",
+            "override_value": 3900.0,
+            "override_by": "test_user",
+        })
+        data = client.get("/api/market-data/fx").json()
+        assert data["is_overridden"] is True
+        assert data["rate"] == 3900.0
+
+    def test_market_clear_override(self, client):
+        client.post("/api/market-data/override", json={
+            "key": "fx_usd_ugx", "override_value": 3900.0, "override_by": "test"
+        })
+        resp = client.delete("/api/market-data/override/fx_usd_ugx")
+        assert resp.status_code == 200
+        data = client.get("/api/market-data/fx").json()
+        assert data["is_overridden"] is False
+
+    def test_fx_force_refresh(self, client):
+        resp = client.get("/api/market-data/fx?force_refresh=true")
+        assert resp.status_code == 200
+        assert "rate" in resp.json()
+
+
+# ===========================================================================
+# Sheets Sync — extended
+# ===========================================================================
+class TestSyncExtended:
+    def test_sync_status_has_recent_operations(self, client):
+        data = client.get("/api/sync/status").json()
+        assert "recent_operations" in data
+        assert isinstance(data["recent_operations"], list)
+
+    def test_sync_status_recent_ops_after_push(self, client):
+        client.post("/api/sync/push-all")
+        data = client.get("/api/sync/status").json()
+        # After push-all there should be at least some ops logged (if any enquiries exist)
+        assert isinstance(data["recent_operations"], list)
+
+    def test_refresh_from_sheets_no_token(self, client):
+        """Without a token the endpoint must return 503 with a clear message."""
+        resp = client.post("/api/sync/refresh-from-sheets")
+        assert resp.status_code == 503
+        detail = resp.json()["detail"]
+        assert detail["error"] == "sheets_token_missing"
+        assert "how_to_fix" in detail
+        assert len(detail["how_to_fix"]) > 0
+
+    def test_refresh_from_sheets_logged_on_failure(self, client):
+        """A failed pull attempt must appear in the sync log."""
+        client.post("/api/sync/refresh-from-sheets")
+        data = client.get("/api/sync/status").json()
+        ops = data["recent_operations"]
+        pull_ops = [o for o in ops if o["direction"] == "pull" or o["sheet_name"] == "pull"]
+        assert len(pull_ops) >= 1
