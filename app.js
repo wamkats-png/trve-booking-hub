@@ -2326,57 +2326,64 @@
   }
 
   function renderActivityPresets() {
-    const container = document.getElementById('activityPresets');
-    if (!container || !state.activities) return;
+    const sel = document.getElementById('activityDropdown');
+    if (!sel || !state.activities) return;
     const tier = document.getElementById('pricingNationality')?.value || 'FNR';
-    const categories = [...new Set(state.activities.map(a => a.category))];
-    // Category display order
     const catOrder = ['activity', 'transport', 'flight', 'transfer', 'visa', 'conservation', 'gratuity', 'health', 'insurance'];
-    const sortedCats = categories.sort((a, b) => {
+    const categories = [...new Set(state.activities.map(a => a.category))].sort((a, b) => {
       const ai = catOrder.indexOf(a), bi = catOrder.indexOf(b);
       return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
-    let html = '';
-    for (const cat of sortedCats) {
+
+    // Remember previously selected value so we can restore it after re-render
+    const prevVal = sel.value;
+
+    // Rebuild options
+    sel.innerHTML = '<option value="">— Select an activity —</option>';
+    for (const cat of categories) {
       const items = state.activities.filter(a => a.category === cat);
-      html += `<div style="margin-bottom:var(--space-3)">
-        <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:5px">${escapeHtml(cat)}</div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px">
-          ${items.map(a => {
-            const price = getActivityPriceForTier(a, tier);
-            const hasTiers = !!(a.tier_rates);
-            // Tier badge shown only for nationality-sensitive activities
-            const tierBadge = hasTiers
-              ? ` <span style="background:var(--info-bg);color:var(--info);border-radius:3px;padding:0 3px;font-size:10px">${escapeHtml(tier)}</span>`
-              : '';
-            const priceStr = price > 0 ? ` $${price}` : '';
-            return `<button type="button" class="ai-suggestion-chip activity-chip"
-              data-activity-id="${escapeHtml(a.id)}"
-              data-tier-price="${price}"
-              data-activity-name="${escapeHtml(a.name)}"
-              onclick="window.TRVE.addActivityCost('${escapeHtml(a.id)}', '${escapeHtml(a.name)}', ${price}, ${a.per_person})"
-              title="${escapeHtml(a.notes || '')}${hasTiers ? ' · Price varies by nationality tier' : ''}">
-              ${escapeHtml(a.name)}${priceStr ? `<span style="font-weight:700">${priceStr}</span>` : ''}${tierBadge}
-            </button>`;
-          }).join('')}
-        </div>
-      </div>`;
+      const grp = document.createElement('optgroup');
+      grp.label = cat.charAt(0).toUpperCase() + cat.slice(1);
+      for (const a of items) {
+        const price = getActivityPriceForTier(a, tier);
+        const hasTiers = !!(a.tier_rates);
+        const priceLabel = price > 0 ? ` — $${price}${hasTiers ? ` (${tier})` : ''}` : '';
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = `${a.name}${priceLabel}`;
+        opt.dataset.activityId = a.id;
+        opt.dataset.tierPrice = price;
+        opt.dataset.perPerson = a.per_person ? '1' : '0';
+        opt.title = a.notes || '';
+        grp.appendChild(opt);
+      }
+      sel.appendChild(grp);
     }
-    container.innerHTML = html;
-    // Re-apply disabled state if activities were previously added
-    _syncActivityButtonStates();
+
+    // Restore selection if still present
+    if (prevVal) sel.value = prevVal;
+
+    // Update hint with selected price info
+    _updateActivityHint(sel, tier);
+  }
+
+  function _updateActivityHint(sel, tier) {
+    const hint = document.getElementById('activityDropdownHint');
+    if (!hint) return;
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.value) {
+      hint.textContent = 'Select an activity then click Add to append it to the quotation';
+      return;
+    }
+    const price = parseFloat(opt.dataset.tierPrice) || 0;
+    const pp = opt.dataset.perPerson === '1';
+    hint.textContent = price > 0
+      ? `Price: $${price}${pp ? ' per person' : ' flat'} · nationality tier: ${tier || 'FNR'}`
+      : 'No standard price — edit manually after adding';
   }
 
   function _syncActivityButtonStates() {
-    const added = state.addedActivities || {};
-    document.querySelectorAll('.activity-chip[data-activity-id]').forEach(btn => {
-      const id = btn.dataset.activityId;
-      const count = added[id] || 0;
-      const atLimit = count >= ACTIVITY_MAX_USES;
-      btn.disabled = atLimit;
-      btn.style.opacity = atLimit ? '0.4' : '';
-      btn.title = atLimit ? '✓ Already added to this itinerary' : (btn.getAttribute('title') || '');
-    });
+    // No-op: chip buttons replaced by dropdown; kept for call-site compatibility
   }
 
   function addActivityCost(actId, name, amount, perPerson) {
@@ -2386,9 +2393,10 @@
       toast('warning', 'Already added', `${name} has already been added to this itinerary`);
       return;
     }
-    // Use nationality-adjusted price from chip's data-tier-price attribute if available
-    const chip = document.querySelector(`.activity-chip[data-activity-id="${CSS.escape(actId)}"]`);
-    const tierPrice = chip ? parseFloat(chip.dataset.tierPrice) : NaN;
+    // Read nationality-adjusted price from dropdown option if available
+    const sel = document.getElementById('activityDropdown');
+    const opt = sel ? Array.from(sel.options).find(o => o.value === actId) : null;
+    const tierPrice = opt ? parseFloat(opt.dataset.tierPrice) : NaN;
     const finalAmount = !isNaN(tierPrice) ? tierPrice : amount;
 
     // Lookup per_person flag from catalogue to auto-set label
@@ -2429,12 +2437,40 @@
       addPresetExtraCost('Entebbe Airport Return Transfer', 150);
     });
 
+    // Activity dropdown: change → update hint; Add button → addActivityCost
+    const actDropdown = document.getElementById('activityDropdown');
+    const btnAddActivity = document.getElementById('btnAddActivity');
+    if (actDropdown) {
+      actDropdown.addEventListener('change', () => {
+        const tier = document.getElementById('pricingNationality')?.value || 'FNR';
+        _updateActivityHint(actDropdown, tier);
+      });
+    }
+    if (btnAddActivity) {
+      btnAddActivity.addEventListener('click', () => {
+        const sel = document.getElementById('activityDropdown');
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        if (!opt || !opt.value) {
+          toast('warning', 'No activity selected', 'Please select an activity from the dropdown first');
+          return;
+        }
+        const act = (state.activities || []).find(a => a.id === opt.value);
+        if (!act) return;
+        const price = parseFloat(opt.dataset.tierPrice) || 0;
+        addActivityCost(act.id, act.name, price, act.per_person);
+        // Reset dropdown to placeholder after adding
+        sel.value = '';
+        const tier = document.getElementById('pricingNationality')?.value || 'FNR';
+        _updateActivityHint(sel, tier);
+      });
+    }
+
     // Wire up dynamic permit label updates AND activity price updates on nationality / date change
     const natSel = document.getElementById('pricingNationality');
     const dateSel = document.getElementById('pricingTravelStartDate');
     if (natSel) natSel.addEventListener('change', () => {
       updatePermitLabels();
-      renderActivityPresets(); // re-render chips with nationality-adjusted prices
+      renderActivityPresets(); // re-render dropdown with nationality-adjusted prices
     });
     if (dateSel) dateSel.addEventListener('change', updatePermitLabels);
     // Initial label render

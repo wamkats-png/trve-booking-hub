@@ -852,10 +852,13 @@
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2l1.5 3.5L13 6.5l-2.5 2.5.5 3.5L8 11 5 12.5l.5-3.5L3 6.5l3.5-1L8 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                     Activities &amp; Structured Costs
                   </div>
-                  <div id="activityPresets">
-                    <div style="font-size:var(--text-xs);color:var(--text-muted)">Loading activities...</div>
+                  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                    <select id="activityDropdown" class="form-control" style="flex:1;min-width:200px">
+                      <option value="">— Select an activity —</option>
+                    </select>
+                    <button type="button" id="btnAddActivity" class="btn btn-sm btn-primary">Add</button>
                   </div>
-                  <span class="text-xs text-muted" style="display:block;margin-top:4px">Click to add to quotation</span>
+                  <div id="activityDropdownHint" style="font-size:var(--text-xs);color:var(--text-muted);margin-top:4px">Select an activity then click Add to append it to the quotation</div>
                 </div>
 
                 <!-- Extra Costs -->
