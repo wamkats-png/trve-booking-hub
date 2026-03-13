@@ -631,6 +631,8 @@
         const hint = document.createElement('span');
         hint.className = 'nav-shortcut';
         hint.textContent = shortcutMap[view];
+        hint.title = `Keyboard shortcut: press ${shortcutMap[view]}`;
+        hint.setAttribute('aria-label', `Keyboard shortcut: press ${shortcutMap[view]}`);
         item.appendChild(hint);
       }
     });
