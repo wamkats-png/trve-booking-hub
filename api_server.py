@@ -1572,26 +1572,51 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
 
     # --- Accommodation ---
     acc = pricing.get("accommodation", {})
+    nights_label = f"{summary.get('nights', summary.get('days', 1) - 1)} nights (= {summary.get('days', '—')} days − 1)"
     if acc.get("lines"):
         section_header("Accommodation")
-        cols = [(80, "Lodge / Room"), (20, "Nights"), (25, "Rate/Night"), (20, "Pax"), (45, "Total USD")]
+        pdf.set_font('Helvetica', '', 7)
+        pdf.set_text_color(120, 80, 0)
+        pdf.cell(0, 5, f"Trip duration: {nights_label}", ln=True)
+        pdf.set_text_color(40, 40, 40)
+        cols = [(75, "Lodge / Room"), (20, "Nights"), (25, "Rate/Night"), (20, "Pax"), (20, "Rooms"), (30, "Total USD")]
         table_header(cols)
         for line in acc["lines"]:
+            guest_lbl = line.get("guest_label", "")
+            desc = line.get("description", "")
+            if guest_lbl:
+                desc = f"[{guest_lbl}] {desc}"
             table_row(cols, [
-                line.get("description", ""),
+                desc,
                 line.get("nights", ""),
                 f"${line.get('rate_per_night', 0):,.0f}",
-                line.get("pax", ""),
+                f"{line.get('adults', '')}A" + (f"+{line.get('children','')}C" if line.get("children") else ""),
+                line.get("rooms", 1),
                 f"${line.get('total', 0):,.2f}",
             ])
         section_total("Accommodation Subtotal", acc.get("total", 0))
         pdf.ln(3)
 
+    # --- Per-Guest Breakdown ---
+    guest_bd = pricing.get("guest_breakdown", [])
+    if guest_bd:
+        section_header("Per-Guest Cost Breakdown")
+        cols = [(60, "Guest"), (50, "Accommodation"), (40, "Activities"), (40, "Guest Total")]
+        table_header(cols)
+        for g in guest_bd:
+            table_row(cols, [
+                g.get("guest_id", ""),
+                f"${g.get('accommodation_total', 0):,.2f}",
+                f"${g.get('activity_total', 0):,.2f}",
+                f"${g.get('guest_total', 0):,.2f}",
+            ])
+        pdf.ln(3)
+
     # --- Permits ---
     prm = pricing.get("permits", {})
     if prm.get("lines"):
-        section_header("Permits & Activities")
-        cols = [(80, "Permit / Activity"), (20, "Qty"), (25, "Unit Price"), (20, "Pax"), (45, "Total USD")]
+        section_header("Permits & Park Fees")
+        cols = [(80, "Permit"), (20, "Qty"), (25, "Unit Price"), (20, "Pax"), (45, "Total USD")]
         table_header(cols)
         for line in prm["lines"]:
             table_row(cols, [
@@ -1604,12 +1629,41 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
         section_total("Permits Subtotal", prm.get("total", 0))
         pdf.ln(3)
 
+    # --- Activities ---
+    act_sec = pricing.get("activities", {})
+    act_bd = pricing.get("activity_breakdown", [])
+    act_lines_pdf = act_bd if act_bd else act_sec.get("lines", [])
+    if act_lines_pdf:
+        section_header("Itinerary Activities")
+        cols = [(70, "Activity"), (20, "Day"), (30, "Cost/Person"), (20, "Guests"), (50, "Total USD")]
+        table_header(cols)
+        for line in act_lines_pdf:
+            table_row(cols, [
+                line.get("name", ""),
+                str(line.get("day", "")) or "—",
+                f"${line.get('cost_per_person', 0):,.2f}",
+                line.get("num_guests", line.get("pax", "—")),
+                f"${line.get('total', 0):,.2f}",
+            ])
+        section_total("Activities Subtotal", act_sec.get("total", sum(l.get("total", 0) for l in act_lines_pdf)))
+        pdf.ln(3)
+
     # --- Vehicle ---
-    veh = pricing.get("vehicle", {})
-    if veh.get("total"):
+    veh_sec = pricing.get("vehicles", pricing.get("vehicle", {}))
+    veh_lines = veh_sec.get("lines", [])
+    if veh_lines:
         section_header("Vehicle & Transport")
-        pdf.set_font('Helvetica', '', 9)
-        pdf.cell(0, 6, f"4x4 Safari Vehicle: {veh.get('days', 0)} days x ${veh.get('rate_per_day', 0)}/day = ${veh.get('total', 0):,.2f}", ln=True)
+        cols = [(70, "Vehicle Type"), (20, "Days"), (30, "Rate/Day"), (70, "Total USD")]
+        table_header(cols)
+        for vl in veh_lines:
+            buf_note = f" (+{vl.get('fuel_buffer_pct', 0)}% fuel)" if vl.get("fuel_buffer_pct") else ""
+            table_row(cols, [
+                vl.get("type", ""),
+                vl.get("days", ""),
+                f"${vl.get('rate', 0):,.0f}",
+                f"${vl.get('total', 0):,.2f}{buf_note}",
+            ])
+        section_total("Transport Subtotal", veh_sec.get("total", 0))
         pdf.ln(3)
 
     # --- Insurance ---
@@ -1617,7 +1671,7 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     if ins.get("included") and ins.get("total", 0) > 0:
         section_header("Travel Insurance")
         pdf.set_font('Helvetica', '', 9)
-        pdf.cell(0, 6, f"${ins.get('rate_per_person_per_day', 0)}/person/day x {summary.get('pax', 0)} pax x {summary.get('days', 0)} days = ${ins.get('total', 0):,.2f}", ln=True)
+        pdf.cell(0, 6, f"${ins.get('rate_per_person_per_day', 0)}/person/day × {summary.get('pax', 0)} pax × {summary.get('days', 0)} days = ${ins.get('total', 0):,.2f}", ln=True)
         pdf.ln(3)
 
     # --- Extra costs ---
@@ -1668,6 +1722,38 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     if grand_ugx:
         pdf.cell(145, 6, f"Equivalent (UGX @ {FX_RATE:,})", align='R')
         pdf.cell(45, 6, f"UGX {grand_ugx:,.0f}" if isinstance(grand_ugx, (int, float)) else str(grand_ugx), align='R', ln=True)
+
+    # --- Transfer Fee Payment Instruction ---
+    req_transfer = pricing.get("required_transfer_amount")
+    transfer_fees_est = pricing.get("transfer_fees_estimated")
+    if req_transfer and req_transfer > 0:
+        pdf.ln(4)
+        pdf.set_fill_color(255, 248, 231)   # amber tint
+        pdf.set_draw_color(200, 150, 62)
+        pdf.set_line_width(0.4)
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(120, 80, 0)
+        header_text = "PAYMENT INSTRUCTION — INTERNATIONAL TRANSFER"
+        pdf.cell(0, 7, header_text, border=1, fill=True, ln=True)
+        pdf.set_font('Helvetica', '', 8)
+        pdf.set_text_color(80, 50, 0)
+        inv_total = pricing.get("grand_total_usd", 0)
+        fee_est = transfer_fees_est or (req_transfer - inv_total) if inv_total else 0
+        lines_tf = [
+            f"Invoice Total:                 USD {inv_total:,.2f}" if inv_total else "",
+            f"Estimated bank & transfer fees: USD {fee_est:,.2f}" if fee_est else "",
+            f"Client must send:              USD {req_transfer:,.2f}",
+            "",
+            "All bank charges must be covered by the sender. The transfer amount shown",
+            "ensures the company receives the full invoice value after all bank deductions.",
+        ]
+        for line in lines_tf:
+            if line:
+                pdf.cell(0, 4.5, f"  {line}", ln=True)
+            else:
+                pdf.ln(2)
+        pdf.set_text_color(40, 40, 40)
+        pdf.ln(3)
 
     # --- Terms ---
     pdf.ln(8)
@@ -1812,6 +1898,10 @@ class PricingRequest(BaseModel):
     permits: Optional[List[dict]] = []
     extra_costs: Optional[List[dict]] = []
     vehicles: Optional[List[dict]] = []   # explicit optional transport add-ons
+    # Structured guest list — each entry: {guest_id, room_type, rate_per_night, meal_plan}
+    guests: Optional[List[dict]] = []
+    # Itinerary activities — each entry: {name, cost_per_person, day, group_cost}
+    activities: Optional[List[dict]] = []
 
 
 class CurateRequest(BaseModel):
@@ -1862,6 +1952,21 @@ class QuotationRequest(BaseModel):
 
 class SyncPushQuotation(BaseModel):
     quotation_id: str
+
+
+class BankFeeRequest(BaseModel):
+    """Inputs for the gross-up bank transfer fee calculator."""
+    invoice_total: float                                # Required net (what company must receive)
+    currency: Optional[str] = "USD"                    # Invoice currency
+    receiving_bank_fee_flat: Optional[float] = 0.0     # Flat fee deducted by receiving bank (USD)
+    receiving_bank_fee_pct: Optional[float] = 0.0      # % deducted by receiving bank
+    intermediary_bank_fee: Optional[float] = 0.0       # Flat intermediary/correspondent fee
+    sender_bank_fee_pct: Optional[float] = 0.0         # % charged on sender side
+    sender_bank_fee_flat: Optional[float] = 0.0        # Flat fee charged on sender side
+    exchange_rate: Optional[float] = None              # If client pays in foreign currency
+    client_currency: Optional[str] = None             # Foreign currency code (e.g. EUR, GBP)
+    currency_conversion_fee_pct: Optional[float] = 0.0 # % fee on FX conversion
+    approved_by: Optional[str] = ""                   # User who confirmed the calculation
 
 
 class ConfigUpdate(BaseModel):
@@ -1916,6 +2021,140 @@ def health():
         "version": "2.0.0",
         "enquiries_count": count,
     }
+
+
+# ---------------------------------------------------------------------------
+# BANK TRANSFER GROSS-UP CALCULATOR
+# Ensures the company receives the exact invoiced amount after all bank fees.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/calculate-transfer-fees")
+def calculate_transfer_fees(body: BankFeeRequest):
+    """
+    Gross-up calculator: given an invoice total, computes the amount the client
+    must send so the company receives the full invoice value.
+
+    Step 1  required_net = invoice_total
+    Step 2  net_after_receiving_fee = required_net + flat_fee + (required_net × pct / 100)
+    Step 3  net_after_intermediary = previous + intermediary_fee
+    Step 4  gross_usd = (net_after_intermediary + sender_flat) / (1 − sender_pct / 100)
+    Step 5  if client pays in foreign currency:
+              gross_foreign = gross_usd / exchange_rate
+              apply conversion fee if present
+    """
+    inv = body.invoice_total
+    if inv <= 0:
+        raise HTTPException(status_code=422, detail="invoice_total must be > 0")
+
+    # Step 1 — required net
+    required_net = inv
+
+    # Step 2 — add receiving bank deductions
+    recv_flat = body.receiving_bank_fee_flat or 0
+    recv_pct = body.receiving_bank_fee_pct or 0
+    recv_pct_amount = required_net * recv_pct / 100
+    after_recv = required_net + recv_flat + recv_pct_amount
+
+    # Step 3 — add intermediary bank deduction
+    intermediary = body.intermediary_bank_fee or 0
+    after_intermediary = after_recv + intermediary
+
+    # Step 4 — gross up for sender percentage fee
+    sender_pct = body.sender_bank_fee_pct or 0
+    sender_flat = body.sender_bank_fee_flat or 0
+    if sender_pct >= 100:
+        raise HTTPException(status_code=422, detail="sender_bank_fee_pct must be < 100")
+    gross_usd = (after_intermediary + sender_flat) / (1 - sender_pct / 100)
+
+    total_fee_usd = round(gross_usd - inv, 4)
+
+    result = {
+        "invoice_total_usd": round(inv, 2),
+        "required_net_usd": round(required_net, 2),
+        "receiving_bank_fee_usd": round(recv_flat + recv_pct_amount, 2),
+        "intermediary_fee_usd": round(intermediary, 2),
+        "sender_fee_usd": round(gross_usd - after_intermediary - sender_flat, 2) + sender_flat,
+        "total_transfer_fees_usd": round(total_fee_usd, 2),
+        "gross_amount_usd": round(gross_usd, 2),
+        "currency": body.currency or "USD",
+        "client_must_send_usd": round(gross_usd, 2),
+        "fee_breakdown": {
+            "receiving_flat": round(recv_flat, 2),
+            "receiving_pct_amount": round(recv_pct_amount, 2),
+            "intermediary": round(intermediary, 2),
+            "sender_flat": round(sender_flat, 2),
+            "sender_pct_amount": round(gross_usd - after_intermediary - sender_flat, 2),
+        },
+    }
+
+    # Step 5 — currency conversion if client pays in foreign currency
+    if body.exchange_rate and body.exchange_rate > 0:
+        conv_pct = body.currency_conversion_fee_pct or 0
+        gross_foreign = gross_usd / body.exchange_rate
+        # Apply conversion fee on top (client pays extra for FX)
+        gross_foreign_with_fee = gross_foreign * (1 + conv_pct / 100)
+        result.update({
+            "client_currency": body.client_currency or "FOREIGN",
+            "exchange_rate": body.exchange_rate,
+            "gross_amount_foreign": round(gross_foreign_with_fee, 2),
+            "client_must_send_foreign": round(gross_foreign_with_fee, 2),
+            "conversion_fee_pct": conv_pct,
+        })
+
+    # Audit log entry (persisted to DB)
+    audit_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "invoice_total": round(inv, 2),
+        "assumed_bank_fees": round(total_fee_usd, 2),
+        "calculated_transfer_amount": round(gross_usd, 2),
+        "exchange_rate_used": body.exchange_rate,
+        "client_currency": body.client_currency or body.currency or "USD",
+        "approved_by": body.approved_by or "—",
+    }
+    with db_session() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transfer_fee_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT, invoice_total REAL, assumed_bank_fees REAL,
+                calculated_transfer_amount REAL, exchange_rate_used REAL,
+                client_currency TEXT, approved_by TEXT, details TEXT
+            )
+        """)
+        conn.execute("""
+            INSERT INTO transfer_fee_audit
+              (timestamp, invoice_total, assumed_bank_fees, calculated_transfer_amount,
+               exchange_rate_used, client_currency, approved_by, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            audit_entry["timestamp"], audit_entry["invoice_total"],
+            audit_entry["assumed_bank_fees"], audit_entry["calculated_transfer_amount"],
+            audit_entry["exchange_rate_used"], audit_entry["client_currency"],
+            audit_entry["approved_by"], json.dumps(result),
+        ))
+        conn.commit()
+
+    result["audit"] = audit_entry
+    return result
+
+
+@app.get("/api/transfer-fee-audit")
+def get_transfer_fee_audit(limit: int = 50):
+    """Return recent bank transfer fee calculation audit log entries."""
+    with db_session() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transfer_fee_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT, invoice_total REAL, assumed_bank_fees REAL,
+                calculated_transfer_amount REAL, exchange_rate_used REAL,
+                client_currency TEXT, approved_by TEXT, details TEXT
+            )
+        """)
+        rows = conn.execute("""
+            SELECT id, timestamp, invoice_total, assumed_bank_fees, calculated_transfer_amount,
+                   exchange_rate_used, client_currency, approved_by
+            FROM transfer_fee_audit ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+    return {"items": [dict(r) for r in rows]}
 
 
 # --- Config ---
@@ -2419,6 +2658,98 @@ def approve_itinerary(enquiry_id: str, body: ApprovalRequest):
     return {"status": "approved", "enquiry_id": enquiry_id}
 
 
+# ---------------------------------------------------------------------------
+# HYDRATE FUNCTION — transforms raw inputs into a structured pricing model
+# ---------------------------------------------------------------------------
+
+def hydrate_pricing(days: int, guests: list, accommodations: list, activities: list) -> dict:
+    """
+    Convert raw trip inputs into a per-guest / per-activity structured pricing model.
+
+    Step 1  Read input — trip days, guest list, accommodation rates, itinerary activities
+    Step 2  Derive nights  nights = days − 1
+    Step 3  Attach accommodation cost to each guest
+    Step 4  Attach activity costs to each guest
+    Step 5  Compute per-guest totals
+    Step 6  Return quotation structure: guest_breakdown[], activity_breakdown[],
+            per_person_total, group_total
+    """
+    MEAL_SURCHARGE = {"BB": 0, "HB": 35, "FB": 65}
+    nights = max(0, days - 1)
+    num_guests = len(guests) if guests else 1
+
+    # --- Build guest breakdown ---
+    guest_breakdown = []
+    for i, g in enumerate(guests):
+        gid = g.get("guest_id") or g.get("name") or f"Guest {i + 1}"
+        room_type = g.get("room_type", "")
+        rate = float(g.get("rate_per_night") or g.get("accommodation_rate", 0))
+        meal_plan = (g.get("meal_plan") or "BB").upper()
+        meal_s = MEAL_SURCHARGE.get(meal_plan, 0)
+        lodge = g.get("lodge") or g.get("lodge_name", "")
+        acc_nights = int(g.get("nights") or nights)
+        acc_total = (rate + meal_s) * acc_nights
+
+        act_lines = []
+        act_total = 0.0
+        for act in activities:
+            unit_cost = float(act.get("cost_per_person") or act.get("unit_cost", 0))
+            if act.get("group_cost"):
+                # Group-priced activity: split equally across guests
+                unit_cost = round(float(act.get("group_total", unit_cost)) / num_guests, 2)
+            act_lines.append({
+                "name": act.get("name", "Activity"),
+                "day": act.get("day", ""),
+                "cost_per_person": unit_cost,
+            })
+            act_total += unit_cost
+
+        guest_total = acc_total + act_total
+        guest_breakdown.append({
+            "guest_id": gid,
+            "lodge": lodge,
+            "room_type": room_type,
+            "meal_plan": meal_plan,
+            "rate_per_night": rate,
+            "nights": acc_nights,
+            "accommodation_total": round(acc_total, 2),
+            "activities": act_lines,
+            "activity_total": round(act_total, 2),
+            "guest_total": round(guest_total, 2),
+        })
+
+    # --- Build activity breakdown (per activity across all guests) ---
+    activity_breakdown = []
+    for act in activities:
+        unit_cost = float(act.get("cost_per_person") or act.get("unit_cost", 0))
+        is_group = bool(act.get("group_cost"))
+        if is_group:
+            total = float(act.get("group_total", unit_cost * num_guests))
+        else:
+            total = unit_cost * num_guests
+        activity_breakdown.append({
+            "name": act.get("name", "Activity"),
+            "day": act.get("day", ""),
+            "cost_per_person": unit_cost,
+            "num_guests": num_guests,
+            "group_cost": is_group,
+            "total": round(total, 2),
+        })
+
+    group_acc_total = sum(g["accommodation_total"] for g in guest_breakdown)
+    group_act_total = sum(a["total"] for a in activity_breakdown)
+    group_total = group_acc_total + group_act_total
+    per_person_total = group_total / num_guests if num_guests else group_total
+
+    return {
+        "nights": nights,
+        "guest_breakdown": guest_breakdown,
+        "activity_breakdown": activity_breakdown,
+        "per_person_total": round(per_person_total, 2),
+        "group_total": round(group_total, 2),
+    }
+
+
 # --- Pricing Calculator ---
 @app.post("/api/calculate-price")
 def calculate_price(body: PricingRequest):
@@ -2430,6 +2761,9 @@ def calculate_price(body: PricingRequest):
     tier = body.nationality_tier or "FNR"
     travel_date = body.travel_start_date
 
+    # Auto-derive trip nights — formula: nights = days − 1
+    trip_nights = max(0, days - 1)
+
     # Meal plan surcharges per person per night (USD, on top of room rate)
     # BB = Bed & Breakfast (base), HB = Half Board, FB = Full Board
     MEAL_SURCHARGE = {"BB": 0, "HB": 35, "FB": 65}
@@ -2437,12 +2771,17 @@ def calculate_price(body: PricingRequest):
     # 1. Accommodation
     accommodation_total = 0.0
     accommodation_lines = []
+    num_accs = len(body.accommodations) if body.accommodations else 0
     if body.accommodations:
         with db_session() as conn:
             for acc in body.accommodations:
                 lodge_name = acc.get("lodge") or acc.get("lodge_name", "")
                 room = acc.get("room_type", "standard")
-                nights = acc.get("nights", 1)
+                # Nights: use provided value if multi-lodge; else auto-derive from days - 1
+                if "nights" in acc and num_accs > 1:
+                    nights = max(1, int(acc["nights"]))
+                else:
+                    nights = max(1, trip_nights)
                 rooms = max(1, acc.get("rooms", 1))
                 meal_plan = (acc.get("meal_plan") or "BB").upper()
                 # Per-row guest breakdown (if provided by UI); fallback to global
@@ -2483,8 +2822,10 @@ def calculate_price(body: PricingRequest):
                 accommodation_total += line_total
                 meal_label = f" [{meal_plan}]" if meal_plan != "BB" else ""
                 child_note = f" ({acc_adults}A+{acc_children}C)" if acc_children > 0 else f" ({acc_adults} adults)"
+                guest_label = acc.get("guest_label", "").strip()
                 accommodation_lines.append({
                     "description": f"{name} — {room}{meal_label}{child_note}",
+                    "guest_label": guest_label,
                     "nights": nights,
                     "rooms": rooms,
                     "rate_per_night": rate,
@@ -2553,8 +2894,36 @@ def calculate_price(body: PricingRequest):
                 "total": round(line_total, 2),
             })
 
+    # 5b. Itinerary activities — per-person unit cost
+    activities_total = 0.0
+    activity_lines = []
+    if body.activities:
+        for act in body.activities:
+            act_name = act.get("name", "Activity")
+            if not act_name:
+                raise HTTPException(status_code=422, detail=f"Activity missing name")
+            unit_cost = act.get("cost_per_person") or act.get("unit_cost")
+            if unit_cost is None:
+                raise HTTPException(status_code=422, detail=f"Activity '{act_name}' missing unit cost per person")
+            unit_cost = float(unit_cost)
+            is_group = bool(act.get("group_cost"))
+            if is_group:
+                group_t = float(act.get("group_total", unit_cost * pax))
+                line_total = group_t
+            else:
+                line_total = unit_cost * pax
+            activities_total += line_total
+            activity_lines.append({
+                "name": act_name,
+                "day": act.get("day", ""),
+                "cost_per_person": round(unit_cost, 2),
+                "pax": pax,
+                "group_cost": is_group,
+                "total": round(line_total, 2),
+            })
+
     # Subtotals
-    subtotal = accommodation_total + vehicle_total + permit_total + insurance_total + extras_total
+    subtotal = accommodation_total + vehicle_total + permit_total + insurance_total + extras_total + activities_total
 
     # 6. Commission / Service fee
     commission_pct = 0.0
@@ -2587,6 +2956,14 @@ def calculate_price(body: PricingRequest):
         line_items.append({"item": f"Travel Insurance ({guest_label} × {days} days)", "total_usd": round(insurance_total, 2)})
     for line in extra_lines:
         line_items.append({"item": line["description"], "total_usd": line["total"]})
+    for act in activity_lines:
+        pp_label = "" if act["group_cost"] else f" × {act['pax']} pax"
+        line_items.append({"item": f"{act['name']}{' (Day ' + str(act['day']) + ')' if act['day'] else ''} — ${act['cost_per_person']}/person{pp_label}", "total_usd": act["total"]})
+
+    # Hydrated per-guest / per-activity breakdown (if guests list provided)
+    hydrated = None
+    if body.guests:
+        hydrated = hydrate_pricing(days, body.guests, body.accommodations or [], body.activities or [])
 
     # Look up itinerary name
     itn_name = "Custom Trip"
@@ -2611,6 +2988,7 @@ def calculate_price(body: PricingRequest):
         "fuel_buffer_pct": fuel_buffer_pct,
         "fx_timestamp": "2026 avg",
         "duration_days": days,
+        "nights": trip_nights,
         "pax": pax,
         "adults": adults,
         "children": children,
@@ -2620,11 +2998,13 @@ def calculate_price(body: PricingRequest):
         "pricing_data": {
             "summary": {
                 "pax": pax, "adults": adults, "children": children,
-                "days": days, "nationality_tier": tier, "travel_start_date": travel_date
+                "days": days, "nights": trip_nights,
+                "nationality_tier": tier, "travel_start_date": travel_date,
             },
             "accommodation": {"lines": accommodation_lines, "total": round(accommodation_total, 2)},
             "vehicles": {"lines": vehicle_lines, "total": round(vehicle_total, 2)},
             "permits": {"lines": permit_lines, "total": round(permit_total, 2)},
+            "activities": {"lines": activity_lines, "total": round(activities_total, 2)},
             "insurance": {
                 "included": body.include_insurance,
                 "rate_per_person_per_day": CONFIG["insurance_rate_per_person_per_day"] if body.include_insurance else 0,
@@ -2642,6 +3022,9 @@ def calculate_price(body: PricingRequest):
                 "fx_buffer_pct": CONFIG["fx_buffer_pct"],
                 "fuel_buffer_pct": CONFIG["fuel_buffer_pct"],
             },
+            # Per-guest and per-activity breakdowns (present only when guests list is provided)
+            "guest_breakdown": hydrated["guest_breakdown"] if hydrated else [],
+            "activity_breakdown": hydrated["activity_breakdown"] if hydrated else activity_lines,
         },
     }
 
