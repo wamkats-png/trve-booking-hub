@@ -183,8 +183,10 @@
     apiConfig: null,
     syncInterval: null,
     activities: [],
-    guestRecords: [],      // [{id:'G-2026-001', name:'', room_idx:null}]
+    guestRecords: [],      // [{id:'G-2026-001', name:'', room_idx:null, sub_room:null}]
     _guestIdSeq: 0,        // auto-increment counter for guest IDs
+    staffRooms: [],        // [{idx, role, lodge, roomType, nights, mealPlan, pricingOption, occupantName, rateUsd}]
+    _staffRoomSeq: 0,      // stable index for staff rooms
   };
 
   /* ============================================================
@@ -2110,144 +2112,249 @@
       ? state.lodges.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')
       : '<option value="" disabled>⚠ No lodges — check backend connection</option>';
 
-    // Default adults/children from global fields
-    const defaultAdults = parseInt(document.getElementById('pricingAdults')?.value) || 2;
+    // Default occupancy from global pax fields
+    const defaultAdults = Math.max(1, parseInt(document.getElementById('pricingAdults')?.value) || 2);
     const defaultChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
 
-    // Auto-derive nights: nights = days - 1
-    const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 7;
-    const autoNights = Math.max(1, tripDays - 1);
-
-    // Check-in date from trip start
+    // Auto-derive nights from trip dates (checkout − checkin) or days − 1
     const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
+    const endDateVal   = document.getElementById('pricingTravelEndDate')?.value   || '';
+    const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 7;
+    let autoNights = Math.max(1, tripDays - 1);
+    if (startDateVal && endDateVal) {
+      const diff = Math.round((new Date(endDateVal) - new Date(startDateVal)) / 86400000);
+      if (diff > 0) autoNights = diff;
+    }
+
+    // Check-in / check-out display
     let checkInDisplay = '—', checkOutDisplay = '—';
+    const fmtD = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
     if (startDateVal) {
       const ci = new Date(startDateVal);
-      const co = new Date(ci); co.setDate(co.getDate() + autoNights);
-      const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-      checkInDisplay = fmt(ci); checkOutDisplay = fmt(co);
+      checkInDisplay = fmtD(ci);
+      if (endDateVal) {
+        checkOutDisplay = fmtD(new Date(endDateVal));
+      } else {
+        const co = new Date(ci); co.setDate(co.getDate() + autoNights);
+        checkOutDisplay = fmtD(co);
+      }
     }
+
+    const totalGuests = 1 * (defaultAdults + defaultChildren); // rooms=1 initial
 
     el.innerHTML = `
       <div class="lodge-item-body">
-        <!-- Date bar -->
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 8px;background:var(--bg-subtle,var(--bg-surface));border-radius:var(--radius-md);font-size:var(--text-xs);color:var(--text-secondary)">
+
+        <!-- ① Date bar — auto-synced from Basic Data -->
+        <div class="lodge-date-bar" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:7px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);font-size:var(--text-xs);color:var(--text-secondary)">
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="1.5" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 4h9" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 1v1.5M7.5 1v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-          Check-in: <strong class="lodge-checkin-display">${checkInDisplay}</strong>
-          &rarr;
-          Check-out: <strong class="lodge-checkout-display">${checkOutDisplay}</strong>
-          <label style="display:flex;align-items:center;gap:4px;margin-left:auto;cursor:pointer;font-size:var(--text-xs)">
+          Check-in:&nbsp;<strong class="lodge-checkin-display">${checkInDisplay}</strong>
+          &nbsp;&rarr;&nbsp;
+          Check-out:&nbsp;<strong class="lodge-checkout-display">${checkOutDisplay}</strong>
+          <span style="color:var(--text-muted);margin-left:4px">(${autoNights} nights)</span>
+          <label style="display:flex;align-items:center;gap:4px;margin-left:auto;cursor:pointer;font-size:var(--text-xs);color:var(--text-muted)">
             <input type="checkbox" class="lodge-custom-dates-toggle" style="width:11px;height:11px">
-            Custom dates
+            Custom stay dates
           </label>
           <input type="date" name="lodge_checkin_${idx}" class="lodge-custom-checkin form-control" style="display:none;height:24px;font-size:var(--text-xs);width:130px">
           <input type="date" name="lodge_checkout_${idx}" class="lodge-custom-checkout form-control" style="display:none;height:24px;font-size:var(--text-xs);width:130px">
         </div>
-        <div style="margin-bottom:6px">
-          <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:3px">Guest / Room Label <span style="font-weight:400">(optional)</span></label>
-          <input type="text" class="form-control" name="guest_label_${idx}" placeholder="e.g. Room 1, Adult Couple, Mr. Wamala…" style="font-size:var(--text-xs)">
-        </div>
-        <select class="form-control" name="lodge_name_${idx}" style="margin-bottom:6px">
-          <option value="">— Select lodge —</option>
-          ${lodgeOptions}
-        </select>
-        <select class="form-control" name="room_type_${idx}" style="font-size:var(--text-xs);margin-bottom:6px">
-          <option value="">— select lodge first —</option>
-        </select>
-        <div id="lodge_rate_freshness_${idx}" style="display:none;font-size:var(--text-xs);margin-bottom:4px"></div>
-        <div style="margin-bottom:6px">
-          <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:3px">Meal Plan</label>
-          <select class="form-control" name="meal_plan_${idx}" style="font-size:var(--text-xs)">
-            <option value="BB">BB — Bed &amp; Breakfast (base rate)</option>
-            <option value="HB">HB — Half Board (+$35/person/night)</option>
-            <option value="FB">FB — Full Board (+$65/person/night)</option>
+
+        <!-- ② Lodge selection -->
+        <div style="margin-bottom:8px">
+          <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Lodge</label>
+          <select class="form-control" name="lodge_name_${idx}">
+            <option value="">— Select lodge —</option>
+            ${lodgeOptions}
           </select>
         </div>
-        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:4px">
-          <span class="lodge-nights-pill" title="Nights auto-derived from trip days. Edit for multi-lodge splits.">
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v1.5M5.5 8.5V10M1 5.5h1.5M8.5 5.5H10M2.6 2.6l1 1M7.4 7.4l1 1M2.6 8.4l1-1M7.4 3.6l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
-            <input type="number" name="nights_${idx}" class="lodge-nights-input" min="1" value="${autoNights}"
-              title="Nights = days − 1. Adjust here for multi-lodge splits."
-              oninput="window.TRVE._updateLodgeRowDates(this.closest('.lodge-item'))">
-            nights <span class="lodge-nights-hint" style="font-size:9px;color:var(--text-muted);margin-left:2px">(= ${tripDays} days − 1)</span>
-          </span>
-          <span class="lodge-rooms-badge" title="Number of rooms of this type">
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="3" width="9" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 6h9" stroke="currentColor" stroke-width="1.2"/><path d="M4 6V9" stroke="currentColor" stroke-width="1.2"/></svg>
-            <input type="number" name="rooms_${idx}" min="1" value="1" title="Rooms of this type">
-            room(s)
-          </span>
+
+        <!-- ③ Room type + rate freshness -->
+        <div style="margin-bottom:8px">
+          <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Room Type</label>
+          <select class="form-control" name="room_type_${idx}" style="font-size:var(--text-xs)">
+            <option value="">— select lodge first —</option>
+          </select>
+          <div id="lodge_rate_freshness_${idx}" style="display:none;font-size:var(--text-xs);margin-top:4px"></div>
         </div>
-        <div class="lodge-guest-row" style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:var(--text-xs);color:var(--text-muted)">Guests in this room:</span>
-          <label style="display:flex;align-items:center;gap:3px;font-size:var(--text-xs);font-weight:600;color:var(--brand-green)">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="3" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M1 9c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-            Adults
-            <input type="number" class="form-control" name="row_adults_${idx}" min="0" value="${defaultAdults}"
-              style="width:42px;height:24px;font-size:var(--text-xs);padding:2px 4px">
-          </label>
-          <label style="display:flex;align-items:center;gap:3px;font-size:var(--text-xs);font-weight:600;color:var(--brand-gold-dark)">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="2.5" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 9c0-1.7 1.3-3 3-3s3 1.3 3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-            Children
-            <input type="number" class="form-control" name="row_children_${idx}" min="0" value="${defaultChildren}"
-              style="width:42px;height:24px;font-size:var(--text-xs);padding:2px 4px">
-          </label>
-          <span style="font-size:var(--text-xs);color:var(--text-muted)">(children 50% room rate)</span>
+
+        <!-- ④ Room configuration row: Rooms · Nights · Meal Plan -->
+        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:10px;align-items:end;margin-bottom:10px">
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Rooms</label>
+            <div class="lodge-rooms-badge" style="display:flex;align-items:center;gap:4px">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1" y="3.5" width="10" height="7.5" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 7h10" stroke="currentColor" stroke-width="1.2"/><path d="M4.5 7v4" stroke="currentColor" stroke-width="1.2"/></svg>
+              <input type="number" name="rooms_${idx}" class="form-control" min="1" value="1"
+                style="width:52px;height:30px;font-size:var(--text-sm);font-weight:600;text-align:center"
+                title="Number of identical rooms">
+            </div>
+          </div>
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Nights</label>
+            <div class="lodge-nights-pill" style="display:flex;align-items:center;gap:4px">
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v1.5M5.5 8.5V10M1 5.5h1.5M8.5 5.5H10M2.6 2.6l1 1M7.4 7.4l1 1M2.6 8.4l1-1M7.4 3.6l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
+              <input type="number" name="nights_${idx}" class="lodge-nights-input form-control" min="1" value="${autoNights}"
+                style="width:52px;height:30px;font-size:var(--text-sm);font-weight:600;text-align:center"
+                title="Nights = check-out − check-in. Adjust for multi-lodge splits."
+                oninput="window.TRVE._updateLodgeRowDates(this.closest('.lodge-item'))">
+              <span class="lodge-nights-hint" style="font-size:var(--text-xs);color:var(--text-muted)">nights</span>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Meal Plan</label>
+            <select class="form-control" name="meal_plan_${idx}" style="font-size:var(--text-xs);height:30px">
+              <option value="BB">BB — Bed &amp; Breakfast</option>
+              <option value="HB">HB — Half Board (+$35/pax/night)</option>
+              <option value="FB" selected>FB — Full Board (+$65/pax/night)</option>
+            </select>
+          </div>
         </div>
-        <!-- Guest assignment (populated by _renderRoomGuestAssignment) -->
-        <div class="lodge-guest-assign" style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:var(--text-xs);font-weight:600;color:var(--text-muted)">
-            Assigned Guests
-            <span class="lodge-occupancy-badge" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:9px;background:var(--bg-surface);color:var(--text-muted)">0/? guests</span>
+
+        <!-- ⑤ Occupancy per room — drives auto guest creation -->
+        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px;margin-bottom:10px">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Occupancy per Room</div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:5px;font-size:var(--text-xs);font-weight:600;color:var(--brand-green)">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="3.5" r="2.2" stroke="currentColor" stroke-width="1.3"/><path d="M1 11c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              Adults/room
+              <input type="number" class="form-control" name="row_adults_${idx}" min="0" value="${defaultAdults}"
+                style="width:46px;height:28px;font-size:var(--text-sm);padding:2px 4px;text-align:center">
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:var(--text-xs);font-weight:600;color:var(--brand-gold-dark)">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="3" r="1.8" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 11c0-2 1.6-3.5 3.5-3.5s3.5 1.5 3.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              Children/room
+              <input type="number" class="form-control" name="row_children_${idx}" min="0" value="${defaultChildren}"
+                style="width:46px;height:28px;font-size:var(--text-sm);padding:2px 4px;text-align:center">
+            </label>
+            <div class="lodge-total-guests-hint" style="font-size:var(--text-xs);color:var(--text-muted);margin-left:auto">
+              Total guests: <strong class="lodge-guest-count">${totalGuests}</strong>
+              <span style="font-size:9px">(1 room × ${defaultAdults + defaultChildren} pax)</span>
+            </div>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:5px">Children charged at 50% room rate · <span style="color:var(--success)">Guest placeholders auto-generated below</span></div>
+        </div>
+
+        <!-- ⑥ Guest assignment — per room sub-units -->
+        <div class="lodge-guest-assign" style="margin-top:4px">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">
+            Guest Assignment
+            <span class="lodge-occupancy-badge" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:9px;background:var(--bg-surface);color:var(--text-muted);text-transform:none;font-weight:600">0/? guests</span>
           </div>
           <div class="lodge-guest-assign-list">
-            <span style="font-size:var(--text-xs);color:var(--text-muted)">Add guests in the Guest roster above to assign them here.</span>
+            <span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Set occupancy above — guest placeholders will appear here automatically.</span>
           </div>
         </div>
+
       </div>
-      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.lodge-item').remove();window.TRVE._syncLodgeGuestAssignments()" title="Remove lodge">
+      <button type="button" class="btn btn-ghost btn-icon"
+        onclick="window.TRVE._removeLodgeItem(this.closest('.lodge-item'))" title="Remove lodge">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     `;
     container.appendChild(el);
 
-    // Wire lodge selection to dynamically populate room_type options
-    const lodgeSelect = el.querySelector(`[name^="lodge_name_"]`);
+    // ② Lodge → populate room types
+    const lodgeSelect    = el.querySelector(`[name^="lodge_name_"]`);
     const roomTypeSelect = el.querySelector(`[name^="room_type_"]`);
     if (lodgeSelect && roomTypeSelect) {
       lodgeSelect.addEventListener('change', function() {
         populateRoomTypes(this.value, roomTypeSelect);
+        _autoSyncRoomGuests(el);
       });
       roomTypeSelect.addEventListener('change', function() {
         _updateRoomOccupancyBadge(el, idx);
       });
     }
 
-    // Wire custom dates toggle
-    const customToggle = el.querySelector('.lodge-custom-dates-toggle');
+    // ④⑤ Rooms / adults / children → auto-sync guests + update UI
+    const roomsInput    = el.querySelector(`[name^="rooms_"]`);
+    const adultsInput   = el.querySelector(`[name^="row_adults_"]`);
+    const childrenInput = el.querySelector(`[name^="row_children_"]`);
+    [roomsInput, adultsInput, childrenInput].forEach(inp => {
+      if (!inp) return;
+      inp.addEventListener('input', () => {
+        _updateLodgeTotalGuestsHint(el);
+        _autoSyncRoomGuests(el);
+      });
+    });
+
+    // Custom dates toggle
+    const customToggle  = el.querySelector('.lodge-custom-dates-toggle');
     const customCheckin = el.querySelector('.lodge-custom-checkin');
-    const customCheckout = el.querySelector('.lodge-custom-checkout');
-    const checkinDisplay = el.querySelector('.lodge-checkin-display');
-    const checkoutDisplay = el.querySelector('.lodge-checkout-display');
-    if (customToggle && customCheckin && customCheckout) {
+    const customCheckout= el.querySelector('.lodge-custom-checkout');
+    const ciDisplay     = el.querySelector('.lodge-checkin-display');
+    const coDisplay     = el.querySelector('.lodge-checkout-display');
+    if (customToggle) {
       customToggle.addEventListener('change', function() {
-        const isCustom = this.checked;
-        customCheckin.style.display = isCustom ? '' : 'none';
-        customCheckout.style.display = isCustom ? '' : 'none';
-        if (checkinDisplay) checkinDisplay.style.display = isCustom ? 'none' : '';
-        if (checkoutDisplay) checkoutDisplay.style.display = isCustom ? 'none' : '';
-        if (!isCustom) _updateLodgeRowDates(el);
+        const on = this.checked;
+        customCheckin.style.display  = on ? '' : 'none';
+        customCheckout.style.display = on ? '' : 'none';
+        if (ciDisplay) ciDisplay.style.display = on ? 'none' : '';
+        if (coDisplay) coDisplay.style.display = on ? 'none' : '';
+        if (!on) _updateLodgeRowDates(el);
       });
-      customCheckin.addEventListener('change', function() {
-        if (checkinDisplay && customToggle.checked) checkinDisplay.style.display = 'none';
-      });
-      customCheckout.addEventListener('change', function() {
-        if (checkoutDisplay && customToggle.checked) checkoutDisplay.style.display = 'none';
-      });
+      customCheckin.addEventListener('change',  () => _updateLodgeRowDates(el));
+      customCheckout.addEventListener('change', () => _updateLodgeRowDates(el));
     }
 
-    // Initial guest assignment sync
+    // Initial auto-sync guests for this row then refresh all assignments
+    _autoSyncRoomGuests(el);
+    _renderAccommPricingSummary();
+  }
+
+  // Update the "Total guests: N (X rooms × Y pax)" hint line
+  function _updateLodgeTotalGuestsHint(row) {
+    const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value)    || 1;
+    const adults   = parseInt(row.querySelector('[name^="row_adults_"]')?.value)   || 0;
+    const children = parseInt(row.querySelector('[name^="row_children_"]')?.value) || 0;
+    const perRoom  = adults + children;
+    const total    = rooms * perRoom;
+    const countEl  = row.querySelector('.lodge-guest-count');
+    const hintEl   = row.querySelector('.lodge-total-guests-hint span');
+    if (countEl) countEl.textContent = total;
+    if (hintEl)  hintEl.textContent  = `(${rooms} room${rooms !== 1 ? 's' : ''} × ${perRoom} pax)`;
+  }
+
+  // Auto-create / trim guest records for this lodge row based on rooms × occupancy
+  function _autoSyncRoomGuests(row) {
+    const roomIdx  = parseInt(row.dataset.idx);
+    const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value)    || 1;
+    const adults   = parseInt(row.querySelector('[name^="row_adults_"]')?.value)   || 0;
+    const children = parseInt(row.querySelector('[name^="row_children_"]')?.value) || 0;
+    const perRoom  = adults + children;
+
+    // Guests currently owned by this lodge row
+    const ownedNow = state.guestRecords.filter(g => g.room_idx === roomIdx);
+    const others   = state.guestRecords.filter(g => g.room_idx !== roomIdx);
+
+    // Build desired guest set (rooms × perRoom), reusing existing records where possible
+    const desired = [];
+    for (let r = 0; r < rooms; r++) {
+      for (let p = 0; p < perRoom; p++) {
+        const slotIdx = r * perRoom + p;
+        if (ownedNow[slotIdx]) {
+          desired.push({ ...ownedNow[slotIdx], room_idx: roomIdx, sub_room: r });
+        } else {
+          desired.push({ id: _generateGuestId(), name: '', room_idx: roomIdx, sub_room: r });
+        }
+      }
+    }
+
+    state.guestRecords = [...others, ...desired];
+    renderGuestRoster();
     _syncLodgeGuestAssignments();
   }
+
+  // Remove a lodge item + clean up its guests
+  function _removeLodgeItem(el) {
+    const roomIdx = parseInt(el.dataset.idx);
+    state.guestRecords = state.guestRecords.filter(g => g.room_idx !== roomIdx);
+    el.remove();
+    renderGuestRoster();
+    _syncLodgeGuestAssignments();
+    _renderAccommPricingSummary();
+  }
+  window.TRVE._removeLodgeItem = _removeLodgeItem;
 
   // When trip days change, auto-update nights in all lodge rows (single-lodge path)
   function _syncLodgeNightsFromDays(days) {
@@ -2359,20 +2466,24 @@
       <div class="form-section-title" style="margin-bottom:var(--space-3)">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="5" cy="4" r="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M1 12c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="10.5" cy="4" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M11 8.3c1.1.3 2 1.4 2 2.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
         Group Guests (${state.guestRecords.length})
+        <span style="font-size:var(--text-xs);font-weight:400;color:var(--text-muted);margin-left:4px">— auto-generated from room occupancy · rename anytime</span>
       </div>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        ${state.guestRecords.map((g, i) => `
-          <div class="guest-record-row" style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)">
+      <div style="display:flex;flex-direction:column;gap:5px">
+        ${state.guestRecords.map((g, i) => {
+          const roomLabel = g.room_idx != null
+            ? `Rm ${g.room_idx + 1}${g.sub_room != null ? '·' + (g.sub_room + 1) : ''}`
+            : 'Unassigned';
+          const labelColor = g.room_idx != null ? 'var(--success)' : 'var(--text-muted)';
+          return `
+          <div class="guest-record-row" style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)">
             <span style="font-family:var(--font-mono);font-size:var(--text-xs);font-weight:600;color:var(--brand-green);white-space:nowrap;min-width:80px">${escapeHtml(g.id)}</span>
-            <input type="text" class="form-control" placeholder="Name (optional — e.g. Jane Smith)"
+            <input type="text" class="form-control" placeholder="Name (optional)"
               value="${escapeHtml(g.name)}"
-              style="flex:1;height:28px;font-size:var(--text-xs);padding:2px 8px"
+              style="flex:1;height:26px;font-size:var(--text-xs);padding:2px 8px"
               oninput="window.TRVE._updateGuestName(${i}, this.value)">
-            ${g.room_idx != null
-              ? `<span style="font-size:var(--text-xs);color:var(--success);white-space:nowrap">Room ${g.room_idx + 1}</span>`
-              : `<span style="font-size:var(--text-xs);color:var(--text-muted);white-space:nowrap">Unassigned</span>`}
-          </div>
-        `).join('')}
+            <span style="font-size:var(--text-xs);color:${labelColor};white-space:nowrap;min-width:60px;text-align:right">${roomLabel}</span>
+          </div>`;
+        }).join('')}
       </div>
     `;
   }
@@ -2390,22 +2501,336 @@
 
   function _renderRoomGuestAssignment(row, roomIdx) {
     const container = row.querySelector('.lodge-guest-assign-list');
-    if (!container || state.guestRecords.length === 0) {
-      if (container) container.innerHTML = '<span style="font-size:var(--text-xs);color:var(--text-muted)">Add guests above to assign</span>';
+    if (!container) return;
+
+    const rooms       = parseInt(row.querySelector('[name^="rooms_"]')?.value)      || 1;
+    const adults      = parseInt(row.querySelector('[name^="row_adults_"]')?.value) || 0;
+    const children    = parseInt(row.querySelector('[name^="row_children_"]')?.value)|| 0;
+    const perRoom     = adults + children;
+    const roomTypeVal = row.querySelector('[name^="room_type_"]')?.value || '';
+    const lodgeName   = row.querySelector('[name^="lodge_name_"]')?.value || '';
+    const maxOcc      = _getMaxOccupancy(roomTypeVal, lodgeName) || perRoom || 2;
+
+    // Guests owned by this lodge row
+    const ownedGuests = state.guestRecords.filter(g => g.room_idx === roomIdx);
+
+    if (ownedGuests.length === 0 && state.guestRecords.length === 0) {
+      container.innerHTML = '<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Set occupancy above to auto-create guest placeholders.</span>';
+      _updateRoomOccupancyBadge(row, roomIdx);
       return;
     }
-    container.innerHTML = state.guestRecords.map((g, gi) => {
-      const assigned = g.room_idx === roomIdx;
-      return `
-        <label style="display:flex;align-items:center;gap:5px;font-size:var(--text-xs);cursor:pointer;padding:2px 0">
-          <input type="checkbox" ${assigned ? 'checked' : ''}
-            onchange="window.TRVE._toggleGuestRoom(${gi}, ${roomIdx}, this.checked)"
-            style="width:12px;height:12px;cursor:pointer">
-          <span style="font-family:var(--font-mono);color:var(--brand-green)">${escapeHtml(g.id)}</span>
-          ${g.name ? `<span style="color:var(--text-secondary)">${escapeHtml(g.name)}</span>` : '<span style="color:var(--text-muted);font-style:italic">unnamed</span>'}
-        </label>`;
-    }).join('');
+
+    // Render one card per sub-room
+    let html = '';
+    for (let r = 0; r < rooms; r++) {
+      const subGuests  = ownedGuests.filter(g => g.sub_room === r);
+      const exceeded   = subGuests.length > maxOcc;
+      const borderCol  = exceeded ? 'var(--danger)' : 'var(--border)';
+      const badgeBg    = exceeded ? 'var(--danger)' : subGuests.length === perRoom && perRoom > 0 ? 'var(--success)' : 'var(--bg-surface)';
+      const badgeColor = exceeded || (subGuests.length === perRoom && perRoom > 0) ? '#fff' : 'var(--text-muted)';
+
+      html += `
+        <div style="margin-bottom:8px;border:1px solid ${borderCol};border-radius:var(--radius-md);overflow:hidden">
+          <div style="display:flex;align-items:center;gap:6px;padding:5px 10px;background:var(--bg-subtle);border-bottom:1px solid ${borderCol}">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="1" y="2.5" width="8" height="6.5" rx=".8" stroke="currentColor" stroke-width="1.2"/><path d="M1 5h8" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 5v4" stroke="currentColor" stroke-width="1.2"/></svg>
+            <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-secondary)">Room ${r + 1}</span>
+            ${roomTypeVal ? `<span style="font-size:10px;color:var(--text-muted)">${escapeHtml(roomTypeVal)}</span>` : ''}
+            <span style="margin-left:auto;font-size:9px;padding:1px 6px;border-radius:8px;background:${badgeBg};color:${badgeColor};border:1px solid ${borderCol};font-weight:600">${subGuests.length}/${perRoom} guests</span>
+            ${exceeded ? `<span style="font-size:9px;color:var(--danger);font-weight:600">Overcrowded!</span>` : ''}
+          </div>
+          <div style="padding:6px 10px;display:flex;flex-direction:column;gap:3px">
+            ${state.guestRecords.map((g, gi) => {
+              const isHere = g.room_idx === roomIdx && g.sub_room === r;
+              return `<label style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);cursor:pointer;padding:2px 0">
+                <input type="checkbox" ${isHere ? 'checked' : ''}
+                  onchange="window.TRVE._toggleGuestSubRoom(${gi}, ${roomIdx}, ${r}, this.checked)"
+                  style="width:12px;height:12px;cursor:pointer;flex-shrink:0">
+                <span style="font-family:var(--font-mono);color:var(--brand-green)">${escapeHtml(g.id)}</span>
+                ${g.name
+                  ? `<span style="color:var(--text-secondary)">${escapeHtml(g.name)}</span>`
+                  : '<span style="color:var(--text-muted);font-style:italic">unnamed</span>'}
+              </label>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }
+    container.innerHTML = html;
     _updateRoomOccupancyBadge(row, roomIdx);
+  }
+
+  function _toggleGuestSubRoom(guestIdx, roomIdx, subRoom, checked) {
+    if (state.guestRecords[guestIdx]) {
+      if (checked) {
+        state.guestRecords[guestIdx].room_idx  = roomIdx;
+        state.guestRecords[guestIdx].sub_room  = subRoom;
+      } else {
+        state.guestRecords[guestIdx].room_idx  = null;
+        state.guestRecords[guestIdx].sub_room  = null;
+      }
+    }
+    renderGuestRoster();
+    _syncLodgeGuestAssignments();
+  }
+  window.TRVE._toggleGuestSubRoom = _toggleGuestSubRoom;
+
+  // ---------------------------------------------------------------------------
+  // STAFF ROOM SYSTEM
+  // ---------------------------------------------------------------------------
+  const STAFF_ROLES = [
+    { value: 'driver',  label: 'Driver'  },
+    { value: 'guide',   label: 'Guide'   },
+    { value: 'tracker', label: 'Tracker' },
+    { value: 'porter',  label: 'Porter'  },
+    { value: 'other',   label: 'Other'   },
+  ];
+
+  const STAFF_PRICING_OPTIONS = [
+    { value: 'operating', label: 'Included in tour operating costs' },
+    { value: 'company',   label: 'Paid by company separately'       },
+    { value: 'guest',     label: 'Charged to guest itinerary'       },
+  ];
+
+  function addStaffRoomItem() {
+    const container = document.getElementById('staffRoomItems');
+    const section   = document.getElementById('staffAccomSection');
+    if (!container || !section) return;
+    section.style.display = '';  // show the staff section
+
+    state._staffRoomSeq++;
+    const sidx = state._staffRoomSeq;
+
+    const lodgeOptions = state.lodges.length > 0
+      ? '<option value="">— Same lodge / no preference —</option>' +
+        state.lodges.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')
+      : '<option value="">— No lodges in database —</option>';
+
+    const tripDays  = parseInt(document.getElementById('pricingDays')?.value) || 7;
+    const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
+    const endDateVal   = document.getElementById('pricingTravelEndDate')?.value   || '';
+    let autoNights = Math.max(1, tripDays - 1);
+    if (startDateVal && endDateVal) {
+      const diff = Math.round((new Date(endDateVal) - new Date(startDateVal)) / 86400000);
+      if (diff > 0) autoNights = diff;
+    }
+
+    const el = document.createElement('div');
+    el.className  = 'lodge-item staff-room-item';
+    el.dataset.staffIdx = sidx;
+    el.innerHTML = `
+      <div class="lodge-item-body" style="border-left:3px solid var(--brand-gold-dark,#b45309)">
+
+        <!-- Header row -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="4" r="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M1 12c0-2.8 2.5-5 5.5-5s5.5 2.2 5.5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <span style="font-size:var(--text-xs);font-weight:700;color:var(--brand-gold-dark,#b45309);text-transform:uppercase;letter-spacing:.05em">Staff Room</span>
+        </div>
+
+        <!-- Role + Occupant name -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Staff Role <span style="color:var(--danger)">*</span></label>
+            <select class="form-control" name="sr_role_${sidx}" style="font-size:var(--text-xs)">
+              ${STAFF_ROLES.map(r => `<option value="${r.value}">${r.label}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Occupant Name</label>
+            <input type="text" class="form-control" name="sr_occupant_${sidx}" placeholder="e.g. John (optional)" style="font-size:var(--text-xs)">
+          </div>
+        </div>
+
+        <!-- Lodge + Room type -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Lodge (optional)</label>
+            <select class="form-control" name="sr_lodge_${sidx}" style="font-size:var(--text-xs)">
+              ${lodgeOptions}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Room Type</label>
+            <input type="text" class="form-control" name="sr_room_type_${sidx}"
+              placeholder="e.g. Staff Single, Budget Room" value="Staff Single" style="font-size:var(--text-xs)">
+          </div>
+        </div>
+
+        <!-- Nights + Meal plan + Rate -->
+        <div style="display:grid;grid-template-columns:80px 1fr 120px;gap:10px;margin-bottom:10px;align-items:end">
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Nights</label>
+            <input type="number" class="form-control" name="sr_nights_${sidx}" min="1" value="${autoNights}"
+              style="font-size:var(--text-sm);font-weight:600;text-align:center">
+          </div>
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Meal Plan</label>
+            <select class="form-control" name="sr_meal_${sidx}" style="font-size:var(--text-xs)">
+              <option value="none">None</option>
+              <option value="staff">Staff meal plan</option>
+              <option value="BB">BB — Bed &amp; Breakfast</option>
+              <option value="FB">FB — Full Board</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Rate (USD/night)</label>
+            <input type="number" class="form-control" name="sr_rate_${sidx}" min="0" value="50"
+              style="font-size:var(--text-sm);font-weight:600;text-align:right"
+              placeholder="e.g. 50">
+          </div>
+        </div>
+
+        <!-- Nightly total preview -->
+        <div class="sr-total-preview" style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:10px">
+          Total: <strong class="sr-calc-total">$${autoNights * 50}</strong>
+          <span style="font-size:9px">(${autoNights} nights × $50/night)</span>
+        </div>
+
+        <!-- Pricing option -->
+        <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Cost Allocation</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${STAFF_PRICING_OPTIONS.map((opt, i) => `
+              <label style="display:flex;align-items:center;gap:8px;font-size:var(--text-xs);cursor:pointer">
+                <input type="radio" name="sr_pricing_${sidx}" value="${opt.value}" ${i === 0 ? 'checked' : ''}
+                  style="width:13px;height:13px;cursor:pointer">
+                ${opt.label}
+              </label>`).join('')}
+          </div>
+        </div>
+
+        <!-- Rate source (populated when lodge selected) -->
+        <div class="sr-rate-source" style="display:none;font-size:10px;color:var(--text-muted);margin-top:6px"></div>
+
+      </div>
+      <button type="button" class="btn btn-ghost btn-icon"
+        onclick="window.TRVE._removeStaffRoom(this.closest('.staff-room-item'))" title="Remove staff room">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    `;
+    container.appendChild(el);
+
+    // Wire nights + rate → update total preview
+    const nightsInp = el.querySelector(`[name^="sr_nights_"]`);
+    const rateInp   = el.querySelector(`[name^="sr_rate_"]`);
+    const totalEl   = el.querySelector('.sr-calc-total');
+    const previewEl = el.querySelector('.sr-total-preview span');
+    function updateStaffTotal() {
+      const n = parseInt(nightsInp?.value) || 0;
+      const r = parseFloat(rateInp?.value) || 0;
+      if (totalEl)   totalEl.textContent  = `$${(n * r).toFixed(0)}`;
+      if (previewEl) previewEl.textContent = `(${n} nights × $${r}/night)`;
+      _renderAccommPricingSummary();
+    }
+    nightsInp?.addEventListener('input', updateStaffTotal);
+    rateInp?.addEventListener('input', updateStaffTotal);
+
+    // Wire lodge → try to auto-fill rate from lodge data
+    const lodgeSel = el.querySelector(`[name^="sr_lodge_"]`);
+    const rateSourceEl = el.querySelector('.sr-rate-source');
+    lodgeSel?.addEventListener('change', function() {
+      const lodgeName = this.value;
+      if (!lodgeName) { if (rateSourceEl) rateSourceEl.style.display = 'none'; return; }
+      const lodgeData = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+      if (lodgeData && lodgeData.room_types) {
+        // Try to find a staff/single/budget rate
+        const staffRt = lodgeData.room_types.find(rt =>
+          /staff|single|budget/i.test(rt.room_type)
+        ) || lodgeData.room_types[0];
+        if (staffRt && staffRt.net_rate_usd && rateInp) {
+          rateInp.value = staffRt.net_rate_usd;
+          updateStaffTotal();
+          if (rateSourceEl) {
+            rateSourceEl.style.display = '';
+            const src = staffRt.source_email_date || 'Lodge database';
+            rateSourceEl.textContent = `Rate auto-filled from ${escapeHtml(staffRt.room_type)} · Source: ${escapeHtml(src)}`;
+          }
+        }
+      }
+    });
+
+    _renderAccommPricingSummary();
+  }
+
+  function _removeStaffRoom(el) {
+    el.remove();
+    const container = document.getElementById('staffRoomItems');
+    const section   = document.getElementById('staffAccomSection');
+    if (container && section && container.children.length === 0) {
+      section.style.display = 'none';
+    }
+    _renderAccommPricingSummary();
+  }
+  window.TRVE._removeStaffRoom = _removeStaffRoom;
+
+  // Accommodation pricing summary (guest total + staff total)
+  function _renderAccommPricingSummary() {
+    const panel = document.getElementById('accomPricingSummary');
+    if (!panel) return;
+
+    // Compute guest room costs
+    let guestTotal = 0;
+    document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
+      const lodge    = row.querySelector('[name^="lodge_name_"]')?.value;
+      if (!lodge) return;
+      const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value)      || 1;
+      const nights   = parseInt(row.querySelector('[name^="nights_"]')?.value)     || 1;
+      const adults   = parseInt(row.querySelector('[name^="row_adults_"]')?.value) || 0;
+      const children = parseInt(row.querySelector('[name^="row_children_"]')?.value)|| 0;
+      const roomType = row.querySelector('[name^="room_type_"]')?.value            || '';
+      const lodgeData = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodge);
+      const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType) || (lodgeData?.room_types || [])[0];
+      const rate = rt?.net_rate_usd || 0;
+      if (!rate) return;
+      guestTotal += rooms * nights * (adults * rate + children * rate * 0.5);
+    });
+
+    // Compute staff room costs (ones allocated to 'guest' itinerary count here, others separate)
+    let staffGuestTotal = 0, staffOpTotal = 0, staffCoTotal = 0;
+    document.querySelectorAll('#staffRoomItems .staff-room-item').forEach(el => {
+      const nights   = parseInt(el.querySelector('[name^="sr_nights_"]')?.value)  || 0;
+      const rate     = parseFloat(el.querySelector('[name^="sr_rate_"]')?.value)  || 0;
+      const pricing  = el.querySelector('[name^="sr_pricing_"]:checked')?.value   || 'operating';
+      const subtotal = nights * rate;
+      if (pricing === 'guest')     staffGuestTotal += subtotal;
+      else if (pricing === 'company') staffCoTotal += subtotal;
+      else                         staffOpTotal   += subtotal;
+    });
+
+    const staffTotal  = staffGuestTotal + staffOpTotal + staffCoTotal;
+    const grandTotal  = guestTotal + staffGuestTotal; // only guest-charged staff rooms add to invoice
+
+    if (guestTotal === 0 && staffTotal === 0) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+
+    panel.innerHTML = `
+      <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;margin-top:var(--space-3)">
+        <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Accommodation Cost Preview</div>
+        ${guestTotal > 0 ? `
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px">
+          <span>Guest accommodation</span>
+          <strong style="font-family:var(--font-mono)">${fmtMoney(guestTotal)}</strong>
+        </div>` : ''}
+        ${staffGuestTotal > 0 ? `
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px;color:var(--brand-gold-dark,#b45309)">
+          <span>Staff rooms (on guest invoice)</span>
+          <strong style="font-family:var(--font-mono)">${fmtMoney(staffGuestTotal)}</strong>
+        </div>` : ''}
+        ${staffOpTotal > 0 ? `
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px;color:var(--text-muted)">
+          <span>Staff rooms (operating cost)</span>
+          <span style="font-family:var(--font-mono)">${fmtMoney(staffOpTotal)}</span>
+        </div>` : ''}
+        ${staffCoTotal > 0 ? `
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px;color:var(--text-muted)">
+          <span>Staff rooms (company paid)</span>
+          <span style="font-family:var(--font-mono)">${fmtMoney(staffCoTotal)}</span>
+        </div>` : ''}
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-sm);font-weight:700;border-top:1px solid var(--border);padding-top:6px;margin-top:4px">
+          <span>Total accommodation (guest invoice)</span>
+          <span style="font-family:var(--font-mono);color:var(--brand-green)">${fmtMoney(grandTotal)}</span>
+        </div>
+        ${staffOpTotal + staffCoTotal > 0 ? `
+        <div style="font-size:9px;color:var(--text-muted);margin-top:4px">+${fmtMoney(staffOpTotal + staffCoTotal)} in operational staff costs (not invoiced to guest)</div>` : ''}
+      </div>`;
   }
 
   function _toggleGuestRoom(guestIdx, roomIdx, checked) {
@@ -2845,6 +3270,7 @@
     state.bufferApplied = false;
 
     document.getElementById('btnAddLodge').addEventListener('click', addLodgeItem);
+    document.getElementById('btnAddStaffRoom').addEventListener('click', addStaffRoomItem);
     document.getElementById('btnAddExtra').addEventListener('click', addExtraCost);
 
     // Auto-sync nights = days - 1 when duration changes
@@ -3096,6 +3522,20 @@
         if (desc && !isNaN(amount)) extra_costs.push({ description: desc, amount });
       });
 
+      // Build staff rooms array
+      const staff_rooms = [];
+      document.querySelectorAll('#staffRoomItems .staff-room-item').forEach((card) => {
+        const role = card.querySelector('[name^="sr_role_"]')?.value;
+        const occupantName = card.querySelector('[name^="sr_occupant_"]')?.value.trim() || '';
+        const lodge = card.querySelector('[name^="sr_lodge_"]')?.value || '';
+        const roomType = card.querySelector('[name^="sr_room_type_"]')?.value.trim() || 'Staff Single';
+        const nights = parseInt(card.querySelector('[name^="sr_nights_"]')?.value) || 1;
+        const mealPlan = card.querySelector('[name^="sr_meal_"]')?.value || 'BB';
+        const rateUsd = parseFloat(card.querySelector('[name^="sr_rate_"]')?.value) || 0;
+        const pricingOption = card.querySelector('[name^="sr_pricing_"]:checked')?.value || 'operating';
+        staff_rooms.push({ role, occupant_name: occupantName, lodge, room_type: roomType, nights, meal_plan: mealPlan, rate_usd: rateUsd, pricing_option: pricingOption });
+      });
+
       const payload = {
         itinerary_id: document.getElementById('pricingItinerary').value || null,
         nationality_tier: document.getElementById('pricingNationality').value,
@@ -3110,6 +3550,7 @@
         vehicles,
         permits,
         extra_costs,
+        staff_rooms,
       };
 
       // Accommodation validation safeguards
@@ -3138,6 +3579,11 @@
         const unassigned = state.guestRecords.filter(g => g.room_idx == null);
         if (unassigned.length) accomWarnings.push(`${unassigned.length} guest(s) not assigned to any room: ${unassigned.map(g => g.id).join(', ')}`);
       }
+      // Staff room validation
+      staff_rooms.forEach((sr, si) => {
+        if (!sr.role) accomWarnings.push(`Staff room ${si + 1}: role is required (Driver / Guide / Tracker / etc.)`);
+        if (!sr.rate_usd || sr.rate_usd <= 0) accomWarnings.push(`Staff room ${si + 1} (${sr.role || 'unknown role'}): rate must be greater than 0`);
+      });
       if (accomWarnings.length > 0) {
         const proceed = confirm(`Accommodation warnings:\n\n${accomWarnings.map((w, i) => `${i+1}. ${w}`).join('\n')}\n\nContinue with calculation anyway?`);
         if (!proceed) {
