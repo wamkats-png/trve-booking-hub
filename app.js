@@ -2068,54 +2068,85 @@
 
   // Vehicle types and default rates
   const VEHICLE_TYPES = [
-    { value: '4x4 Safari Vehicle', label: '4x4 Safari Vehicle (Land Cruiser)', rate: 120 },
-    { value: 'Safari Minivan', label: 'Safari Minivan / Hiace', rate: 100 },
-    { value: 'Coaster Bus', label: 'Coaster Bus (large groups)', rate: 150 },
-    { value: 'Self-Drive 4x4', label: 'Self-Drive 4x4 (fuel excl.)', rate: 90 },
+    { value: '4x4 Safari Vehicle', label: '4x4 Safari Vehicle (Land Cruiser)', rate: 120, seats: 7 },
+    { value: 'Safari Minivan', label: 'Safari Minivan / Hiace', rate: 100, seats: 8 },
+    { value: 'Coaster Bus', label: 'Coaster Bus (large groups)', rate: 150, seats: 26 },
+    { value: 'Self-Drive 4x4', label: 'Self-Drive 4x4 (fuel excl.)', rate: 90, seats: 5 },
+    { value: 'Airport Shuttle', label: 'Airport Shuttle (Entebbe)', rate: 60, seats: 4 },
+    { value: 'Boat Transfer', label: 'Boat Transfer / Water Taxi', rate: 80, seats: 10 },
   ];
+
+  function _initVehicleDropdown() {
+    const sel = document.getElementById('vehicleDropdown');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Select vehicle type —</option>';
+    VEHICLE_TYPES.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.value;
+      opt.textContent = `${v.label} — $${v.rate}/day`;
+      opt.dataset.rate = v.rate;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', _updateVehicleHint);
+  }
+
+  function _updateVehicleHint() {
+    const sel = document.getElementById('vehicleDropdown');
+    const hint = document.getElementById('vehicleDropdownHint');
+    if (!sel || !hint) return;
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.value) {
+      hint.textContent = 'Select a vehicle type then click Add';
+      return;
+    }
+    const v = VEHICLE_TYPES.find(x => x.value === opt.value);
+    const days = parseInt(document.getElementById('vehicleDaysInput')?.value) || 1;
+    const fuelBuf = parseFloat(document.getElementById('fuelBufferInput')?.value || '10');
+    const total = days * v.rate * (1 + fuelBuf / 100);
+    hint.textContent = `$${v.rate}/day · ${v.seats} seats · ${days} day(s) ≈ $${total.toFixed(0)} incl. ${fuelBuf}% fuel buffer`;
+  }
 
   function addVehicleItem(presetType, presetRate) {
     const container = document.getElementById('vehicleItems');
     if (!container) return;
+
+    // Resolve type and rate — from dropdown selection or preset args
+    const dropdownSel = document.getElementById('vehicleDropdown');
+    const dropdownDays = document.getElementById('vehicleDaysInput');
+    const selectedType = presetType || (dropdownSel ? dropdownSel.value : '') || VEHICLE_TYPES[0].value;
+    const vDef = VEHICLE_TYPES.find(v => v.value === selectedType) || VEHICLE_TYPES[0];
+    const defaultRate = presetRate || vDef.rate;
+    const defaultDays = parseInt(dropdownDays?.value) || Math.max(1, (parseInt(document.getElementById('pricingDays')?.value) || 7) - 1);
+
+    if (!selectedType) {
+      toast('warning', 'No vehicle selected', 'Please select a vehicle type from the dropdown');
+      return;
+    }
+
     const idx = container.children.length;
     const el = document.createElement('div');
     el.className = 'vehicle-item';
-    const days = parseInt(document.getElementById('pricingDays')?.value) || 7;
-    const defaultDays = Math.max(1, days - 1);
-    const defaultType = presetType || VEHICLE_TYPES[0].value;
-    const defaultRate = presetRate || VEHICLE_TYPES[0].rate;
-    const typeOptions = VEHICLE_TYPES.map(v =>
-      `<option value="${escapeHtml(v.value)}" data-rate="${v.rate}" ${v.value === defaultType ? 'selected' : ''}>${escapeHtml(v.label)} — $${v.rate}/day</option>`
-    ).join('');
-
-    el.style.cssText = 'display:flex;align-items:flex-start;gap:8px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:8px';
+    el.style.cssText = 'display:flex;align-items:center;gap:8px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 12px;margin-bottom:6px;flex-wrap:wrap';
     el.innerHTML = `
-      <div style="flex:1;min-width:0">
-        <select class="form-control" name="veh_type_${idx}" style="margin-bottom:5px;font-size:var(--text-xs)">
-          ${typeOptions}
-        </select>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <label style="font-size:var(--text-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px">
-            Days:
-            <input type="number" class="form-control" name="veh_days_${idx}" min="1" value="${defaultDays}"
-              style="width:52px;height:28px;font-size:var(--text-xs);padding:2px 6px">
-          </label>
-          <label style="font-size:var(--text-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px">
-            Rate ($/day):
-            <input type="number" class="form-control" name="veh_rate_${idx}" min="0" value="${defaultRate}"
-              style="width:70px;height:28px;font-size:var(--text-xs);padding:2px 6px">
-          </label>
-          <span class="veh-cost-preview" style="font-size:var(--text-xs);color:var(--brand-green);font-weight:600"></span>
-        </div>
-      </div>
-      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.vehicle-item').remove()" title="Remove vehicle">
+      <span style="font-size:var(--text-xs);font-weight:600;flex:1;min-width:140px">${escapeHtml(selectedType)}</span>
+      <input type="hidden" name="veh_type_${idx}" value="${escapeHtml(selectedType)}">
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px">
+        Days:
+        <input type="number" class="form-control" name="veh_days_${idx}" min="1" value="${defaultDays}"
+          style="width:52px;height:28px;font-size:var(--text-xs);padding:2px 6px">
+      </label>
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px">
+        $/day:
+        <input type="number" class="form-control" name="veh_rate_${idx}" min="0" value="${defaultRate}"
+          style="width:60px;height:28px;font-size:var(--text-xs);padding:2px 6px">
+      </label>
+      <span class="veh-cost-preview" style="font-size:var(--text-xs);color:var(--brand-green);font-weight:600;min-width:80px"></span>
+      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.vehicle-item').remove()" title="Remove">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     `;
     container.appendChild(el);
 
-    // Update cost preview on rate/days change, and auto-update rate when type changes
-    const typeSelect = el.querySelector(`[name^="veh_type_"]`);
     const daysInput = el.querySelector(`[name^="veh_days_"]`);
     const rateInput = el.querySelector(`[name^="veh_rate_"]`);
     const preview = el.querySelector('.veh-cost-preview');
@@ -2125,17 +2156,18 @@
       const r = parseFloat(rateInput.value) || 0;
       const fuelBuf = parseFloat(document.getElementById('fuelBufferInput')?.value || '10') / 100;
       const total = d * r * (1 + fuelBuf);
-      preview.textContent = total > 0 ? `≈ $${total.toFixed(0)} (incl. fuel buffer)` : '';
+      preview.textContent = total > 0 ? `≈ $${total.toFixed(0)}` : '';
     }
 
-    typeSelect.addEventListener('change', () => {
-      const sel = VEHICLE_TYPES.find(v => v.value === typeSelect.value);
-      if (sel) rateInput.value = sel.rate;
-      updateVehPreview();
-    });
     daysInput.addEventListener('input', updateVehPreview);
     rateInput.addEventListener('input', updateVehPreview);
     updateVehPreview();
+
+    // Reset dropdown to placeholder after adding
+    if (dropdownSel && !presetType) {
+      dropdownSel.value = '';
+      _updateVehicleHint();
+    }
   }
 
   // FIX: Populate room_type dropdown from actual lodge DB data
@@ -2419,15 +2451,12 @@
     document.getElementById('btnAddLodge').addEventListener('click', addLodgeItem);
     document.getElementById('btnAddExtra').addEventListener('click', addExtraCost);
 
-    // Transport section buttons
+    // Transport section — dropdown + Add button
+    _initVehicleDropdown();
     const btnAddVehicle = document.getElementById('btnAddVehicle');
     if (btnAddVehicle) btnAddVehicle.addEventListener('click', () => addVehicleItem());
-    const btnAddLC = document.getElementById('btnAddLandCruiser');
-    if (btnAddLC) btnAddLC.addEventListener('click', () => addVehicleItem('4x4 Safari Vehicle', 120));
-    const btnAddCoaster = document.getElementById('btnAddCoaster');
-    if (btnAddCoaster) btnAddCoaster.addEventListener('click', () => addVehicleItem('Coaster Bus', 150));
-    const btnAddMinivan = document.getElementById('btnAddMinivan');
-    if (btnAddMinivan) btnAddMinivan.addEventListener('click', () => addVehicleItem('Safari Minivan', 100));
+    const vDaysInput = document.getElementById('vehicleDaysInput');
+    if (vDaysInput) vDaysInput.addEventListener('input', _updateVehicleHint);
 
     // MINOR-32: Preset extra cost buttons
     document.getElementById('btnAddVisaFee').addEventListener('click', () => {

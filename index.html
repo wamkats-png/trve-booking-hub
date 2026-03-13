@@ -770,21 +770,21 @@
                     Transport
                     <span style="font-size:var(--text-xs);font-weight:400;color:var(--text-muted);margin-left:6px">optional add-ons only — not auto-inserted</span>
                   </div>
-                  <div id="vehicleItems" style="margin-bottom:var(--space-3)">
-                    <!-- Vehicle rows injected by JS -->
+                  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:var(--space-2)">
+                    <select id="vehicleDropdown" class="form-control" style="flex:1;min-width:180px">
+                      <!-- Populated by JS from VEHICLE_TYPES -->
+                    </select>
+                    <label style="font-size:var(--text-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px;white-space:nowrap">
+                      Days:
+                      <input type="number" id="vehicleDaysInput" class="form-control" min="1" value="6" style="width:52px;height:32px;font-size:var(--text-xs);padding:2px 6px">
+                    </label>
+                    <button type="button" id="btnAddVehicle" class="btn btn-sm btn-primary">Add</button>
                   </div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button type="button" class="btn btn-secondary btn-sm" id="btnAddVehicle">
-                      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 2v9M2 6.5h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                      Add Vehicle
-                    </button>
-                    <button type="button" class="btn btn-ghost btn-sm" id="btnAddLandCruiser" style="font-size:var(--text-xs)">+ Land Cruiser</button>
-                    <button type="button" class="btn btn-ghost btn-sm" id="btnAddCoaster" style="font-size:var(--text-xs)">+ Coaster Bus</button>
-                    <button type="button" class="btn btn-ghost btn-sm" id="btnAddMinivan" style="font-size:var(--text-xs)">+ Minivan</button>
+                  <div id="vehicleDropdownHint" style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-2)">Select a vehicle type then click Add</div>
+                  <div id="vehicleItems">
+                    <!-- Added vehicle rows injected by JS -->
                   </div>
-                  <span class="form-hint" style="margin-top:var(--space-2);display:block">
-                    Each vehicle entry is a separate transport cost. Rate includes driver. Fuel buffer applied from config.
-                  </span>
+                  <span class="form-hint">Each entry is a separate transport cost. Rate includes driver. Fuel buffer from config is applied.</span>
                 </div>
 
                 <!-- Permits -->

@@ -351,18 +351,19 @@ class TestCalculatePrice:
         assert "total_usd" in data
         assert "per_person_usd" in data
         assert "line_items" in data
-        assert data["total_usd"] > 0
+        assert data["total_usd"] >= 0  # no auto-vehicle; structure check only
 
     def test_calculate_fuel_buffer_applied(self, client):
-        """Verify fuel buffer increases vehicle cost."""
+        """Verify fuel buffer increases vehicle cost when vehicle is explicitly added."""
         client.patch("/api/config", json={"fuel_buffer_pct": 0.0, "vehicle_rate_per_day": 120.0})
+        vehicle = [{"type": "4x4 Safari Vehicle", "rate": 120, "days": 6, "fuel_buffer_pct": 0}]
         resp_no_buf = client.post("/api/calculate-price", json={
-            "pax": 2, "duration_days": 7,
+            "pax": 2, "duration_days": 7, "vehicles": vehicle,
         })
 
-        client.patch("/api/config", json={"fuel_buffer_pct": 10.0})
+        vehicle_buf = [{"type": "4x4 Safari Vehicle", "rate": 120, "days": 6, "fuel_buffer_pct": 10}]
         resp_with_buf = client.post("/api/calculate-price", json={
-            "pax": 2, "duration_days": 7,
+            "pax": 2, "duration_days": 7, "vehicles": vehicle_buf,
         })
 
         # With 10% fuel buffer, vehicle cost should be higher
@@ -456,10 +457,14 @@ class TestCalculatePrice:
         assert abs(data["per_person_usd"] - data["total_usd"] / 4) < 0.01
 
     def test_calculate_fuel_buffer_note_in_line_items(self, client):
-        """When fuel buffer > 0, the vehicle line item should note it."""
-        client.patch("/api/config", json={"fuel_buffer_pct": 10.0})
-        resp = client.post("/api/calculate-price", json={"pax": 2, "duration_days": 7})
-        vehicle_items = [li for li in resp.json()["line_items"] if "Vehicle" in li["item"]]
+        """When an explicit vehicle with fuel buffer > 0 is added, the line item should note it."""
+        resp = client.post("/api/calculate-price", json={
+            "pax": 2, "duration_days": 7,
+            "vehicles": [{"type": "4x4 Safari Vehicle", "rate": 120, "days": 6, "fuel_buffer_pct": 10.0}],
+        })
+        data = resp.json()
+        assert resp.status_code == 200
+        vehicle_items = [li for li in data["line_items"] if "Vehicle" in li["item"] or "Safari" in li["item"]]
         assert len(vehicle_items) > 0
         assert "fuel buffer" in vehicle_items[0]["item"].lower()
 
@@ -611,7 +616,7 @@ class TestEdgeCases:
         """pax=0 or omitted should not cause division by zero."""
         resp = client.post("/api/calculate-price", json={"duration_days": 7})
         assert resp.status_code == 200
-        assert resp.json()["per_person_usd"] > 0
+        assert resp.json()["per_person_usd"] >= 0  # no auto-vehicle; 0 is valid with no content
 
     def test_calculate_price_invalid_permit_key(self, client):
         """Unknown permit keys should produce $0 contribution gracefully."""
@@ -621,9 +626,9 @@ class TestEdgeCases:
             "permits": [{"permit_key": "nonexistent_permit", "quantity": 1}],
         })
         assert resp.status_code == 200
-        # Should still return a valid response, just no permit cost
+        # Should still return a valid response; unknown permit = no cost, total >= 0
         data = resp.json()
-        assert data["total_usd"] > 0
+        assert data["total_usd"] >= 0
 
     def test_lodge_net_rate_auto_calculated(self, client):
         """Creating a lodge without net_rate_usd should auto-set it to 70% of rack."""
@@ -666,23 +671,20 @@ class TestEdgeCases:
         # May return empty suggestions if no scoring criteria but should not error
 
     def test_buffer_math_verification(self, client):
-        """End-to-end verification of buffer math."""
-        # Set known values
+        """End-to-end verification of buffer math with explicit vehicle."""
         client.patch("/api/config", json={
-            "vehicle_rate_per_day": 100.0,
-            "fuel_buffer_pct": 10.0,
             "fx_rate": 3500.0,
             "fx_buffer_pct": 0.0,
             "service_fee_pct": 0.0,
         })
         resp = client.post("/api/calculate-price", json={
             "pax": 1,
-            "duration_days": 2,  # 1 vehicle day (days-1)
+            "duration_days": 2,
+            # Explicit vehicle: 1 day @ $100 with 10% fuel buffer = $110
+            "vehicles": [{"type": "4x4 Safari Vehicle", "rate": 100, "days": 1, "fuel_buffer_pct": 10}],
         })
         data = resp.json()
-        # vehicle_days = 0 (extra) + (2-1) = 1
-        # vehicle_total = 1 * 100 = 100, then * 1.10 = 110
-        # subtotal = 110, service_fee=0, grand=110
+        # vehicle_total = 1 * 100 * 1.10 = 110, service_fee=0 → grand=110
         assert data["total_usd"] == pytest.approx(110.0, abs=0.5)
         # Reset
         client.patch("/api/config", json={
