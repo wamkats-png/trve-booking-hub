@@ -2487,7 +2487,10 @@
       const data = await apiFetch('/api/generate-quotation', { method: 'POST', body: quotationPayload });
       toast('success', 'Quotation generated!', `${data.quotation_id || 'QTN'} is ready for download.`);
 
-      // Show download link
+      // Show delivery options
+      const qtnId = escapeHtml(data.id || data.quotation_id);
+      const clientEmail = escapeHtml(data.client_email || '');
+      const validDays = data.valid_days || 14;
       wrap.innerHTML = `
         <div style="background:var(--status-confirmed-bg);border:1.5px solid var(--success);border-radius:var(--radius-xl);padding:var(--space-5);text-align:center">
           <div style="color:var(--success);font-weight:600;margin-bottom:var(--space-2)">
@@ -2495,20 +2498,54 @@
             Quotation Ready
           </div>
           <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3)">
-            ${escapeHtml(data.quotation_id || '')} &middot; Valid for 14 days
+            ${qtnId} &middot; Valid for ${validDays} days
+          </div>
+          <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)">
+            How would you like to deliver this quotation?
           </div>
           <div style="display:flex;gap:var(--space-2);justify-content:center;flex-wrap:wrap">
-            <a href="${API}/api/quotations/${escapeHtml(data.id || data.quotation_id)}/pdf"
+            <a href="${API}/api/quotations/${qtnId}/pdf"
                target="_blank" rel="noopener" class="btn btn-gold">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v9M3 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Download PDF
             </a>
+            <button class="btn btn-primary" id="btnSendQuotationEmail" data-qid="${qtnId}" data-email="${clientEmail}">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="3" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M1 4l6 4 6-4" stroke="currentColor" stroke-width="1.3"/></svg>
+              Send to Client by Email
+            </button>
             <button class="btn btn-secondary" onclick="window.TRVE.navigate('quotations')">
               View All Quotations
             </button>
           </div>
+          <div id="emailDeliveryStatus" style="margin-top:var(--space-3);font-size:var(--text-sm)"></div>
         </div>
       `;
+
+      // Wire up email send button
+      const emailBtn = document.getElementById('btnSendQuotationEmail');
+      if (emailBtn) {
+        emailBtn.addEventListener('click', async () => {
+          const qid = emailBtn.dataset.qid;
+          const email = emailBtn.dataset.email;
+          const statusEl = document.getElementById('emailDeliveryStatus');
+          if (!email || !email.includes('@')) {
+            statusEl.innerHTML = '<span style="color:var(--danger)">No valid email address on this quotation. Edit the quotation to add one.</span>';
+            return;
+          }
+          emailBtn.disabled = true;
+          emailBtn.textContent = 'Sending…';
+          try {
+            await apiFetch(`/api/quotations/${qid}/email`, { method: 'POST' });
+            emailBtn.innerHTML = '✓ Email Sent';
+            emailBtn.style.background = 'var(--success)';
+            statusEl.innerHTML = `<span style="color:var(--success)">Quotation emailed to ${escapeHtml(email)}</span>`;
+          } catch (err) {
+            emailBtn.disabled = false;
+            emailBtn.innerHTML = 'Send to Client by Email';
+            statusEl.innerHTML = `<span style="color:var(--danger)">Email failed: ${escapeHtml(err.message)}</span>`;
+          }
+        });
+      }
     } catch (err) {
       toast('error', 'Failed to generate quotation', err.message);
       genBtn.classList.remove('loading');

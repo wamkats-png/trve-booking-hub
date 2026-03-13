@@ -1161,6 +1161,188 @@ def _migrate_from_json(conn):
 # ---------------------------------------------------------------------------
 # PDF Generation (branded TRVE quotation)
 # ---------------------------------------------------------------------------
+
+class _MiniPDF:
+    """
+    Minimal pure-Python PDF writer (A4, stdlib only).
+    Mimics the fpdf2 API subset used by generate_quotation_pdf.
+    Coordinates in mm, font sizes in points.
+    """
+    MM = 2.8346
+    PAGE_W_MM = 210.0
+    PAGE_H_MM = 297.0
+    PAGE_W = PAGE_W_MM * MM
+    PAGE_H = PAGE_H_MM * MM
+    _FONT_KEYS = {
+        ('helvetica', ''):   'F1', ('helvetica', 'b'):  'F2',
+        ('helvetica', 'i'):  'F3', ('helvetica', 'bi'): 'F4',
+        ('helvetica', 'ib'): 'F4',
+    }
+    _CHAR_W = 0.45  # char_width ≈ font_size_pt * _CHAR_W * 0.352778 mm
+
+    def __init__(self):
+        self._pages: list = []
+        self._cur: bytearray = bytearray()
+        self._in_page = False
+        self._in_hf = False  # inside header/footer (suppress auto-break)
+        self._page_count = 0
+        self._left_m = 10.0; self._right_m = 10.0; self._top_m = 10.0
+        self._break_m = 25.0; self._auto_break = True
+        self._font_key = 'F1'; self._font_size = 10.0
+        self._x = self._left_m; self._y = self._top_m
+        self._tc = (0.0, 0.0, 0.0)
+        self._fc = (1.0, 1.0, 1.0)
+        self._dc = (0.0, 0.0, 0.0)
+        self._lw_mm = 0.2
+
+    def _pt(self, mm): return mm * self.MM
+    def _yp(self, y_top_mm): return self.PAGE_H - y_top_mm * self.MM
+    def _esc(self, s):
+        return str(s).replace('\\','\\\\').replace('(','\\(').replace(')','\\)').replace('\n',' ').replace('\r',' ')
+    def _sw(self, s): return len(str(s)) * self._font_size * self._CHAR_W * 0.352778
+    def _ew(self): return self.PAGE_W_MM - self._left_m - self._right_m
+    def _emit(self, line):
+        self._cur.extend(line.encode('latin-1', errors='replace'))
+        self._cur.extend(b'\n')
+
+    def alias_nb_pages(self): pass
+    def set_auto_page_break(self, auto=True, margin=25):
+        self._auto_break = auto; self._break_m = float(margin)
+    def header(self): pass
+    def footer(self): pass
+
+    def add_page(self):
+        if self._in_page:
+            self._close_page()
+        self._in_page = True
+        self._page_count += 1
+        self._cur = bytearray()
+        self._x = self._left_m; self._y = self._top_m
+        self._in_hf = True; self.header(); self._in_hf = False
+
+    def _close_page(self):
+        self._in_hf = True; self.footer(); self._in_hf = False
+        self._pages.append(bytes(self._cur))
+
+    def _check_pb(self, h):
+        if self._auto_break and not self._in_hf and self._y + h > self.PAGE_H_MM - self._break_m:
+            self._close_page()
+            self._in_page = True; self._page_count += 1
+            self._cur = bytearray()
+            self._x = self._left_m; self._y = self._top_m
+            self._in_hf = True; self.header(); self._in_hf = False
+
+    def set_font(self, family='Helvetica', style='', size=10):
+        self._font_key = self._FONT_KEYS.get((family.lower(), style.upper().replace('U','').lower()), 'F1')
+        self._font_size = float(size)
+    def set_text_color(self, r, g, b): self._tc = (r/255, g/255, b/255)
+    def set_fill_color(self, r, g, b): self._fc = (r/255, g/255, b/255)
+    def set_draw_color(self, r, g, b): self._dc = (r/255, g/255, b/255)
+    def set_line_width(self, w): self._lw_mm = float(w)
+    def set_y(self, y):
+        self._x = self._left_m
+        self._y = self.PAGE_H_MM + float(y) if y < 0 else float(y)
+    def get_y(self): return self._y
+    def ln(self, h=None):
+        if h is None: h = self._font_size * 0.352778 * 1.5
+        self._x = self._left_m; self._y += float(h)
+    def page_no(self): return self._page_count
+
+    def rect(self, x, y, w, h, style=''):
+        xp, wp, hp = self._pt(x), self._pt(w), self._pt(h)
+        yp = self._yp(y + h)
+        lw = max(0.1, self._pt(self._lw_mm))
+        self._emit(f'{lw:.2f} w')
+        if 'F' in style:
+            r, g, b = self._fc
+            self._emit(f'{r:.3f} {g:.3f} {b:.3f} rg {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re f')
+        else:
+            r, g, b = self._dc
+            self._emit(f'{r:.3f} {g:.3f} {b:.3f} RG {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re S')
+
+    def line(self, x1, y1, x2, y2):
+        r, g, b = self._dc; lw = max(0.1, self._pt(self._lw_mm))
+        self._emit(f'{lw:.2f} w {r:.3f} {g:.3f} {b:.3f} RG '
+                   f'{self._pt(x1):.2f} {self._yp(y1):.2f} m {self._pt(x2):.2f} {self._yp(y2):.2f} l S')
+
+    def cell(self, w, h=0, text='', border=0, ln=False, align='L', fill=False, **kw):
+        if w == 0: w = self._ew() - (self._x - self._left_m)
+        if not h: h = self._font_size * 0.352778 * 1.5
+        w, h = float(w), float(h)
+        self._check_pb(h)
+        x, y = self._x, self._y
+        xp, wp, hp = self._pt(x), self._pt(w), self._pt(h)
+        yp = self._yp(y + h); lw = max(0.1, self._pt(self._lw_mm))
+        if fill:
+            r, g, b = self._fc
+            self._emit(f'{r:.3f} {g:.3f} {b:.3f} rg {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re f')
+        if border:
+            r, g, b = self._dc
+            self._emit(f'{lw:.2f} w {r:.3f} {g:.3f} {b:.3f} RG {xp:.2f} {yp:.2f} {wp:.2f} {hp:.2f} re S')
+        if text:
+            text = str(text); r, g, b = self._tc
+            fs = self._font_size
+            bl = self._yp(y + (h + fs * 0.352778) / 2)
+            tw = self._sw(text)
+            if align == 'R': tx = x + w - tw - 1.5
+            elif align == 'C': tx = x + (w - tw) / 2
+            else: tx = x + 1.0
+            self._emit(f'BT /{self._font_key} {fs:.1f} Tf {r:.3f} {g:.3f} {b:.3f} rg '
+                       f'{self._pt(max(tx,x)):.2f} {bl:.2f} Td ({self._esc(text)}) Tj ET')
+        if ln: self._x = self._left_m; self._y = y + h
+        else: self._x = x + w
+
+    def multi_cell(self, w, h, text='', border=0, fill=False, **kw):
+        if not text: return
+        text = str(text)
+        if w == 0: w = self._ew()
+        if not h: h = self._font_size * 0.352778 * 1.5
+        w, h = float(w), float(h)
+        cw = self._font_size * self._CHAR_W * 0.352778
+        mc = max(1, int((w - 3) / max(0.001, cw)))
+        words = text.split(' '); line = ''
+        for word in words:
+            test = (line + ' ' + word).strip() if line else word
+            if len(test) <= mc: line = test
+            else:
+                if line: self.cell(w, h, line, ln=True, fill=fill, border=border)
+                line = word
+        if line: self.cell(w, h, line, ln=True, fill=fill, border=border)
+
+    def output(self) -> bytes:
+        import io as _io
+        if self._in_page: self._close_page()
+        nb = str(len(self._pages)).encode('ascii')
+        pages = [p.replace(b'{nb}', nb) for p in self._pages]
+        N = len(pages) or 1
+        if not pages: pages = [b'']
+        page_ids = list(range(3, 3+N)); stream_ids = list(range(3+N, 3+2*N))
+        fb = 3+2*N
+        fdefs = [('F1','Helvetica'),('F2','Helvetica-Bold'),('F3','Helvetica-Oblique'),('F4','Helvetica-BoldOblique')]
+        total = fb + len(fdefs)
+        buf = _io.BytesIO(); pos = {}
+        def w(d): buf.write(d.encode('latin-1', errors='replace') if isinstance(d, str) else d)
+        def obj(n): pos[n] = buf.tell(); w(f'{n} 0 obj\n')
+        def eo(): w('endobj\n')
+        w('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
+        obj(1); w('<< /Type /Catalog /Pages 2 0 R >>\n'); eo()
+        obj(2); w(f'<< /Type /Pages /Kids [{" ".join(f"{i} 0 R" for i in page_ids)}] /Count {N} >>\n'); eo()
+        fr = ' '.join(f'/{a} {fb+i} 0 R' for i,(a,_) in enumerate(fdefs))
+        for i in range(N):
+            c = pages[i]
+            obj(stream_ids[i]); w(f'<< /Length {len(c)} >>\nstream\n'); buf.write(c); w('\nendstream\n'); eo()
+            obj(page_ids[i])
+            w(f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {self.PAGE_W:.2f} {self.PAGE_H:.2f}] '
+              f'/Contents {stream_ids[i]} 0 R /Resources << /Font << {fr} >> >> >>\n'); eo()
+        for i,(alias,name) in enumerate(fdefs):
+            obj(fb+i); w(f'<< /Type /Font /Subtype /Type1 /BaseFont /{name} /Encoding /WinAnsiEncoding >>\n'); eo()
+        xp = buf.tell()
+        w(f'xref\n0 {total+1}\n0000000000 65535 f \n')
+        for i in range(1, total+1): w(f'{pos.get(i,0):010d} 00000 n \n')
+        w(f'trailer\n<< /Size {total+1} /Root 1 0 R >>\nstartxref\n{xp}\n%%EOF\n')
+        return buf.getvalue()
+
+
 def _sanitize_pdf_text(text: str) -> str:
     """Replace Unicode chars not supported by Helvetica."""
     replacements = {
@@ -1176,10 +1358,9 @@ def _sanitize_pdf_text(text: str) -> str:
 
 
 def generate_quotation_pdf(quotation: dict) -> bytes:
-    """Generate a branded TRVE quotation PDF."""
-    from fpdf import FPDF
+    """Generate a branded TRVE quotation PDF (pure Python, no external deps)."""
 
-    class TRVEQuotationPDF(FPDF):
+    class TRVEQuotationPDF(_MiniPDF):
         def cell(self, w, h=0, text='', *args, **kwargs):
             return super().cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
 
@@ -2344,7 +2525,6 @@ def generate_quotation(body: QuotationRequest):
         )
         # Attempt to attach PDF
         try:
-            from fpdf import FPDF  # noqa: F401
             q_doc = {
                 "quotation_id": qid,
                 "client_name": body.client_name,

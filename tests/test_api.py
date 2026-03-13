@@ -481,7 +481,6 @@ class TestQuotations:
         assert sample_quotation["id"] in ids
 
     def test_get_quotation_pdf(self, client, sample_quotation):
-        pytest.importorskip("fpdf", reason="fpdf not installed — skipping PDF test")
         qid = sample_quotation["id"]
         resp = client.get(f"/api/quotations/{qid}/pdf")
         assert resp.status_code == 200
@@ -692,3 +691,112 @@ class TestEdgeCases:
             "fx_buffer_pct": 3.0,
             "service_fee_pct": 15.0,
         })
+
+
+# ---------------------------------------------------------------------------
+# Unit Tests — Pricing Logic (direct import, no HTTP)
+# ---------------------------------------------------------------------------
+try:
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from api_server import get_permit_price_usd, CONFIG as _CONFIG, FX_RATE as _FX_RATE, ACTIVITY_CATALOGUE as _ACT_CAT
+    _UNIT_OK = True
+except Exception:
+    _UNIT_OK = False
+
+
+@pytest.mark.skipif(not _UNIT_OK, reason="Cannot import api_server internals")
+class TestPermitPricingUnit:
+    """Direct unit tests for UWA/RDB permit price calculations."""
+
+    def test_gorilla_tracking_fnr(self):
+        assert get_permit_price_usd("gorilla_tracking_uganda", "FNR") == 800
+
+    def test_gorilla_tracking_fr(self):
+        assert get_permit_price_usd("gorilla_tracking_uganda", "FR") == 700
+
+    def test_gorilla_tracking_eac_converts_to_usd(self):
+        price = get_permit_price_usd("gorilla_tracking_uganda", "EAC")
+        assert abs(price - 300000 / _FX_RATE) < 1
+
+    def test_gorilla_low_season_april(self):
+        assert get_permit_price_usd("gorilla_tracking_uganda", "FNR", "2026-04-15") == 600
+
+    def test_gorilla_low_season_may(self):
+        assert get_permit_price_usd("gorilla_tracking_uganda", "FNR", "2026-05-01") == 600
+
+    def test_gorilla_post_july_2026(self):
+        assert get_permit_price_usd("gorilla_tracking_uganda", "FNR", "2026-08-01") == 800
+
+    def test_chimp_tracking_fnr(self):
+        assert get_permit_price_usd("chimp_tracking", "FNR") == 250
+
+    def test_chimp_tracking_low_season(self):
+        assert get_permit_price_usd("chimp_tracking", "FNR", "2025-11-10") == 200
+
+    def test_gorilla_rwanda_fnr(self):
+        assert get_permit_price_usd("gorilla_tracking_rwanda", "FNR") == 1500
+
+    def test_gorilla_rwanda_fr(self):
+        assert get_permit_price_usd("gorilla_tracking_rwanda", "FR") == 500
+
+    def test_park_entry_a_plus(self):
+        assert get_permit_price_usd("park_entry_a_plus", "FNR") == 45
+
+    def test_park_entry_b_eac(self):
+        assert abs(get_permit_price_usd("park_entry_b", "EAC") - 15000 / _FX_RATE) < 1
+
+    def test_invalid_permit_returns_zero(self):
+        assert get_permit_price_usd("nonexistent_permit", "FNR") == 0
+
+    def test_golden_monkey(self):
+        assert get_permit_price_usd("golden_monkey", "FNR") == 100
+
+    def test_gorilla_habituation_fnr(self):
+        assert get_permit_price_usd("gorilla_habituation_uganda", "FNR") == 1500
+
+    def test_chimp_habituation_fr(self):
+        assert get_permit_price_usd("chimp_habituation", "FR") == 350
+
+
+@pytest.mark.skipif(not _UNIT_OK, reason="Cannot import api_server internals")
+class TestConfigUnit:
+    """Direct unit tests for CONFIG defaults."""
+
+    def test_config_has_fx_rate(self):
+        assert "fx_rate" in _CONFIG and _CONFIG["fx_rate"] > 1000
+
+    def test_config_buffers_in_range(self):
+        assert 0 <= _CONFIG["fx_buffer_pct"] <= 20
+        assert 0 <= _CONFIG["fuel_buffer_pct"] <= 20
+
+    def test_config_vehicle_rate_positive(self):
+        assert _CONFIG["vehicle_rate_per_day"] > 0
+
+    def test_config_service_fee_reasonable(self):
+        assert 0 <= _CONFIG["service_fee_pct"] <= 30
+
+    def test_config_has_coordinators(self):
+        assert len(_CONFIG["coordinators"]) > 0
+
+
+@pytest.mark.skipif(not _UNIT_OK, reason="Cannot import api_server internals")
+class TestActivityCatalogueUnit:
+    """Direct unit tests for ACTIVITY_CATALOGUE data."""
+
+    def test_catalogue_has_entries(self):
+        assert len(_ACT_CAT) > 10
+
+    def test_boat_cruise_exists(self):
+        assert "boat_cruise_kazinga" in [a["id"] for a in _ACT_CAT]
+
+    def test_internal_flights_exist(self):
+        assert len([a for a in _ACT_CAT if a["category"] == "flight"]) >= 3
+
+    def test_transfers_exist(self):
+        assert len([a for a in _ACT_CAT if a["category"] == "transfer"]) >= 2
+
+    def test_all_activities_have_required_fields(self):
+        required = {"id", "name", "category", "default_usd", "per_person"}
+        for act in _ACT_CAT:
+            assert not (required - set(act.keys())), f"Activity {act.get('id')} missing fields"
