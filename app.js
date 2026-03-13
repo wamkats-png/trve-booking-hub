@@ -182,7 +182,9 @@
     liveFxAt: null,        // ISO timestamp of last fetch
     apiConfig: null,
     syncInterval: null,
-    activities: []
+    activities: [],
+    guestRecords: [],      // [{id:'G-2026-001', name:'', room_idx:null}]
+    _guestIdSeq: 0,        // auto-increment counter for guest IDs
   };
 
   /* ============================================================
@@ -543,7 +545,10 @@
   }
 
   // Expose for inline onclick use
-  window.TRVE = { navigate, loadPipeline, saveFxRateAtQuote, addActivityCost, addVehicleItem };
+  window.TRVE = {
+    navigate, loadPipeline, saveFxRateAtQuote, addActivityCost, addVehicleItem,
+    _updateGuestName, _updateLodgeRowDates, _toggleGuestRoom, _syncLodgeGuestAssignments,
+  };
 
   /* ============================================================
      SIDEBAR TOGGLE
@@ -2113,10 +2118,33 @@
     const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 7;
     const autoNights = Math.max(1, tripDays - 1);
 
+    // Check-in date from trip start
+    const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
+    let checkInDisplay = '—', checkOutDisplay = '—';
+    if (startDateVal) {
+      const ci = new Date(startDateVal);
+      const co = new Date(ci); co.setDate(co.getDate() + autoNights);
+      const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+      checkInDisplay = fmt(ci); checkOutDisplay = fmt(co);
+    }
+
     el.innerHTML = `
       <div class="lodge-item-body">
+        <!-- Date bar -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 8px;background:var(--bg-subtle,var(--bg-surface));border-radius:var(--radius-md);font-size:var(--text-xs);color:var(--text-secondary)">
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="1.5" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 4h9" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 1v1.5M7.5 1v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          Check-in: <strong class="lodge-checkin-display">${checkInDisplay}</strong>
+          &rarr;
+          Check-out: <strong class="lodge-checkout-display">${checkOutDisplay}</strong>
+          <label style="display:flex;align-items:center;gap:4px;margin-left:auto;cursor:pointer;font-size:var(--text-xs)">
+            <input type="checkbox" class="lodge-custom-dates-toggle" style="width:11px;height:11px">
+            Custom dates
+          </label>
+          <input type="date" name="lodge_checkin_${idx}" class="lodge-custom-checkin form-control" style="display:none;height:24px;font-size:var(--text-xs);width:130px">
+          <input type="date" name="lodge_checkout_${idx}" class="lodge-custom-checkout form-control" style="display:none;height:24px;font-size:var(--text-xs);width:130px">
+        </div>
         <div style="margin-bottom:6px">
-          <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:3px">Guest / Room Label <span style="font-weight:400">(optional — e.g. "Room 1", "Mr. Smith")</span></label>
+          <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:3px">Guest / Room Label <span style="font-weight:400">(optional)</span></label>
           <input type="text" class="form-control" name="guest_label_${idx}" placeholder="e.g. Room 1, Adult Couple, Mr. Wamala…" style="font-size:var(--text-xs)">
         </div>
         <select class="form-control" name="lodge_name_${idx}" style="margin-bottom:6px">
@@ -2126,6 +2154,7 @@
         <select class="form-control" name="room_type_${idx}" style="font-size:var(--text-xs);margin-bottom:6px">
           <option value="">— select lodge first —</option>
         </select>
+        <div id="lodge_rate_freshness_${idx}" style="display:none;font-size:var(--text-xs);margin-bottom:4px"></div>
         <div style="margin-bottom:6px">
           <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:3px">Meal Plan</label>
           <select class="form-control" name="meal_plan_${idx}" style="font-size:var(--text-xs)">
@@ -2135,9 +2164,11 @@
           </select>
         </div>
         <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:4px">
-          <span class="lodge-nights-pill" title="Nights auto-derived from trip days (nights = days − 1). Edit for multi-lodge splits.">
+          <span class="lodge-nights-pill" title="Nights auto-derived from trip days. Edit for multi-lodge splits.">
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v1.5M5.5 8.5V10M1 5.5h1.5M8.5 5.5H10M2.6 2.6l1 1M7.4 7.4l1 1M2.6 8.4l1-1M7.4 3.6l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
-            <input type="number" name="nights_${idx}" class="lodge-nights-input" min="1" value="${autoNights}" title="Nights = days − 1. Adjust here for multi-lodge itineraries.">
+            <input type="number" name="nights_${idx}" class="lodge-nights-input" min="1" value="${autoNights}"
+              title="Nights = days − 1. Adjust here for multi-lodge splits."
+              oninput="window.TRVE._updateLodgeRowDates(this.closest('.lodge-item'))">
             nights <span class="lodge-nights-hint" style="font-size:9px;color:var(--text-muted);margin-left:2px">(= ${tripDays} days − 1)</span>
           </span>
           <span class="lodge-rooms-badge" title="Number of rooms of this type">
@@ -2162,8 +2193,18 @@
           </label>
           <span style="font-size:var(--text-xs);color:var(--text-muted)">(children 50% room rate)</span>
         </div>
+        <!-- Guest assignment (populated by _renderRoomGuestAssignment) -->
+        <div class="lodge-guest-assign" style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:var(--text-xs);font-weight:600;color:var(--text-muted)">
+            Assigned Guests
+            <span class="lodge-occupancy-badge" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:9px;background:var(--bg-surface);color:var(--text-muted)">0/? guests</span>
+          </div>
+          <div class="lodge-guest-assign-list">
+            <span style="font-size:var(--text-xs);color:var(--text-muted)">Add guests in the Guest roster above to assign them here.</span>
+          </div>
+        </div>
       </div>
-      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.lodge-item').remove()" title="Remove lodge">
+      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.lodge-item').remove();window.TRVE._syncLodgeGuestAssignments()" title="Remove lodge">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     `;
@@ -2176,7 +2217,36 @@
       lodgeSelect.addEventListener('change', function() {
         populateRoomTypes(this.value, roomTypeSelect);
       });
+      roomTypeSelect.addEventListener('change', function() {
+        _updateRoomOccupancyBadge(el, idx);
+      });
     }
+
+    // Wire custom dates toggle
+    const customToggle = el.querySelector('.lodge-custom-dates-toggle');
+    const customCheckin = el.querySelector('.lodge-custom-checkin');
+    const customCheckout = el.querySelector('.lodge-custom-checkout');
+    const checkinDisplay = el.querySelector('.lodge-checkin-display');
+    const checkoutDisplay = el.querySelector('.lodge-checkout-display');
+    if (customToggle && customCheckin && customCheckout) {
+      customToggle.addEventListener('change', function() {
+        const isCustom = this.checked;
+        customCheckin.style.display = isCustom ? '' : 'none';
+        customCheckout.style.display = isCustom ? '' : 'none';
+        if (checkinDisplay) checkinDisplay.style.display = isCustom ? 'none' : '';
+        if (checkoutDisplay) checkoutDisplay.style.display = isCustom ? 'none' : '';
+        if (!isCustom) _updateLodgeRowDates(el);
+      });
+      customCheckin.addEventListener('change', function() {
+        if (checkinDisplay && customToggle.checked) checkinDisplay.style.display = 'none';
+      });
+      customCheckout.addEventListener('change', function() {
+        if (checkoutDisplay && customToggle.checked) checkoutDisplay.style.display = 'none';
+      });
+    }
+
+    // Initial guest assignment sync
+    _syncLodgeGuestAssignments();
   }
 
   // When trip days change, auto-update nights in all lodge rows (single-lodge path)
@@ -2189,6 +2259,183 @@
       if (nightsInput) nightsInput.value = nights;
       if (nightsHint) nightsHint.textContent = `(= ${days} days − 1)`;
     });
+    _updateAccommodationDates();
+  }
+
+  // ---------------------------------------------------------------------------
+  // ACCOMMODATION DATE AUTO-POPULATION
+  // ---------------------------------------------------------------------------
+  function _updateAccommodationDates() {
+    const startVal = document.getElementById('pricingTravelStartDate')?.value;
+    const endVal = document.getElementById('pricingTravelEndDate')?.value;
+    const days = parseInt(document.getElementById('pricingDays')?.value) || 0;
+
+    // Sync duration when both dates provided
+    if (startVal && endVal) {
+      const diffMs = new Date(endVal) - new Date(startVal);
+      const diffDays = Math.round(diffMs / 86400000);
+      if (diffDays > 0) {
+        const daysEl = document.getElementById('pricingDays');
+        if (daysEl && parseInt(daysEl.value) !== diffDays) {
+          daysEl.value = diffDays;
+          _syncLodgeNightsFromDays(diffDays);
+        }
+      }
+    } else if (startVal && days > 0) {
+      // Compute end date from start + days
+      const end = new Date(startVal);
+      end.setDate(end.getDate() + days);
+      const endInput = document.getElementById('pricingTravelEndDate');
+      if (endInput && !endInput.value) {
+        endInput.value = end.toISOString().slice(0, 10);
+      }
+    }
+
+    // Update accommodation header date bar
+    const bar = document.getElementById('accomDateBar');
+    if (bar) {
+      if (startVal) {
+        const s = new Date(startVal);
+        const effectiveDays = days || (endVal ? Math.round((new Date(endVal) - s) / 86400000) : 0);
+        const checkOut = endVal ? new Date(endVal) : (effectiveDays > 0 ? (() => { const d = new Date(s); d.setDate(d.getDate() + effectiveDays); return d; })() : null);
+        const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        bar.textContent = checkOut ? `Check-in: ${fmt(s)} → Check-out: ${fmt(checkOut)}` : `Check-in: ${fmt(s)}`;
+      } else {
+        bar.textContent = '';
+      }
+    }
+
+    // Update check-in / check-out display on each lodge row
+    document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
+      _updateLodgeRowDates(row);
+    });
+  }
+
+  function _updateLodgeRowDates(row) {
+    const startVal = document.getElementById('pricingTravelStartDate')?.value;
+    const checkInEl = row.querySelector('.lodge-checkin-display');
+    const checkOutEl = row.querySelector('.lodge-checkout-display');
+    if (!checkInEl || !checkOutEl) return;
+    if (!startVal) { checkInEl.textContent = '—'; checkOutEl.textContent = '—'; return; }
+    const customToggle = row.querySelector('.lodge-custom-dates-toggle');
+    const isCustom = customToggle && customToggle.checked;
+    if (!isCustom) {
+      const nights = parseInt(row.querySelector('.lodge-nights-input')?.value) || 1;
+      const checkIn = new Date(startVal);
+      const checkOut = new Date(checkIn);
+      checkOut.setDate(checkOut.getDate() + nights);
+      const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+      checkInEl.textContent = fmt(checkIn);
+      checkOutEl.textContent = fmt(checkOut);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // GUEST ID SYSTEM
+  // ---------------------------------------------------------------------------
+  function _generateGuestId() {
+    state._guestIdSeq++;
+    return `G-${new Date().getFullYear()}-${String(state._guestIdSeq).padStart(3, '0')}`;
+  }
+
+  function syncGuestRecords(total) {
+    total = Math.max(0, total);
+    while (state.guestRecords.length < total) {
+      state.guestRecords.push({ id: _generateGuestId(), name: '', room_idx: null });
+    }
+    if (state.guestRecords.length > total) {
+      state.guestRecords = state.guestRecords.slice(0, total);
+    }
+    renderGuestRoster();
+    _syncLodgeGuestAssignments();
+  }
+
+  function renderGuestRoster() {
+    const panel = document.getElementById('pricingGuestRoster');
+    if (!panel) return;
+    if (state.guestRecords.length === 0) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    panel.innerHTML = `
+      <div class="form-section-title" style="margin-bottom:var(--space-3)">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="5" cy="4" r="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M1 12c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="10.5" cy="4" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M11 8.3c1.1.3 2 1.4 2 2.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        Group Guests (${state.guestRecords.length})
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${state.guestRecords.map((g, i) => `
+          <div class="guest-record-row" style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)">
+            <span style="font-family:var(--font-mono);font-size:var(--text-xs);font-weight:600;color:var(--brand-green);white-space:nowrap;min-width:80px">${escapeHtml(g.id)}</span>
+            <input type="text" class="form-control" placeholder="Name (optional — e.g. Jane Smith)"
+              value="${escapeHtml(g.name)}"
+              style="flex:1;height:28px;font-size:var(--text-xs);padding:2px 8px"
+              oninput="window.TRVE._updateGuestName(${i}, this.value)">
+            ${g.room_idx != null
+              ? `<span style="font-size:var(--text-xs);color:var(--success);white-space:nowrap">Room ${g.room_idx + 1}</span>`
+              : `<span style="font-size:var(--text-xs);color:var(--text-muted);white-space:nowrap">Unassigned</span>`}
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function _updateGuestName(idx, name) {
+    if (state.guestRecords[idx]) state.guestRecords[idx].name = name;
+  }
+
+  // Update guest assignment checkboxes in all lodge rows
+  function _syncLodgeGuestAssignments() {
+    document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, roomIdx) => {
+      _renderRoomGuestAssignment(row, roomIdx);
+    });
+  }
+
+  function _renderRoomGuestAssignment(row, roomIdx) {
+    const container = row.querySelector('.lodge-guest-assign-list');
+    if (!container || state.guestRecords.length === 0) {
+      if (container) container.innerHTML = '<span style="font-size:var(--text-xs);color:var(--text-muted)">Add guests above to assign</span>';
+      return;
+    }
+    container.innerHTML = state.guestRecords.map((g, gi) => {
+      const assigned = g.room_idx === roomIdx;
+      return `
+        <label style="display:flex;align-items:center;gap:5px;font-size:var(--text-xs);cursor:pointer;padding:2px 0">
+          <input type="checkbox" ${assigned ? 'checked' : ''}
+            onchange="window.TRVE._toggleGuestRoom(${gi}, ${roomIdx}, this.checked)"
+            style="width:12px;height:12px;cursor:pointer">
+          <span style="font-family:var(--font-mono);color:var(--brand-green)">${escapeHtml(g.id)}</span>
+          ${g.name ? `<span style="color:var(--text-secondary)">${escapeHtml(g.name)}</span>` : '<span style="color:var(--text-muted);font-style:italic">unnamed</span>'}
+        </label>`;
+    }).join('');
+    _updateRoomOccupancyBadge(row, roomIdx);
+  }
+
+  function _toggleGuestRoom(guestIdx, roomIdx, checked) {
+    if (state.guestRecords[guestIdx]) {
+      state.guestRecords[guestIdx].room_idx = checked ? roomIdx : null;
+    }
+    renderGuestRoster();
+    _syncLodgeGuestAssignments();
+  }
+
+  function _updateRoomOccupancyBadge(row, roomIdx) {
+    const badge = row.querySelector('.lodge-occupancy-badge');
+    if (!badge) return;
+    const assigned = state.guestRecords.filter(g => g.room_idx === roomIdx).length;
+    const roomTypeSelect = row.querySelector('[name^="room_type_"]');
+    const maxOcc = _getMaxOccupancy(roomTypeSelect?.value, row.querySelector('[name^="lodge_name_"]')?.value);
+    const exceeded = maxOcc > 0 && assigned > maxOcc;
+    badge.textContent = `${assigned}/${maxOcc || '?'} guests`;
+    badge.style.background = exceeded ? 'var(--danger)' : assigned > 0 ? 'var(--success)' : 'var(--bg-surface)';
+    badge.style.color = exceeded || assigned > 0 ? '#fff' : 'var(--text-muted)';
+    badge.style.borderColor = exceeded ? 'var(--danger)' : assigned > 0 ? 'var(--success)' : 'var(--border)';
+    badge.title = exceeded ? `Overcrowded! Max ${maxOcc} guests per room.` : `${assigned} guest(s) assigned`;
+  }
+
+  function _getMaxOccupancy(roomType, lodgeName) {
+    if (!roomType || !lodgeName) return 2;
+    const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+    if (!lodge) return 2;
+    const rt = (lodge.room_types || []).find(r => r.room_type === roomType);
+    return (rt && rt.max_occupancy) ? rt.max_occupancy : 2;
   }
 
   // Vehicle types and default rates
@@ -2331,6 +2578,30 @@
       selectEl.appendChild(opt);
     });
     selectEl.selectedIndex = 0;
+
+    // Show rate freshness warning in the lodge row's freshness div
+    const lodgeRow = selectEl.closest('.lodge-item');
+    if (lodgeRow) {
+      const rowIdx = lodgeRow.dataset.idx;
+      const freshnessDiv = document.getElementById(`lodge_rate_freshness_${rowIdx}`);
+      if (freshnessDiv) {
+        const src = lodge.source_email_date || (lodge.room_types[0] && lodge.room_types[0].source_email_date) || '';
+        const extractedAt = lodge.extraction_timestamp || (lodge.room_types[0] && lodge.room_types[0].extraction_timestamp) || '';
+        if (src) {
+          const emailDate = new Date(src);
+          const ageMs = Date.now() - emailDate.getTime();
+          const ageDays = Math.floor(ageMs / 86400000);
+          const isStale = ageDays > 90;
+          freshnessDiv.style.display = '';
+          freshnessDiv.style.color = isStale ? 'var(--danger)' : 'var(--text-muted)';
+          freshnessDiv.innerHTML = isStale
+            ? `⚠ Rate sourced from email dated ${src.slice(0,10)} (${ageDays} days ago — may be outdated)`
+            : `✓ Rate from email: ${src.slice(0,10)}${extractedAt ? ' · imported ' + extractedAt.slice(0,10) : ''}`;
+        } else {
+          freshnessDiv.style.display = 'none';
+        }
+      }
+    }
   }
 
   // MINOR-32: Pre-filled extra cost row
@@ -2582,6 +2853,7 @@
       daysInput.addEventListener('input', () => {
         const d = parseInt(daysInput.value) || 7;
         _syncLodgeNightsFromDays(d);
+        _updateAccommodationDates();
         _updateVehicleHint(); // also update vehicle days hint
       });
     }
@@ -2636,7 +2908,23 @@
       updatePermitLabels();
       renderActivityPresets(); // re-render dropdown with nationality-adjusted prices
     });
-    if (dateSel) dateSel.addEventListener('change', updatePermitLabels);
+    if (dateSel) {
+      dateSel.addEventListener('change', updatePermitLabels);
+      dateSel.addEventListener('change', _updateAccommodationDates);
+    }
+    const endDateSel = document.getElementById('pricingTravelEndDate');
+    if (endDateSel) endDateSel.addEventListener('change', _updateAccommodationDates);
+
+    // Guest roster: sync on adults/children change
+    const adultsInput = document.getElementById('pricingAdults');
+    const childrenInput = document.getElementById('pricingChildren');
+    function _syncGuestsFromForm() {
+      const total = (parseInt(adultsInput?.value) || 0) + (parseInt(childrenInput?.value) || 0);
+      syncGuestRecords(total);
+    }
+    if (adultsInput) adultsInput.addEventListener('change', _syncGuestsFromForm);
+    if (childrenInput) childrenInput.addEventListener('change', _syncGuestsFromForm);
+
     // Initial label render
     updatePermitLabels();
 
@@ -2823,6 +3111,42 @@
         permits,
         extra_costs,
       };
+
+      // Accommodation validation safeguards
+      const accomWarnings = [];
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, ri) => {
+        const lodge = row.querySelector(`[name^="lodge_name_"]`)?.value;
+        const roomType = row.querySelector(`[name^="room_type_"]`)?.value;
+        if (!lodge) return;
+        // Check for missing rate
+        const lodgeData = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodge);
+        const hasRate = lodgeData && (lodgeData.room_types || []).some(rt => rt.room_type === roomType && (rt.net_rate_usd || 0) > 0);
+        if (!hasRate) accomWarnings.push(`Room ${ri + 1} (${lodge}): no net rate found in database`);
+        // Check staleness
+        const src = (lodgeData && lodgeData.source_email_date) || '';
+        if (src) {
+          const ageDays = Math.floor((Date.now() - new Date(src).getTime()) / 86400000);
+          if (ageDays > 90) accomWarnings.push(`Room ${ri + 1} (${lodge}): rate sourced from email ${ageDays} days ago — may be outdated`);
+        }
+        // Check max occupancy
+        const maxOcc = _getMaxOccupancy(roomType, lodge);
+        const assignedGuests = state.guestRecords.filter(g => g.room_idx === ri).length;
+        if (assignedGuests > maxOcc) accomWarnings.push(`Room ${ri + 1} (${lodge}): ${assignedGuests} guests assigned but max occupancy is ${maxOcc}`);
+      });
+      // Check for unassigned guests (only if guestRecords is populated)
+      if (state.guestRecords.length > 0) {
+        const unassigned = state.guestRecords.filter(g => g.room_idx == null);
+        if (unassigned.length) accomWarnings.push(`${unassigned.length} guest(s) not assigned to any room: ${unassigned.map(g => g.id).join(', ')}`);
+      }
+      if (accomWarnings.length > 0) {
+        const proceed = confirm(`Accommodation warnings:\n\n${accomWarnings.map((w, i) => `${i+1}. ${w}`).join('\n')}\n\nContinue with calculation anyway?`);
+        if (!proceed) {
+          btn.classList.remove('loading');
+          btn.disabled = false;
+          btn.innerHTML = originalBtnText;
+          return;
+        }
+      }
 
       const result = await apiFetch('/api/calculate-price', { method: 'POST', body: payload });
       renderPricingResults(result, payload);
@@ -3805,7 +4129,7 @@
       document.getElementById('lodgeCount').textContent = `${_allLodges.length} lodge rates`;
     } catch (e) {
       const tb = document.getElementById('lodgeTableBody');
-      if (tb) tb.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--danger)">Failed to load lodges: ${escapeHtml(e.message)}</td></tr>`;
+      if (tb) tb.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--danger)">Failed to load lodges: ${escapeHtml(e.message)}</td></tr>`;
     }
   }
 
@@ -3813,7 +4137,7 @@
     const tbody = document.getElementById('lodgeTableBody');
     if (!tbody) return;
     if (!lodges.length) {
-      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text-muted)">No lodges found. Add one above.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text-muted)">No lodges found. Add one above.</td></tr>`;
       return;
     }
     tbody.innerHTML = lodges.map(l => `
@@ -3825,6 +4149,13 @@
         <td style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--teal-700)"><strong>$${(l.net_rate_usd || 0).toFixed(0)}</strong></td>
         <td><span style="font-size:var(--text-xs)">${escapeHtml(l.meal_plan || '')}</span></td>
         <td><span style="font-size:10px;color:var(--text-muted)">${l.valid_from ? l.valid_from.slice(0,7) : ''} – ${l.valid_to ? l.valid_to.slice(0,7) : ''}</span></td>
+        <td>${l.source_email_date
+          ? (() => {
+              const ageDays = Math.floor((Date.now() - new Date(l.source_email_date).getTime()) / 86400000);
+              const stale = ageDays > 90;
+              return `<span style="font-size:10px;color:${stale ? 'var(--danger)' : 'var(--text-muted)'}" title="Email date: ${l.source_email_date}">${stale ? '⚠ ' : ''}${l.source_email_date.slice(0,10)}</span>`;
+            })()
+          : '<span style="font-size:10px;color:var(--text-muted)">—</span>'}</td>
         <td><span style="font-size:10px;color:var(--text-muted)">${escapeHtml(l.notes || '')}</span></td>
         <td style="white-space:nowrap">
           <button class="btn btn-ghost btn-icon" title="Edit" onclick="window.TRVE.editLodge('${l.id}')">
@@ -3914,6 +4245,96 @@
     cancelBtn.addEventListener('click', clearForm);
     search.addEventListener('input', filterLodges);
     filterCountry.addEventListener('change', filterLodges);
+
+    // Gmail Rate Import Panel
+    const btnRefreshFromGmail = document.getElementById('btnRefreshFromGmail');
+    const gmailPanel = document.getElementById('gmailRateImportPanel');
+    const btnClosePanel = document.getElementById('btnCloseGmailPanel');
+    const btnClosePanel2 = document.getElementById('btnCloseGmailPanel2');
+    const btnAddRate = document.getElementById('btnAddGmailRate');
+    const btnSaveRates = document.getElementById('btnSaveGmailRates');
+    const ratesList = document.getElementById('gi_rates_list');
+
+    function _addGmailRateRow() {
+      const idx = ratesList.children.length;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr auto;gap:8px;align-items:end';
+      row.innerHTML = `
+        <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Lodge Name</label>
+          <input class="form-control" type="text" placeholder="e.g. Bwindi Lodge" data-gi="lodge_name" style="font-size:var(--text-xs)"></div>
+        <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Room Type</label>
+          <input class="form-control" type="text" placeholder="Double" data-gi="room_type" style="font-size:var(--text-xs)"></div>
+        <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Rack USD</label>
+          <input class="form-control" type="number" placeholder="0" data-gi="rack_rate_usd" min="0" style="font-size:var(--text-xs)"></div>
+        <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Net USD</label>
+          <input class="form-control" type="number" placeholder="auto 70%" data-gi="net_rate_usd" min="0" style="font-size:var(--text-xs)"></div>
+        <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Max Occ.</label>
+          <input class="form-control" type="number" placeholder="2" data-gi="max_occupancy" min="1" value="2" style="font-size:var(--text-xs)"></div>
+        <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('div').remove()" title="Remove row" style="margin-bottom:0">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 2l9 9M11 2L2 11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      `;
+      ratesList.appendChild(row);
+    }
+
+    if (btnRefreshFromGmail) {
+      btnRefreshFromGmail.addEventListener('click', () => {
+        if (!gmailPanel) return;
+        gmailPanel.style.display = '';
+        if (!ratesList.children.length) _addGmailRateRow();
+        document.getElementById('gi_email_date').value = new Date().toISOString().slice(0,10);
+        gmailPanel.scrollIntoView({ behavior: 'smooth' });
+      });
+    }
+    if (btnClosePanel) btnClosePanel.addEventListener('click', () => { gmailPanel.style.display = 'none'; });
+    if (btnClosePanel2) btnClosePanel2.addEventListener('click', () => { gmailPanel.style.display = 'none'; });
+    if (btnAddRate) btnAddRate.addEventListener('click', _addGmailRateRow);
+
+    if (btnSaveRates) {
+      btnSaveRates.addEventListener('click', async () => {
+        const emailDate = document.getElementById('gi_email_date')?.value;
+        if (!emailDate) { toast('warning', 'Email date required', 'Enter the date of the email containing these rates'); return; }
+        const rates = [];
+        ratesList.querySelectorAll('div[style*="grid"]').forEach(row => {
+          const lodge = row.querySelector('[data-gi="lodge_name"]')?.value.trim();
+          if (!lodge) return;
+          rates.push({
+            lodge_name: lodge,
+            room_type: row.querySelector('[data-gi="room_type"]')?.value.trim() || 'Double',
+            rack_rate_usd: parseFloat(row.querySelector('[data-gi="rack_rate_usd"]')?.value) || 0,
+            net_rate_usd: parseFloat(row.querySelector('[data-gi="net_rate_usd"]')?.value) || null,
+            max_occupancy: parseInt(row.querySelector('[data-gi="max_occupancy"]')?.value) || 2,
+          });
+        });
+        if (!rates.length) { toast('warning', 'No rates to import', 'Add at least one lodge row'); return; }
+        try {
+          btnSaveRates.disabled = true;
+          btnSaveRates.textContent = 'Importing…';
+          const result = await apiFetch('/api/lodge-rates/from-email', {
+            method: 'POST',
+            body: {
+              email_subject: document.getElementById('gi_subject')?.value.trim() || '',
+              email_date: emailDate,
+              email_sender: document.getElementById('gi_sender')?.value.trim() || '',
+              rates,
+            }
+          });
+          toast('success', `Imported ${result.imported} rate(s)`, 'Lodge rates saved with email source date');
+          gmailPanel.style.display = 'none';
+          ratesList.innerHTML = '';
+          await loadLodgesView();
+          // Refresh lodge data for pricing
+          const lodgesData = await apiFetch('/api/lodge-rates/lodges');
+          state.lodgeData = Array.isArray(lodgesData) ? lodgesData : [];
+          state.lodges = state.lodgeData.map(l => l.name || l.lodge_name || '').filter(Boolean);
+        } catch (e) {
+          toast('error', 'Import failed', e.message);
+        } finally {
+          btnSaveRates.disabled = false;
+          btnSaveRates.textContent = 'Import Rates';
+        }
+      });
+    }
   }
 
   window.TRVE.editLodge = function(id) {

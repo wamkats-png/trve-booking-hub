@@ -126,7 +126,10 @@ CREATE TABLE IF NOT EXISTS lodges (
     valid_from TEXT DEFAULT '',
     valid_to TEXT DEFAULT '',
     source_file TEXT DEFAULT '',
-    notes TEXT DEFAULT ''
+    notes TEXT DEFAULT '',
+    source_email_date TEXT DEFAULT '',
+    extraction_timestamp TEXT DEFAULT '',
+    max_occupancy INTEGER DEFAULT 2
 );
 
 CREATE TABLE IF NOT EXISTS itineraries (
@@ -1118,6 +1121,18 @@ def init_db():
     conn = get_db()
     conn.executescript(SCHEMA)
 
+    # Safe column migrations — add new lodges columns without breaking existing data
+    for _col, _ctype, _cdefault in [
+        ("source_email_date", "TEXT", "''"),
+        ("extraction_timestamp", "TEXT", "''"),
+        ("max_occupancy", "INTEGER", "2"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE lodges ADD COLUMN {_col} {_ctype} DEFAULT {_cdefault}")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists — safe to ignore
+
     # Check if migration is needed
     count = conn.execute("SELECT COUNT(*) FROM enquiries").fetchone()[0]
     if count == 0:
@@ -1990,6 +2005,9 @@ class LodgeCreate(BaseModel):
     valid_to: Optional[str] = "2026-12-31"
     source_file: Optional[str] = ""
     notes: Optional[str] = ""
+    source_email_date: Optional[str] = ""
+    extraction_timestamp: Optional[str] = ""
+    max_occupancy: Optional[int] = 2
 
 
 class LodgeUpdate(BaseModel):
@@ -2004,6 +2022,30 @@ class LodgeUpdate(BaseModel):
     valid_to: Optional[str] = None
     source_file: Optional[str] = None
     notes: Optional[str] = None
+    source_email_date: Optional[str] = None
+    extraction_timestamp: Optional[str] = None
+    max_occupancy: Optional[int] = None
+
+
+class EmailRateEntry(BaseModel):
+    lodge_name: str
+    room_type: Optional[str] = "Double"
+    country: Optional[str] = "Uganda"
+    location: Optional[str] = ""
+    rack_rate_usd: Optional[float] = 0
+    net_rate_usd: Optional[float] = None
+    meal_plan: Optional[str] = "Full Board"
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    max_occupancy: Optional[int] = 2
+    notes: Optional[str] = ""
+
+
+class EmailRatesImport(BaseModel):
+    email_subject: str
+    email_date: str
+    email_sender: str
+    rates: List[EmailRateEntry]
 
 
 # ---------------------------------------------------------------------------
@@ -2359,6 +2401,9 @@ def list_lodges():
             "valid_from": l["valid_from"],
             "valid_to": l["valid_to"],
             "notes": l["notes"],
+            "source_email_date": l["source_email_date"] if "source_email_date" in l.keys() else "",
+            "extraction_timestamp": l["extraction_timestamp"] if "extraction_timestamp" in l.keys() else "",
+            "max_occupancy": l["max_occupancy"] if "max_occupancy" in l.keys() else 2,
         })
     return list(lodge_map.values())
 
@@ -2459,8 +2504,9 @@ def create_lodge(body: LodgeCreate):
     with db_session() as conn:
         conn.execute("""
             INSERT INTO lodges (id, lodge_name, room_type, country, location,
-                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, source_file, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to,
+                source_file, notes, source_email_date, extraction_timestamp, max_occupancy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             lid, body.lodge_name, body.room_type or "Double",
             body.country or "Uganda", body.location or "",
@@ -2468,9 +2514,44 @@ def create_lodge(body: LodgeCreate):
             body.meal_plan or "Full Board",
             body.valid_from or "2025-01-01", body.valid_to or "2026-12-31",
             body.source_file or "", body.notes or "",
+            body.source_email_date or "", body.extraction_timestamp or "",
+            body.max_occupancy if body.max_occupancy is not None else 2,
         ))
         row = dict(conn.execute("SELECT * FROM lodges WHERE id = ?", (lid,)).fetchone())
     return row
+
+
+@app.post("/api/lodge-rates/from-email", status_code=201)
+def import_rates_from_email(body: EmailRatesImport):
+    """Bulk-import lodge rates extracted from a Gmail message."""
+    extraction_ts = datetime.now().isoformat()
+    created_ids = []
+    with db_session() as conn:
+        for rate in body.rates:
+            lid = str(uuid.uuid4())[:8]
+            net = rate.net_rate_usd if rate.net_rate_usd is not None else round((rate.rack_rate_usd or 0) * 0.7, 2)
+            conn.execute("""
+                INSERT INTO lodges (id, lodge_name, room_type, country, location,
+                    rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to,
+                    source_file, notes, source_email_date, extraction_timestamp, max_occupancy)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                lid, rate.lodge_name, rate.room_type or "Double",
+                rate.country or "Uganda", rate.location or "",
+                rate.rack_rate_usd or 0, net,
+                rate.meal_plan or "Full Board",
+                rate.valid_from or "2026-01-01", rate.valid_to or "2026-12-31",
+                f"email:{body.email_sender}", rate.notes or "",
+                body.email_date, extraction_ts,
+                rate.max_occupancy if rate.max_occupancy is not None else 2,
+            ))
+            created_ids.append(lid)
+    return {
+        "imported": len(created_ids),
+        "ids": created_ids,
+        "extraction_timestamp": extraction_ts,
+        "source_email_date": body.email_date,
+    }
 
 
 @app.get("/api/lodges/{lodge_id}")
