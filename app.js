@@ -316,7 +316,7 @@
         if (permit.post_july_2026 && d >= new Date('2026-07-01') && permit.post_july_2026[tier]) {
           badge = ' <span style="color:var(--color-warning);font-size:var(--text-xs)">(Jul 2026+ rate)</span>';
         } else if (permit.low_season && LOW_SEASON_MONTHS.includes(month) && permit.low_season[tier]) {
-          badge = ' <span style="color:var(--color-success);font-size:var(--text-xs)">(low season)</span>';
+          badge = ' <span style="color:var(--success);font-size:var(--text-xs)">(low season)</span>';
         }
       }
 
@@ -1107,7 +1107,7 @@
     const totalPos   = totalDelta >= 0;
 
     panel.innerHTML = `
-      <div style="margin:12px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-raised)">
+      <div style="margin:12px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface)">
         <!-- Header -->
         <div style="display:flex;justify-content:space-between;align-items:center;
                     padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border)">
@@ -2334,7 +2334,7 @@
         <tr${isFuelLine ? ' style="background:rgba(234,179,8,0.06)"' : ''}>
           <td>${escapeHtml(item.item || '—')}${item.note ? ` <span style="font-size:var(--text-xs);color:var(--text-muted)">(${escapeHtml(item.note)})</span>` : ''}</td>
           <td class="amount-col">${usdDisplay}</td>
-          <td class="amount-col" style="color:${isFuelLine ? 'var(--color-gold)' : 'var(--text-muted)'};font-size:var(--text-xs)">${ugxDisplay}</td>
+          <td class="amount-col" style="color:${isFuelLine ? 'var(--brand-gold)' : 'var(--text-muted)'};font-size:var(--text-xs)">${ugxDisplay}</td>
         </tr>
       `;
     }
@@ -2492,7 +2492,7 @@
       const clientEmail = escapeHtml(data.client_email || '');
       const validDays = data.valid_days || 14;
       wrap.innerHTML = `
-        <div style="background:var(--status-confirmed-bg);border:1.5px solid var(--success);border-radius:var(--radius-xl);padding:var(--space-5);text-align:center">
+        <div style="background:var(--success-bg);border:1.5px solid var(--success);border-radius:var(--radius-lg);padding:var(--space-5);text-align:center">
           <div style="color:var(--success);font-weight:600;margin-bottom:var(--space-2)">
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style="vertical-align:middle;margin-right:6px"><circle cx="9" cy="9" r="7.5" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 9l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Quotation Ready
@@ -3539,7 +3539,7 @@
 
     document.getElementById('bankChargeResult').innerHTML = `
       <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.06em">${escapeHtml(bankName)} · ${escapeHtml(tariff.label)}</div>
-      <div style="font-family:var(--font-mono);font-size:var(--text-2xl);color:var(--color-gold);font-weight:700;margin-bottom:4px">UGX ${fmtNum(r.total)}</div>
+      <div style="font-family:var(--font-mono);font-size:var(--text-2xl);color:var(--brand-gold);font-weight:700;margin-bottom:4px">UGX ${fmtNum(r.total)}</div>
       <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:8px">incl. 15% excise duty (UGX ${fmtNum(r.excise)})</div>
       <div style="font-size:var(--text-xs);color:var(--text-muted);border-top:1px solid var(--border);padding-top:8px">${escapeHtml(r.breakdown)}</div>
     `;
@@ -3568,7 +3568,7 @@
               <tr style="background:${i % 2 === 0 ? 'transparent' : 'var(--bg-surface)'}">
                 <td style="padding:var(--space-2) var(--space-4);font-size:var(--text-sm)">${escapeHtml(label)}</td>
                 <td style="padding:var(--space-2) var(--space-4);font-family:var(--font-mono);font-size:var(--text-xs);text-align:right;color:var(--text-secondary)">${escapeHtml(fee)}</td>
-                <td style="padding:var(--space-2) var(--space-4);font-family:var(--font-mono);font-size:var(--text-xs);text-align:right;color:var(--color-gold)">${exciseDisplay}</td>
+                <td style="padding:var(--space-2) var(--space-4);font-family:var(--font-mono);font-size:var(--text-xs);text-align:right;color:var(--brand-gold)">${exciseDisplay}</td>
                 <td style="padding:var(--space-2) var(--space-4);font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(type)}</td>
               </tr>
             `;
