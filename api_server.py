@@ -892,6 +892,36 @@ LODGE_SEED = [
     # --- Rwanda: Kigali ---
     {"lodge_name": "Kigali Serena Hotel", "room_type": "Double", "country": "Rwanda", "location": "Kigali", "rack_rate_usd": 180, "meal_plan": "Breakfast"},
     {"lodge_name": "Kigali Serena Hotel", "room_type": "Single", "country": "Rwanda", "location": "Kigali", "rack_rate_usd": 130, "meal_plan": "Breakfast"},
+    # --- Uganda: Bwindi — additional from email records ---
+    {"lodge_name": "Nkuringo Gorilla Lodge", "room_type": "Deluxe Garden Cottage", "country": "Uganda", "location": "Bwindi — Nkuringo", "rack_rate_usd": 620, "meal_plan": "Full Board", "notes": "Rebranded 2026"},
+    {"lodge_name": "Silverback Lodge", "room_type": "Superior Double", "country": "Uganda", "location": "Bwindi — Buhoma", "rack_rate_usd": 920, "meal_plan": "Full Board", "notes": "Marasa Africa; 5-star rebuilt 2025"},
+    {"lodge_name": "Engagi Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Bwindi — Buhoma", "rack_rate_usd": 480, "meal_plan": "Full Board", "notes": "Kimbla-Mantana"},
+    {"lodge_name": "Buhoma Lodge", "room_type": "Banda Double", "country": "Uganda", "location": "Bwindi — Buhoma", "rack_rate_usd": 490, "meal_plan": "Full Board", "notes": "Exclusive Camps"},
+    # --- Uganda: Kibale ---
+    {"lodge_name": "Kibale Lodge", "room_type": "Forest Suite Double", "country": "Uganda", "location": "Kibale NP", "rack_rate_usd": 880, "meal_plan": "Full Board", "notes": "Volcanoes Safaris; AFAR top 25"},
+    {"lodge_name": "Chimpundu Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Kibale NP — Fort Portal", "rack_rate_usd": 285, "meal_plan": "Full Board"},
+    {"lodge_name": "Emburara Farm Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Fort Portal", "rack_rate_usd": 260, "meal_plan": "Full Board"},
+    {"lodge_name": "Crater Safari Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Kibale — Crater Lakes", "rack_rate_usd": 450, "meal_plan": "Full Board", "notes": "Crystal Lodges"},
+    # --- Uganda: QENP ---
+    {"lodge_name": "Elephant Plains Lodge", "room_type": "Cottage Double", "country": "Uganda", "location": "Queen Elizabeth NP", "rack_rate_usd": 330, "meal_plan": "Full Board", "notes": "Great Lakes Collection"},
+    {"lodge_name": "Simba Safari Camp", "room_type": "Standard Double", "country": "Uganda", "location": "Queen Elizabeth NP", "rack_rate_usd": 230, "meal_plan": "Full Board", "notes": "Great Lakes Collection"},
+    {"lodge_name": "Anyadwe House", "room_type": "Double Room", "country": "Uganda", "location": "Queen Elizabeth NP — Ishasha", "rack_rate_usd": 480, "meal_plan": "Full Board", "notes": "Exclusive Camps; private house"},
+    # --- Uganda: Murchison Falls ---
+    {"lodge_name": "Pabidi Lodge Budongo", "room_type": "Tented Suite Double", "country": "Uganda", "location": "Murchison Falls NP — Budongo", "rack_rate_usd": 380, "meal_plan": "Full Board", "notes": "Great Lakes Collection"},
+    # --- Uganda: Kidepo ---
+    {"lodge_name": "Kidepo Wilderness Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Kidepo Valley NP", "rack_rate_usd": 520, "meal_plan": "Full Board", "notes": "Crystal Lodges Uganda"},
+    {"lodge_name": "Adere Safari Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Kidepo Valley NP", "rack_rate_usd": 360, "meal_plan": "Full Board"},
+    {"lodge_name": "Enjojo Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Kidepo Valley NP", "rack_rate_usd": 410, "meal_plan": "Full Board"},
+    # --- Uganda: Mgahinga ---
+    {"lodge_name": "Mount Gahinga Lodge", "room_type": "Bandas Double", "country": "Uganda", "location": "Mgahinga Gorilla NP", "rack_rate_usd": 640, "meal_plan": "Full Board", "notes": "Volcanoes Safaris"},
+    # --- Uganda: Lake Mburo ---
+    {"lodge_name": "Mburo Tented Camp", "room_type": "Tent Double", "country": "Uganda", "location": "Lake Mburo NP", "rack_rate_usd": 250, "meal_plan": "Full Board", "notes": "Kimbla-Mantana"},
+    # --- Uganda: Entebbe / Lulongo ---
+    {"lodge_name": "Pumba Safari Cottages", "room_type": "Double Room", "country": "Uganda", "location": "Lulongo — Entebbe", "rack_rate_usd": 170, "meal_plan": "Full Board", "notes": "Woodland Lodges"},
+    {"lodge_name": "Topi Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Lulongo — Entebbe", "rack_rate_usd": 150, "meal_plan": "Full Board", "notes": "Woodland Lodges"},
+    {"lodge_name": "Hornbill Bush Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Lulongo — Entebbe", "rack_rate_usd": 160, "meal_plan": "Full Board", "notes": "Woodland Lodges"},
+    {"lodge_name": "Tilapia Lodge", "room_type": "Double Room", "country": "Uganda", "location": "Lulongo — Entebbe", "rack_rate_usd": 155, "meal_plan": "Full Board", "notes": "Woodland Lodges"},
+    {"lodge_name": "Papyrus Guest House", "room_type": "Double Room", "country": "Uganda", "location": "Bwindi — Nkuringo", "rack_rate_usd": 210, "meal_plan": "Bed & Breakfast", "notes": "Nkuringo group"},
 ]
 
 
@@ -967,6 +997,82 @@ def _seed_lodges(conn):
         ("lodge-rwa-nyungwe-1", "Nyungwe House", "Double Room", "Rwanda", "Nyungwe Forest NP", 620, 495, "Full Board", "2025-01-01", "2025-12-31", "One&Only property"),
         ("lodge-rwa-akagera-1", "Akagera Game Lodge", "Standard Double", "Rwanda", "Akagera NP", 280, 220, "Full Board", "2025-01-01", "2025-12-31", ""),
         ("lodge-rwa-ruzizi-1", "Ruzizi Tented Lodge", "Tent (Double)", "Rwanda", "Akagera NP", 350, 275, "Full Board", "2025-01-01", "2025-12-31", "Tented luxury"),
+        # ── 2026 RATE UPDATES (from email rate sheets Oct–Nov 2025) ─────
+        # Nkuringo Gorilla Lodge (rebranded from Nkuringo Bwindi Gorilla Lodge; 2026 STO received Oct 2025)
+        ("lodge-nkuringo-3", "Nkuringo Gorilla Lodge", "Deluxe Garden Cottage (Double)", "Uganda", "Bwindi — Nkuringo", 620, 495, "Full Board", "2026-01-01", "2026-12-31", "Rebranded; 2026 rates"),
+        ("lodge-nkuringo-4", "Nkuringo Gorilla Lodge", "Luxury Forest Suite (Double)", "Uganda", "Bwindi — Nkuringo", 780, 620, "Full Board", "2026-01-01", "2026-12-31", "Private balcony, bathtub"),
+        ("lodge-nkuringo-5", "Nkuringo Gorilla Lodge", "Family Villa (2-Bed)", "Uganda", "Bwindi — Nkuringo", 1100, 880, "Full Board", "2026-01-01", "2026-12-31", "Adjoining family rooms"),
+        # Silverback Lodge (Marasa Africa; fully rebuilt 5-star, reopened June 2025)
+        ("lodge-silverback-1", "Silverback Lodge", "Superior Room (Double)", "Uganda", "Bwindi — Buhoma", 920, 735, "Full Board", "2026-01-01", "2026-12-31", "5-star rebuild; all-inclusive"),
+        ("lodge-silverback-2", "Silverback Lodge", "Superior Room (Single)", "Uganda", "Bwindi — Buhoma", 1100, 880, "Full Board", "2026-01-01", "2026-12-31", "All meals, drinks, laundry"),
+        # Engagi Lodge (Kimbla-Mantana Uganda; 2024/2025 rates received)
+        ("lodge-engagi-1", "Engagi Lodge", "Double Room", "Uganda", "Bwindi — Buhoma", 480, 380, "Full Board", "2025-01-01", "2025-12-31", "Kimbla-Mantana property"),
+        ("lodge-engagi-2", "Engagi Lodge", "Single Room", "Uganda", "Bwindi — Buhoma", 575, 460, "Full Board", "2025-01-01", "2025-12-31", ""),
+        # Gorilla Safari Lodge 2026 rates (Crystal Lodges; 2026 rate sheet received Oct 2025)
+        ("lodge-gorillasafari-2026-1", "Gorilla Safari Lodge", "Double Room", "Uganda", "Bwindi — Buhoma", 630, 500, "Full Board", "2026-01-01", "2026-12-31", "Crystal Lodges 2026"),
+        ("lodge-gorillasafari-2026-2", "Gorilla Safari Lodge", "Single Room", "Uganda", "Bwindi — Buhoma", 760, 610, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Crater Safari Lodge (Crystal Lodges; 2026 rate sheet received Oct 2025)
+        ("lodge-crater-1", "Crater Safari Lodge", "Double Room", "Uganda", "Kibale — Crater Lakes", 450, 360, "Full Board", "2026-01-01", "2026-12-31", "Crystal Lodges; crater lake views"),
+        ("lodge-crater-2", "Crater Safari Lodge", "Single Room", "Uganda", "Kibale — Crater Lakes", 540, 430, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Kidepo Wilderness Lodge (Crystal Lodges Uganda; 2026 rate sheet received Oct 2025)
+        ("lodge-kidepo-kwl-1", "Kidepo Wilderness Lodge", "Double Room", "Uganda", "Kidepo Valley NP", 520, 415, "Full Board", "2026-01-01", "2026-12-31", "Crystal Lodges; remote luxury"),
+        ("lodge-kidepo-kwl-2", "Kidepo Wilderness Lodge", "Single Room", "Uganda", "Kidepo Valley NP", 620, 495, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Adere Safari Lodge (Kidepo; rates received Nov 2025)
+        ("lodge-adere-1", "Adere Safari Lodge", "Double Room", "Uganda", "Kidepo Valley NP", 360, 285, "Full Board", "2025-01-01", "2026-12-31", "Kidepo NP"),
+        ("lodge-adere-2", "Adere Safari Lodge", "Single Room", "Uganda", "Kidepo Valley NP", 430, 345, "Full Board", "2025-01-01", "2026-12-31", ""),
+        # Kibale Lodge (Volcanoes Safaris; AFAR top 25 hotels 2025, Conde Nast Hot List)
+        ("lodge-kibale-vs-1", "Kibale Lodge", "Forest Suite (Double)", "Uganda", "Kibale NP", 880, 705, "Full Board", "2026-01-01", "2026-12-31", "Volcanoes Safaris; award-winning"),
+        ("lodge-kibale-vs-2", "Kibale Lodge", "Forest Suite (Single)", "Uganda", "Kibale NP", 1050, 840, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Mount Gahinga Lodge (Volcanoes Safaris; Mgahinga Gorilla NP)
+        ("lodge-gahinga-1", "Mount Gahinga Lodge", "Bandas (Double)", "Uganda", "Mgahinga Gorilla NP", 640, 510, "Full Board", "2026-01-01", "2026-12-31", "Volcanoes Safaris"),
+        ("lodge-gahinga-2", "Mount Gahinga Lodge", "Bandas (Single)", "Uganda", "Mgahinga Gorilla NP", 765, 610, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Chimpundu Lodge (Kibale NP / Fort Portal; rates received Dec 2024)
+        ("lodge-chimpundu-1", "Chimpundu Lodge", "Double Room", "Uganda", "Kibale NP — Fort Portal", 285, 225, "Full Board", "2025-01-01", "2026-12-31", "Emburara Lodges group"),
+        ("lodge-chimpundu-2", "Chimpundu Lodge", "Single Room", "Uganda", "Kibale NP — Fort Portal", 340, 270, "Full Board", "2025-01-01", "2026-12-31", ""),
+        # Emburara Farm Lodge (same group as Chimpundu, Fort Portal area)
+        ("lodge-emburara-1", "Emburara Farm Lodge", "Double Room", "Uganda", "Fort Portal", 260, 205, "Full Board", "2025-01-01", "2026-12-31", "Farm stay, Emburara Lodges"),
+        # Enjojo Lodge (Kidepo / Queen Elizabeth area; 2026 rates received Oct 2025)
+        ("lodge-enjojo-1", "Enjojo Lodge", "Double Room", "Uganda", "Kidepo Valley NP", 410, 330, "Full Board", "2026-01-01", "2026-12-31", "2026 rates confirmed"),
+        ("lodge-enjojo-2", "Enjojo Lodge", "Single Room", "Uganda", "Kidepo Valley NP", 490, 390, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Elephant Plains Lodge (Great Lakes Collection; QENP; 2026 rates June 2026+)
+        ("lodge-elephant-plains-1", "Elephant Plains Lodge", "Cottage (Double)", "Uganda", "Queen Elizabeth NP — Kasenyi", 330, 265, "Full Board", "2026-06-01", "2027-12-31", "Great Lakes Collection"),
+        ("lodge-elephant-plains-2", "Elephant Plains Lodge", "Family Cottage", "Uganda", "Queen Elizabeth NP — Kasenyi", 420, 335, "Full Board", "2026-06-01", "2027-12-31", ""),
+        # Simba Safari Camp (Great Lakes Collection; QENP; 2026 rates June 2026+)
+        ("lodge-simba-camp-1", "Simba Safari Camp", "Standard Room (Double)", "Uganda", "Queen Elizabeth NP — Kasenyi", 230, 185, "Full Board", "2026-06-01", "2027-12-31", "Great Lakes; budget-friendly"),
+        # Pabidi Lodge Budongo (Great Lakes Collection; Murchison Falls NP, new property)
+        ("lodge-pabidi-1", "Pabidi Lodge Budongo", "Tented Suite (Double)", "Uganda", "Murchison Falls NP — Budongo", 380, 305, "Full Board", "2026-06-01", "2027-12-31", "Great Lakes; upcoming property"),
+        # Anyadwe House (Exclusive Camps / Wild Frontiers; 2026 rates received Nov 2025)
+        ("lodge-anyadwe-1", "Anyadwe House", "Double Room", "Uganda", "Queen Elizabeth NP — Ishasha", 480, 385, "Full Board", "2026-01-01", "2026-12-31", "Exclusive Camps; private house"),
+        # Mburo Tented Camp (Kimbla-Mantana; Lake Mburo; 2024 rates)
+        ("lodge-mburo-tented-1", "Mburo Tented Camp", "Tent (Double)", "Uganda", "Lake Mburo NP", 250, 200, "Full Board", "2025-01-01", "2025-12-31", "Kimbla-Mantana"),
+        # Woodland Lodges group (near Entebbe/Lulongo; 2026 rates received Oct 2025)
+        ("lodge-pumba-1", "Pumba Safari Cottages", "Double Room", "Uganda", "Lulongo — Entebbe", 170, 135, "Full Board", "2026-01-01", "2026-12-31", "Woodland Lodges group"),
+        ("lodge-topi-1", "Topi Lodge", "Double Room", "Uganda", "Lulongo — Entebbe", 150, 120, "Full Board", "2026-01-01", "2026-12-31", "Woodland Lodges group"),
+        ("lodge-hornbill-1", "Hornbill Bush Lodge", "Double Room", "Uganda", "Lulongo — Entebbe", 160, 128, "Full Board", "2026-01-01", "2026-12-31", "Woodland Lodges group"),
+        ("lodge-tilapia-1", "Tilapia Lodge", "Double Room", "Uganda", "Lulongo — Entebbe", 155, 124, "Full Board", "2026-01-01", "2026-12-31", "Woodland Lodges group"),
+        # Papyrus Guest House (Nkuringo group; 2026 STO rates received Oct 2025)
+        ("lodge-papyrus-1", "Papyrus Guest House", "Double Room", "Uganda", "Bwindi — Nkuringo", 210, 168, "Bed & Breakfast", "2026-01-01", "2026-12-31", "Nkuringo group; budget option"),
+        # Paraa Safari Lodge 2026 rates (Marasa Africa; refurbishment in progress)
+        ("lodge-mfc-paraa-3", "Paraa Safari Lodge", "Deluxe Double", "Uganda", "Murchison Falls NP — Paraa", 520, 415, "Full Board", "2026-07-01", "2026-12-31", "Marasa; upgraded room category"),
+        # Mweya Safari Lodge 2026 (Marasa Africa; renovations underway)
+        ("lodge-qenp-mweya-3", "Mweya Safari Lodge", "Deluxe Double", "Uganda", "Queen Elizabeth NP — Mweya", 510, 408, "Full Board", "2026-07-01", "2026-12-31", "Marasa; upgraded category"),
+        # Chobe Safari Lodge 2026 (Marasa Africa; soft refurb completed)
+        ("lodge-mfc-chobe-2", "Chobe Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP — Chobe", 420, 335, "Full Board", "2026-07-01", "2026-12-31", "Marasa 2026 rates"),
+        # Virunga Lodge 2026 (Volcanoes Safaris Rwanda)
+        ("lodge-rwa-virunga-2026-1", "Virunga Lodge", "Double Room", "Rwanda", "Volcanoes NP", 1320, 1055, "Full Board", "2026-01-01", "2026-12-31", "Volcanoes Safaris 2026"),
+        ("lodge-rwa-virunga-2026-2", "Virunga Lodge", "Single Room", "Rwanda", "Volcanoes NP", 1580, 1265, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Bwindi Lodge 2026 (Volcanoes Safaris Uganda)
+        ("lodge-bwindi-vs-2026-1", "Bwindi Lodge", "Double Room", "Uganda", "Bwindi", 520, 415, "Full Board", "2026-01-01", "2026-12-31", "Volcanoes Safaris 2026 rates"),
+        ("lodge-bwindi-vs-2026-2", "Bwindi Lodge", "Single Room", "Uganda", "Bwindi", 625, 500, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Kyambura Gorge Lodge 2026 (Volcanoes Safaris Uganda)
+        ("lodge-qenp-kyambura-3", "Kyambura Gorge Lodge", "Cottage (Double)", "Uganda", "Queen Elizabeth NP — Kyambura", 850, 680, "Full Board", "2026-01-01", "2026-12-31", "Volcanoes Safaris 2026"),
+        ("lodge-qenp-kyambura-4", "Kyambura Gorge Lodge", "Cottage (Single)", "Uganda", "Queen Elizabeth NP — Kyambura", 1015, 810, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Buhoma Lodge 2026 (Exclusive Camps / Wild Frontiers Uganda)
+        ("lodge-buhoma-3", "Buhoma Lodge", "Banda (Double)", "Uganda", "Bwindi — Buhoma", 545, 435, "Full Board", "2026-01-01", "2026-12-31", "Exclusive Camps 2026"),
+        ("lodge-buhoma-4", "Buhoma Lodge", "Banda (Single)", "Uganda", "Bwindi — Buhoma", 655, 524, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Ishasha Wilderness Camp 2026 (Exclusive Camps / Wild Frontiers)
+        ("lodge-qenp-ishasha-3", "Ishasha Wilderness Camp", "Tent (Double)", "Uganda", "Queen Elizabeth NP — Ishasha", 740, 590, "Full Board", "2026-01-01", "2026-12-31", "Exclusive Camps 2026"),
+        ("lodge-qenp-ishasha-4", "Ishasha Wilderness Camp", "Tent (Single)", "Uganda", "Queen Elizabeth NP — Ishasha", 890, 710, "Full Board", "2026-01-01", "2026-12-31", ""),
     ]
     for l in lodges:
         conn.execute("""
@@ -1037,10 +1143,9 @@ def init_db():
     # Seed lodges if table is empty
     seed_lodges(conn)
 
-    # Seed detailed partner lodge data (INSERT OR IGNORE — safe to always call)
-    lodge_count = conn.execute("SELECT COUNT(*) FROM lodges").fetchone()[0]
-    if lodge_count == 0:
-        _seed_lodges(conn)
+    # Seed detailed partner lodge data (INSERT OR IGNORE — always safe to call,
+    # adds new lodges without overwriting existing ones)
+    _seed_lodges(conn)
 
     conn.commit()
     conn.close()
