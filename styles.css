@@ -1528,3 +1528,39 @@ tr:hover td { background: var(--bg-subtle); }
   font-weight: 600;
   margin-left: var(--space-2);
 }
+
+/* ── Activity chip tier badge ────────────────────────────────── */
+.activity-chip[data-tier-price] {
+  position: relative;
+}
+
+/* ── Guest fields in lodge rows ─────────────────────────────── */
+.lodge-guest-row input[type=number] {
+  -moz-appearance: textfield;
+}
+.lodge-guest-row input[type=number]::-webkit-inner-spin-button,
+.lodge-guest-row input[type=number]::-webkit-outer-spin-button {
+  opacity: 0.5;
+}
+
+/* ── Meal plan select in lodge rows ─────────────────────────── */
+.lodge-item .form-control[name^="meal_plan_"] {
+  background: var(--brand-gold-light);
+  border-color: var(--brand-gold);
+  color: var(--brand-gold-dark);
+  font-weight: 600;
+}
+
+/* ── Adults / Children pax inputs ──────────────────────────── */
+.pax-split-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+#pricingAdults, #pricingChildren {
+  border-left: 3px solid var(--brand-green);
+}
+#pricingChildren {
+  border-left-color: var(--brand-gold);
+}
