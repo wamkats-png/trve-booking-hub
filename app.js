@@ -2049,6 +2049,7 @@
       </button>
     `;
     container.appendChild(el);
+    toast('info', 'Extra cost row added', 'Fill in the description and amount');
   }
 
   function generateItineraryText(itn) {
@@ -2113,6 +2114,9 @@
     } catch (_) { /* silent */ }
   }
 
+  // Max times the same activity can be added per itinerary
+  const ACTIVITY_MAX_USES = 1;
+
   function renderActivityPresets() {
     const container = document.getElementById('activityPresets');
     if (!container || !state.activities) return;
@@ -2124,7 +2128,8 @@
         <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:4px">${cat}</div>
         <div style="display:flex;flex-wrap:wrap;gap:4px">
           ${items.map(a => `
-            <button type="button" class="ai-suggestion-chip"
+            <button type="button" class="ai-suggestion-chip activity-chip"
+              data-activity-id="${escapeHtml(a.id)}"
               onclick="window.TRVE.addActivityCost('${escapeHtml(a.id)}', '${escapeHtml(a.name)}', ${a.default_usd}, ${a.per_person})"
               title="${escapeHtml(a.notes || '')}">
               ${escapeHtml(a.name)}${a.default_usd > 0 ? ` ($${a.default_usd})` : ''}
@@ -2134,13 +2139,41 @@
       </div>`;
     }
     container.innerHTML = html;
+    // Re-apply disabled state if activities were previously added
+    _syncActivityButtonStates();
+  }
+
+  function _syncActivityButtonStates() {
+    const added = state.addedActivities || {};
+    document.querySelectorAll('.activity-chip[data-activity-id]').forEach(btn => {
+      const id = btn.dataset.activityId;
+      const count = added[id] || 0;
+      const atLimit = count >= ACTIVITY_MAX_USES;
+      btn.disabled = atLimit;
+      btn.style.opacity = atLimit ? '0.4' : '';
+      btn.title = atLimit ? '✓ Already added to this itinerary' : (btn.getAttribute('title') || '');
+    });
   }
 
   function addActivityCost(actId, name, amount, perPerson) {
-    addExtraCost(name, amount);
+    if (!state.addedActivities) state.addedActivities = {};
+    const count = state.addedActivities[actId] || 0;
+    if (count >= ACTIVITY_MAX_USES) {
+      toast('warning', 'Already added', `${name} has already been added to this itinerary`);
+      return;
+    }
+    // Pre-fill the extra cost row with activity name and price from database
+    addPresetExtraCost(name, amount);
+    // Track and disable button
+    state.addedActivities[actId] = count + 1;
+    _syncActivityButtonStates();
   }
 
   function initPricingForm() {
+    // Per-invoice tracking state
+    state.addedActivities = {};
+    state.bufferApplied = false;
+
     document.getElementById('btnAddLodge').addEventListener('click', addLodgeItem);
     document.getElementById('btnAddExtra').addEventListener('click', addExtraCost);
 
@@ -2203,6 +2236,10 @@
     const applyBuffersBtn = document.getElementById('applyBuffersBtn');
     if (applyBuffersBtn) {
       applyBuffersBtn.addEventListener('click', async () => {
+        if (state.bufferApplied) {
+          toast('warning', 'Buffer already set', 'Price buffer has already been recorded for this invoice. Recalculate to reset.');
+          return;
+        }
         const fuelBuf = parseFloat(document.getElementById('fuelBufferInput')?.value || '5');
         const fxBuf = parseFloat(document.getElementById('fxBufferInput')?.value || '3');
         try {
@@ -2210,7 +2247,11 @@
             method: 'POST',
             body: { fuel_buffer_pct: fuelBuf, fx_buffer_pct: fxBuf }
           });
-          toast('success', 'Buffers updated', `Fuel: ${fuelBuf}%, FX: ${fxBuf}%`);
+          state.bufferApplied = true;
+          applyBuffersBtn.disabled = true;
+          applyBuffersBtn.textContent = '✓ Applied';
+          applyBuffersBtn.style.opacity = '0.6';
+          toast('success', 'Price buffer recorded', `Fuel buffer: ${fuelBuf}% · FX buffer: ${fxBuf}% — locked for this invoice`);
         } catch (e) {
           toast('error', 'Could not update buffers', e.message);
         }
@@ -2222,6 +2263,16 @@
 
     document.getElementById('pricingForm').addEventListener('submit', async (e) => {
       e.preventDefault();
+      // Reset per-invoice state on each new calculation
+      state.addedActivities = {};
+      state.bufferApplied = false;
+      const applyBtn = document.getElementById('applyBuffersBtn');
+      if (applyBtn) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Apply';
+        applyBtn.style.opacity = '';
+      }
+      _syncActivityButtonStates();
       await calculatePrice();
     });
   }
