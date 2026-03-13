@@ -987,6 +987,84 @@
           </div>
         </div>
 
+        <!-- International Transfer Gross-Up Calculator -->
+        <div class="card mb-5 mt-5">
+          <div class="card-header">
+            <span class="card-title">International Transfer Gross-Up Calculator</span>
+            <span class="text-xs text-muted" style="margin-left:auto">Ensure company receives exact invoiced amount</span>
+          </div>
+          <div class="card-body" style="padding:var(--space-5)">
+            <p style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-4)">
+              Calculate the gross amount the client must send so the net amount received equals the invoice total, after all bank deductions.
+            </p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-5)">
+              <div>
+                <div class="form-group">
+                  <label class="form-label" for="gtInvoiceTotal">Invoice Total (USD) <span style="color:var(--danger)">*</span></label>
+                  <input class="form-control" type="number" id="gtInvoiceTotal" min="0" placeholder="e.g. 5000">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="gtReceivingFlat">Receiving Bank Fee — Flat (USD)</label>
+                  <input class="form-control" type="number" id="gtReceivingFlat" min="0" value="15" placeholder="e.g. 15">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="gtReceivingPct">Receiving Bank Fee — % of amount</label>
+                  <input class="form-control" type="number" id="gtReceivingPct" min="0" max="10" step="0.1" value="0" placeholder="e.g. 0.5">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="gtIntermediary">Intermediary / Correspondent Bank Fee (USD)</label>
+                  <input class="form-control" type="number" id="gtIntermediary" min="0" value="25" placeholder="e.g. 25">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="gtSenderPct">Sender Bank Fee — % (charged on sender side)</label>
+                  <input class="form-control" type="number" id="gtSenderPct" min="0" max="10" step="0.1" value="0" placeholder="e.g. 1.5">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="gtSenderFlat">Sender Bank Fee — Flat (USD)</label>
+                  <input class="form-control" type="number" id="gtSenderFlat" min="0" value="0" placeholder="e.g. 30">
+                </div>
+                <div style="border-top:1px solid var(--border);padding-top:var(--space-3);margin-top:var(--space-3)">
+                  <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:var(--space-2)">Currency Conversion (optional)</label>
+                  <div class="form-group">
+                    <label class="form-label" for="gtExchangeRate">Exchange Rate (1 USD = X foreign currency)</label>
+                    <input class="form-control" type="number" id="gtExchangeRate" min="0" step="0.0001" placeholder="e.g. 0.92 for EUR">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="gtClientCurrency">Client Currency Code</label>
+                    <input class="form-control" type="text" id="gtClientCurrency" maxlength="4" placeholder="e.g. EUR, GBP, NOK">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="gtConversionFeePct">FX Conversion Fee (%)</label>
+                    <input class="form-control" type="number" id="gtConversionFeePct" min="0" max="10" step="0.1" value="0" placeholder="e.g. 1.5">
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="gtApprovedBy">Confirmed by (your name)</label>
+                  <input class="form-control" type="text" id="gtApprovedBy" placeholder="e.g. Desire">
+                </div>
+                <button type="button" class="btn btn-primary w-full" id="btnCalculateTransfer">Calculate Required Transfer Amount</button>
+              </div>
+
+              <div id="gtResult" style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-5);display:flex;flex-direction:column;gap:var(--space-3)">
+                <div style="font-size:var(--text-xs);color:var(--text-muted);text-align:center;padding:var(--space-6) 0">
+                  Fill in the invoice total and fee assumptions, then click Calculate.
+                </div>
+              </div>
+            </div>
+
+            <!-- Audit log of calculations -->
+            <div style="margin-top:var(--space-5)">
+              <div style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:var(--space-2)">
+                Calculation Audit Log
+                <button type="button" class="btn btn-ghost btn-sm" id="btnClearTransferLog" style="margin-left:8px;font-size:var(--text-xs)">Clear</button>
+              </div>
+              <div id="gtAuditLog" style="max-height:240px;overflow-y:auto;font-size:var(--text-xs);color:var(--text-secondary)">
+                <div style="color:var(--text-muted);font-style:italic">No calculations yet.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Quick Reference Table -->
         <div class="card">
           <div class="card-header">
@@ -1147,6 +1225,28 @@
         <label class="form-label" for="qmValidDays">Valid for (days)</label>
         <input class="form-control" type="number" id="qmValidDays" value="14" min="1" max="90">
       </div>
+      <!-- Transfer fees safeguard — must confirm before generating -->
+      <div style="background:#FFF8E7;border:1px solid var(--brand-gold);border-radius:var(--radius-md);padding:var(--space-3);margin-bottom:var(--space-4)">
+        <div style="font-size:var(--text-xs);font-weight:700;color:var(--brand-gold-dark);margin-bottom:var(--space-2)">
+          Required Transfer Amount <span style="color:var(--danger)">*</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:var(--space-2)">
+          <input class="form-control" type="number" id="qmRequiredTransfer" min="0" placeholder="Must enter gross transfer amount" style="flex:1">
+          <span style="font-size:var(--text-xs);color:var(--text-muted);white-space:nowrap">USD</span>
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--text-muted)">
+          Use the <strong>Transfer Gross-Up Calculator</strong> (Finance Tools) to calculate this. Blocks invoice approval if empty.
+        </div>
+        <div id="qmTransferWarning" style="display:none;font-size:var(--text-xs);color:var(--danger);margin-top:var(--space-2);font-weight:600">
+          ⚠ Transfer fees not accounted for. Client must send the calculated gross amount to ensure full invoice settlement.
+        </div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:var(--space-4);cursor:pointer">
+        <input type="checkbox" id="qmBankFeesAck" style="margin-top:3px;flex-shrink:0">
+        <span style="font-size:var(--text-xs);color:var(--text-secondary)">
+          I confirm the bank charge assumptions, exchange rate used, and calculated client transfer amount are correct.
+        </span>
+      </label>
       <button class="btn btn-gold w-full" id="qmSubmitBtn">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v9M3 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Generate Quotation PDF

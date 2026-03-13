@@ -2004,8 +2004,16 @@
     const defaultAdults = parseInt(document.getElementById('pricingAdults')?.value) || 2;
     const defaultChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
 
+    // Auto-derive nights: nights = days - 1
+    const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 7;
+    const autoNights = Math.max(1, tripDays - 1);
+
     el.innerHTML = `
       <div class="lodge-item-body">
+        <div style="margin-bottom:6px">
+          <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:3px">Guest / Room Label <span style="font-weight:400">(optional — e.g. "Room 1", "Mr. Smith")</span></label>
+          <input type="text" class="form-control" name="guest_label_${idx}" placeholder="e.g. Room 1, Adult Couple, Mr. Wamala…" style="font-size:var(--text-xs)">
+        </div>
         <select class="form-control" name="lodge_name_${idx}" style="margin-bottom:6px">
           <option value="">— Select lodge —</option>
           ${lodgeOptions}
@@ -2022,10 +2030,10 @@
           </select>
         </div>
         <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:4px">
-          <span class="lodge-nights-pill" title="Number of nights at this lodge">
+          <span class="lodge-nights-pill" title="Nights auto-derived from trip days (nights = days − 1). Edit for multi-lodge splits.">
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v1.5M5.5 8.5V10M1 5.5h1.5M8.5 5.5H10M2.6 2.6l1 1M7.4 7.4l1 1M2.6 8.4l1-1M7.4 3.6l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
-            <input type="number" name="nights_${idx}" min="1" value="1" title="Nights at this lodge">
-            nights
+            <input type="number" name="nights_${idx}" class="lodge-nights-input" min="1" value="${autoNights}" title="Nights = days − 1. Adjust here for multi-lodge itineraries.">
+            nights <span class="lodge-nights-hint" style="font-size:9px;color:var(--text-muted);margin-left:2px">(= ${tripDays} days − 1)</span>
           </span>
           <span class="lodge-rooms-badge" title="Number of rooms of this type">
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="3" width="9" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 6h9" stroke="currentColor" stroke-width="1.2"/><path d="M4 6V9" stroke="currentColor" stroke-width="1.2"/></svg>
@@ -2034,7 +2042,7 @@
           </span>
         </div>
         <div class="lodge-guest-row" style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:var(--text-xs);color:var(--text-muted)">Guests in this room type:</span>
+          <span style="font-size:var(--text-xs);color:var(--text-muted)">Guests in this room:</span>
           <label style="display:flex;align-items:center;gap:3px;font-size:var(--text-xs);font-weight:600;color:var(--brand-green)">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="3" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M1 9c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
             Adults
@@ -2056,7 +2064,7 @@
     `;
     container.appendChild(el);
 
-    // FIX: Wire lodge selection to dynamically populate room_type options
+    // Wire lodge selection to dynamically populate room_type options
     const lodgeSelect = el.querySelector(`[name^="lodge_name_"]`);
     const roomTypeSelect = el.querySelector(`[name^="room_type_"]`);
     if (lodgeSelect && roomTypeSelect) {
@@ -2064,6 +2072,18 @@
         populateRoomTypes(this.value, roomTypeSelect);
       });
     }
+  }
+
+  // When trip days change, auto-update nights in all lodge rows (single-lodge path)
+  function _syncLodgeNightsFromDays(days) {
+    const nights = Math.max(1, days - 1);
+    const rows = document.querySelectorAll('#lodgeItems .lodge-item');
+    rows.forEach(row => {
+      const nightsInput = row.querySelector('.lodge-nights-input');
+      const nightsHint = row.querySelector('.lodge-nights-hint');
+      if (nightsInput) nightsInput.value = nights;
+      if (nightsHint) nightsHint.textContent = `(= ${days} days − 1)`;
+    });
   }
 
   // Vehicle types and default rates
@@ -2451,6 +2471,16 @@
     document.getElementById('btnAddLodge').addEventListener('click', addLodgeItem);
     document.getElementById('btnAddExtra').addEventListener('click', addExtraCost);
 
+    // Auto-sync nights = days - 1 when duration changes
+    const daysInput = document.getElementById('pricingDays');
+    if (daysInput) {
+      daysInput.addEventListener('input', () => {
+        const d = parseInt(daysInput.value) || 7;
+        _syncLodgeNightsFromDays(d);
+        _updateVehicleHint(); // also update vehicle days hint
+      });
+    }
+
     // Transport section — dropdown + Add button
     _initVehicleDropdown();
     const btnAddVehicle = document.getElementById('btnAddVehicle');
@@ -2640,9 +2670,11 @@
         const mealPlan = row.querySelector(`[name^="meal_plan_"]`)?.value || 'BB';
         const rowAdults = parseInt(row.querySelector(`[name^="row_adults_"]`)?.value) || adults;
         const rowChildren = parseInt(row.querySelector(`[name^="row_children_"]`)?.value) || children;
+        const guestLabel = row.querySelector(`[name^="guest_label_"]`)?.value.trim() || '';
         if (lodge) accommodations.push({
           lodge, room_type: roomType, nights, rooms,
-          meal_plan: mealPlan, adults: rowAdults, children: rowChildren
+          meal_plan: mealPlan, adults: rowAdults, children: rowChildren,
+          guest_label: guestLabel,
         });
       });
 
@@ -2788,11 +2820,85 @@
         </div>
       </div>
 
+      <!-- Per-Guest Breakdown (shown when guest_breakdown present in pricing_data) -->
+      ${(() => {
+        const pd = result.pricing_data || {};
+        const nights = result.nights || (result.duration_days ? result.duration_days - 1 : '—');
+        const guestBd = pd.guest_breakdown || [];
+        const actBd = pd.activity_breakdown || [];
+        let html = '';
+
+        if (guestBd.length > 0) {
+          html += `
+          <div class="card mb-5">
+            <div class="card-header" style="padding:var(--space-4) var(--space-5)">
+              <span class="card-title" style="font-size:var(--text-base)">Per-Guest Cost Breakdown</span>
+              <span style="font-size:var(--text-xs);color:var(--text-muted)">${nights} nights (= ${result.duration_days || '—'} days − 1)</span>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="price-results-table">
+                <thead><tr>
+                  <th>Guest</th><th>Lodge</th><th>Room</th><th>Meal</th>
+                  <th style="text-align:right">Accommodation</th>
+                  <th style="text-align:right">Activities</th>
+                  <th style="text-align:right">Guest Total</th>
+                </tr></thead>
+                <tbody>
+                  ${guestBd.map(g => `
+                    <tr>
+                      <td style="font-weight:600">${escapeHtml(g.guest_id || '—')}</td>
+                      <td style="font-size:var(--text-xs)">${escapeHtml(g.lodge || '—')}</td>
+                      <td style="font-size:var(--text-xs)">${escapeHtml(g.room_type || '—')}</td>
+                      <td style="font-size:var(--text-xs)">${escapeHtml(g.meal_plan || 'BB')}</td>
+                      <td class="amount-col">${fmtMoney(g.accommodation_total)}</td>
+                      <td class="amount-col">${fmtMoney(g.activity_total)}</td>
+                      <td class="amount-col" style="font-weight:600">${fmtMoney(g.guest_total)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>`;
+        }
+
+        if (actBd.length > 0) {
+          html += `
+          <div class="card mb-5">
+            <div class="card-header" style="padding:var(--space-4) var(--space-5)">
+              <span class="card-title" style="font-size:var(--text-base)">Activity Breakdown</span>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="price-results-table">
+                <thead><tr>
+                  <th>Activity</th><th>Day</th>
+                  <th style="text-align:right">Cost / Person</th>
+                  <th style="text-align:right">Guests</th>
+                  <th style="text-align:right">Total</th>
+                </tr></thead>
+                <tbody>
+                  ${actBd.map(a => `
+                    <tr>
+                      <td>${escapeHtml(a.name || '—')}</td>
+                      <td style="font-size:var(--text-xs)">${escapeHtml(String(a.day || '—'))}</td>
+                      <td class="amount-col">${fmtMoney(a.cost_per_person)}</td>
+                      <td class="amount-col">${a.num_guests || a.pax || '—'}</td>
+                      <td class="amount-col" style="font-weight:600">${fmtMoney(a.total)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>`;
+        }
+        return html;
+      })()}
+
       <!-- Price Notice -->
       <div class="price-notice">
         ⚠️ <strong>Prices are subject to confirmation within 7 days</strong> due to fuel price and exchange rate fluctuations.
-        ${result.fuel_buffer_pct ? `Fuel buffer: ${result.fuel_buffer_pct}% applied to vehicle costs.` : ''}
-        ${result.fx_buffer_pct ? `FX buffer: ${result.fx_buffer_pct}% noted.` : ''}
+        <br>Trip nights: <strong>${result.nights !== undefined ? result.nights : ((result.duration_days || 7) - 1)}</strong> (= ${result.duration_days || '—'} days − 1).
+        ${result.fuel_buffer_pct ? ` Fuel buffer: ${result.fuel_buffer_pct}% applied.` : ''}
+        ${result.fx_buffer_pct ? ` FX buffer: ${result.fx_buffer_pct}% noted.` : ''}
       </div>
 
       <!-- Generate Quotation Button -->
@@ -2846,6 +2952,32 @@
     closeBtn.onclick = closeModal;
     modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
+    // Reset safeguard fields
+    const transferInput = document.getElementById('qmRequiredTransfer');
+    const bankFeesAck = document.getElementById('qmBankFeesAck');
+    const transferWarning = document.getElementById('qmTransferWarning');
+    if (transferInput) transferInput.value = '';
+    if (bankFeesAck) bankFeesAck.checked = false;
+    if (transferWarning) transferWarning.style.display = 'none';
+
+    // Pre-fill transfer amount from last calculation if available
+    if (transferInput && result) {
+      const suggestedTransfer = result.total_usd || 0;
+      // Show placeholder based on invoice total (user should run gross-up calculator)
+      transferInput.placeholder = `≥ ${suggestedTransfer.toFixed(2)} (run Finance Tools → Transfer Calculator)`;
+    }
+
+    // Show warning when transfer field is blurred empty
+    if (transferInput) {
+      transferInput.addEventListener('blur', () => {
+        if (!transferInput.value && transferWarning) {
+          transferWarning.style.display = 'block';
+        } else if (transferWarning) {
+          transferWarning.style.display = 'none';
+        }
+      });
+    }
+
     // Submit handler (one-time)
     submitBtn.onclick = async () => {
       const clientName = nameInput.value.trim();
@@ -2855,6 +2987,25 @@
         return;
       }
       nameInput.style.borderColor = '';
+
+      // Safeguard: required transfer amount must be filled
+      const reqTransfer = parseFloat(transferInput?.value);
+      if (!reqTransfer || reqTransfer <= 0) {
+        if (transferWarning) transferWarning.style.display = 'block';
+        if (transferInput) { transferInput.style.borderColor = 'var(--danger)'; transferInput.focus(); }
+        toast('warning', 'Transfer amount required', 'Enter the required client transfer amount. Use Finance Tools → Transfer Calculator.');
+        return;
+      }
+      if (transferInput) transferInput.style.borderColor = '';
+      if (transferWarning) transferWarning.style.display = 'none';
+
+      // Safeguard: acknowledgment checkbox
+      if (bankFeesAck && !bankFeesAck.checked) {
+        toast('warning', 'Acknowledgment required', 'Confirm the bank charge assumptions and transfer amount before generating');
+        bankFeesAck.focus();
+        return;
+      }
+
       closeModal();
 
       const wrap = document.getElementById('quotationGenerateWrap');
@@ -2862,8 +3013,14 @@
       genBtn.classList.add('loading');
       genBtn.disabled = true;
 
+      const reqTransferAmt = parseFloat(document.getElementById('qmRequiredTransfer')?.value) || null;
       const quotationPayload = {
-        pricing_data: result.pricing_data || result,
+        pricing_data: {
+          ...(result.pricing_data || result),
+          // Embed transfer fee info for PDF footer
+          required_transfer_amount: reqTransferAmt,
+          transfer_fees_estimated: reqTransferAmt ? round2(reqTransferAmt - (result.total_usd || 0)) : null,
+        },
         client_name: clientName || 'Guest',
         client_email: emailInput.value.trim() || null,
         booking_ref: refInput.value.trim() || null,
@@ -2874,6 +3031,7 @@
         extra_vehicle_days: payload.extra_vehicle_days || 0,
         commission_type: payload.commission_type || null,
       };
+      function round2(v) { return Math.round(v * 100) / 100; }
 
     try {
       const data = await apiFetch('/api/generate-quotation', { method: 'POST', body: quotationPayload });
@@ -3887,6 +4045,146 @@
     document.getElementById('bankTxType').addEventListener('change', calcBankCharge);
     document.getElementById('bankTxAmount').addEventListener('input', calcBankCharge);
     document.getElementById('bankTxEntries').addEventListener('input', calcBankCharge);
+
+    // Transfer gross-up calculator
+    document.getElementById('btnCalculateTransfer').addEventListener('click', runTransferGrossUp);
+    document.getElementById('btnClearTransferLog').addEventListener('click', () => {
+      document.getElementById('gtAuditLog').innerHTML = '<div style="color:var(--text-muted);font-style:italic">No calculations yet.</div>';
+    });
+
+    // Load existing audit log from backend
+    _loadTransferAuditLog();
+  }
+
+  async function runTransferGrossUp() {
+    const invTotal = parseFloat(document.getElementById('gtInvoiceTotal').value);
+    if (!invTotal || invTotal <= 0) {
+      toast('warning', 'Invoice total required', 'Enter a positive invoice total amount');
+      document.getElementById('gtInvoiceTotal').focus();
+      return;
+    }
+
+    const approvedBy = document.getElementById('gtApprovedBy').value.trim();
+    if (!approvedBy) {
+      toast('warning', 'Confirmation required', 'Enter your name to confirm the fee assumptions');
+      document.getElementById('gtApprovedBy').focus();
+      return;
+    }
+
+    const payload = {
+      invoice_total: invTotal,
+      receiving_bank_fee_flat: parseFloat(document.getElementById('gtReceivingFlat').value) || 0,
+      receiving_bank_fee_pct: parseFloat(document.getElementById('gtReceivingPct').value) || 0,
+      intermediary_bank_fee: parseFloat(document.getElementById('gtIntermediary').value) || 0,
+      sender_bank_fee_pct: parseFloat(document.getElementById('gtSenderPct').value) || 0,
+      sender_bank_fee_flat: parseFloat(document.getElementById('gtSenderFlat').value) || 0,
+      approved_by: approvedBy,
+    };
+
+    const xRate = parseFloat(document.getElementById('gtExchangeRate').value);
+    const clientCcy = document.getElementById('gtClientCurrency').value.trim().toUpperCase();
+    const convPct = parseFloat(document.getElementById('gtConversionFeePct').value) || 0;
+    if (xRate > 0 && clientCcy) {
+      payload.exchange_rate = xRate;
+      payload.client_currency = clientCcy;
+      payload.currency_conversion_fee_pct = convPct;
+    }
+
+    try {
+      const res = await apiFetch('/api/calculate-transfer-fees', { method: 'POST', body: payload });
+      _renderTransferResult(res);
+      _appendTransferAuditEntry(res.audit || res);
+      toast('success', 'Transfer amount calculated', `Client must send ${fmtMoney(res.gross_amount_usd)}`);
+    } catch (err) {
+      toast('error', 'Calculation error', err.message);
+    }
+  }
+
+  function _renderTransferResult(res) {
+    const el = document.getElementById('gtResult');
+    const hasForeign = res.client_currency && res.client_currency !== (res.currency || 'USD') && res.gross_amount_foreign;
+    const feeBreakdown = res.fee_breakdown || {};
+    el.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:var(--space-3)">
+        <!-- Summary lines -->
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4)">
+          <div style="display:flex;justify-content:space-between;margin-bottom:var(--space-2)">
+            <span style="font-size:var(--text-sm);color:var(--text-muted)">Invoice Total</span>
+            <span style="font-family:var(--font-mono);font-weight:600">${fmtMoney(res.invoice_total_usd)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:var(--space-2)">
+            <span style="font-size:var(--text-sm);color:var(--text-muted)">Estimated Transfer Fees</span>
+            <span style="font-family:var(--font-mono);color:var(--danger);font-weight:600">+ ${fmtMoney(res.total_transfer_fees_usd)}</span>
+          </div>
+          ${feeBreakdown.receiving_flat || feeBreakdown.receiving_pct_amount ? `
+          <div style="display:flex;justify-content:space-between;padding-left:12px;font-size:var(--text-xs);color:var(--text-muted)">
+            <span>↳ Receiving bank</span><span>${fmtMoney((feeBreakdown.receiving_flat || 0) + (feeBreakdown.receiving_pct_amount || 0))}</span>
+          </div>` : ''}
+          ${feeBreakdown.intermediary ? `
+          <div style="display:flex;justify-content:space-between;padding-left:12px;font-size:var(--text-xs);color:var(--text-muted)">
+            <span>↳ Intermediary bank</span><span>${fmtMoney(feeBreakdown.intermediary)}</span>
+          </div>` : ''}
+          ${(feeBreakdown.sender_flat || 0) + (feeBreakdown.sender_pct_amount || 0) > 0 ? `
+          <div style="display:flex;justify-content:space-between;padding-left:12px;font-size:var(--text-xs);color:var(--text-muted)">
+            <span>↳ Sender bank</span><span>${fmtMoney((feeBreakdown.sender_flat || 0) + (feeBreakdown.sender_pct_amount || 0))}</span>
+          </div>` : ''}
+          <div style="height:1px;background:var(--brand-gold);margin:var(--space-2) 0"></div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:var(--text-sm);font-weight:700;color:var(--brand-green)">Client Must Send (USD)</span>
+            <span style="font-family:var(--font-mono);font-size:var(--text-lg);font-weight:700;color:var(--brand-green)">${fmtMoney(res.client_must_send_usd)}</span>
+          </div>
+          ${hasForeign ? `
+          <div style="display:flex;justify-content:space-between;margin-top:var(--space-2)">
+            <span style="font-size:var(--text-sm);font-weight:700;color:var(--brand-gold)">${escapeHtml(res.client_currency)} Equivalent</span>
+            <span style="font-family:var(--font-mono);font-size:var(--text-base);font-weight:700;color:var(--brand-gold)">${escapeHtml(res.client_currency)} ${fmtNum(res.gross_amount_foreign)}</span>
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-muted)">Rate: 1 USD = ${fmtNum(res.exchange_rate)} ${escapeHtml(res.client_currency)}${res.conversion_fee_pct ? ` · ${res.conversion_fee_pct}% conversion fee applied` : ''}</div>
+          ` : ''}
+        </div>
+
+        <!-- Payment instruction box -->
+        <div style="background:#FFF8E7;border:1px solid var(--brand-gold);border-radius:var(--radius-md);padding:var(--space-3)">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--brand-gold-dark);margin-bottom:var(--space-1)">Payment Instruction for Invoice Footer</div>
+          <div style="font-size:var(--text-xs);color:#7a5200;line-height:1.6">
+            Invoice Total: <strong>${fmtMoney(res.invoice_total_usd)}</strong><br>
+            Estimated transfer costs: <strong>${fmtMoney(res.total_transfer_fees_usd)}</strong><br>
+            <strong>Client must send: ${fmtMoney(res.client_must_send_usd)}</strong>${hasForeign ? ` / ${escapeHtml(res.client_currency)} ${fmtNum(res.gross_amount_foreign)}` : ''}<br><br>
+            <em>All bank charges must be covered by the sender. The transfer amount shown ensures the company receives the full invoice value after bank deductions.</em>
+          </div>
+        </div>
+
+        <!-- Confirmed by -->
+        <div style="font-size:var(--text-xs);color:var(--text-muted)">
+          Confirmed by: <strong>${escapeHtml(res.audit?.approved_by || '—')}</strong> · ${new Date().toLocaleString()}
+        </div>
+      </div>
+    `;
+  }
+
+  function _appendTransferAuditEntry(entry) {
+    const log = document.getElementById('gtAuditLog');
+    if (!log) return;
+    // Clear placeholder
+    if (log.querySelector('div[style*="italic"]')) log.innerHTML = '';
+    const row = document.createElement('div');
+    row.style.cssText = 'border-bottom:1px solid var(--border);padding:6px 0;display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:4px;font-size:11px';
+    row.innerHTML = `
+      <span style="color:var(--text-muted)">${escapeHtml((entry.timestamp || '').slice(0, 16).replace('T', ' '))}</span>
+      <span>Invoice: <strong>${fmtMoney(entry.invoice_total || entry.invoice_total_usd)}</strong></span>
+      <span>Fees: <strong style="color:var(--danger)">${fmtMoney(entry.assumed_bank_fees || entry.total_transfer_fees_usd)}</strong></span>
+      <span>Send: <strong style="color:var(--brand-green)">${fmtMoney(entry.calculated_transfer_amount || entry.client_must_send_usd)}</strong></span>
+      <span>By: <strong>${escapeHtml(entry.approved_by || '—')}</strong></span>
+    `;
+    log.prepend(row);
+  }
+
+  async function _loadTransferAuditLog() {
+    try {
+      const data = await apiFetch('/api/transfer-fee-audit?limit=20');
+      const items = data.items || [];
+      if (items.length === 0) return;
+      items.forEach(entry => _appendTransferAuditEntry(entry));
+    } catch (_) { /* non-critical */ }
   }
 
   function switchBankTab(bank) {

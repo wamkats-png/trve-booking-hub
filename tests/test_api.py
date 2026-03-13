@@ -695,6 +695,95 @@ class TestEdgeCases:
         })
 
 
+# ===========================================================================
+# Bank Transfer Gross-Up Calculator Tests
+# ===========================================================================
+class TestBankTransferCalculator:
+    def test_basic_flat_fees(self, client):
+        """Flat receiving + intermediary fees should be added to invoice total."""
+        resp = client.post("/api/calculate-transfer-fees", json={
+            "invoice_total": 5000.0,
+            "receiving_bank_fee_flat": 15.0,
+            "intermediary_bank_fee": 25.0,
+            "approved_by": "Test",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gross_amount_usd"] == pytest.approx(5040.0, abs=0.01)
+        assert data["total_transfer_fees_usd"] == pytest.approx(40.0, abs=0.01)
+        assert data["client_must_send_usd"] == pytest.approx(5040.0, abs=0.01)
+
+    def test_sender_pct_grossup(self, client):
+        """Sender percentage fee requires gross-up division."""
+        resp = client.post("/api/calculate-transfer-fees", json={
+            "invoice_total": 1000.0,
+            "sender_bank_fee_pct": 1.0,
+            "approved_by": "Test",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        # gross = 1000 / (1 - 0.01) ≈ 1010.10
+        assert data["gross_amount_usd"] == pytest.approx(1010.10, abs=0.1)
+
+    def test_currency_conversion(self, client):
+        """Foreign currency conversion should produce gross_amount_foreign."""
+        resp = client.post("/api/calculate-transfer-fees", json={
+            "invoice_total": 5000.0,
+            "exchange_rate": 0.92,
+            "client_currency": "EUR",
+            "approved_by": "Test",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "gross_amount_foreign" in data
+        assert data["client_currency"] == "EUR"
+        assert data["gross_amount_foreign"] == pytest.approx(5000.0 / 0.92, abs=1.0)
+
+    def test_invalid_invoice_total(self, client):
+        """invoice_total <= 0 should return 422."""
+        resp = client.post("/api/calculate-transfer-fees", json={
+            "invoice_total": 0,
+            "approved_by": "Test",
+        })
+        assert resp.status_code == 422
+
+    def test_nights_derivation(self, client):
+        """calculate-price must derive nights = days - 1 in response."""
+        resp = client.post("/api/calculate-price", json={"pax": 2, "duration_days": 5})
+        assert resp.status_code == 200
+        assert resp.json()["nights"] == 4
+
+    def test_hydrate_pricing_in_response(self, client):
+        """When guests list provided, response includes guest_breakdown."""
+        resp = client.post("/api/calculate-price", json={
+            "pax": 2, "duration_days": 4,
+            "guests": [
+                {"guest_id": "Mr. Smith", "room_type": "Double", "rate_per_night": 200, "meal_plan": "HB"},
+                {"guest_id": "Ms. Jones", "room_type": "Single", "rate_per_night": 150, "meal_plan": "BB"},
+            ],
+            "activities": [
+                {"name": "Gorilla Trek", "cost_per_person": 800},
+            ],
+        })
+        assert resp.status_code == 200
+        pd = resp.json()["pricing_data"]
+        assert len(pd["guest_breakdown"]) == 2
+        assert len(pd["activity_breakdown"]) == 1
+        # nights = 4 - 1 = 3; Mr. Smith: (200+35) * 3 = 705 + 800 = 1505
+        smith = next(g for g in pd["guest_breakdown"] if g["guest_id"] == "Mr. Smith")
+        assert smith["accommodation_total"] == pytest.approx(705.0, abs=0.1)
+        assert smith["activity_total"] == pytest.approx(800.0, abs=0.1)
+
+    def test_audit_log_endpoint(self, client):
+        """Transfer fee audit log should return items list."""
+        # Seed one calculation
+        client.post("/api/calculate-transfer-fees", json={"invoice_total": 1234.0, "approved_by": "AuditTest"})
+        resp = client.get("/api/transfer-fee-audit")
+        assert resp.status_code == 200
+        assert "items" in resp.json()
+        assert len(resp.json()["items"]) >= 1
+
+
 # ---------------------------------------------------------------------------
 # Unit Tests — Pricing Logic (direct import, no HTTP)
 # ---------------------------------------------------------------------------
