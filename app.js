@@ -543,7 +543,7 @@
   }
 
   // Expose for inline onclick use
-  window.TRVE = { navigate, loadPipeline, saveFxRateAtQuote, addActivityCost };
+  window.TRVE = { navigate, loadPipeline, saveFxRateAtQuote, addActivityCost, addVehicleItem };
 
   /* ============================================================
      SIDEBAR TOGGLE
@@ -1827,8 +1827,12 @@
       if (approvedEnq) {
         const natSel = document.getElementById('pricingNationality');
         if (natSel && approvedEnq.nationality_tier) natSel.value = approvedEnq.nationality_tier;
-        const paxEl = document.getElementById('pricingPax');
-        if (paxEl && approvedEnq.pax) paxEl.value = approvedEnq.pax;
+        const adultsEl = document.getElementById('pricingAdults');
+        const childrenEl = document.getElementById('pricingChildren');
+        if (approvedEnq.pax && adultsEl) {
+          adultsEl.value = approvedEnq.pax;
+          if (childrenEl) childrenEl.value = 0;
+        }
         const dateEl = document.getElementById('pricingTravelStartDate');
         if (dateEl && approvedEnq.travel_start_date) dateEl.value = approvedEnq.travel_start_date;
       }
@@ -1918,13 +1922,19 @@
                   natSel.value = enq.nationality_tier;
                 }
               }
-              if (enq.pax) document.getElementById('pricingPax').value = enq.pax;
+              if (enq.pax) {
+                const aEl = document.getElementById('pricingAdults');
+                if (aEl) aEl.value = enq.pax;
+                const cEl = document.getElementById('pricingChildren');
+                if (cEl) cEl.value = 0;
+              }
               if (enq.travel_start_date) document.getElementById('pricingTravelStartDate').value = enq.travel_start_date;
             }
           }
 
-          // Update permit labels for the new date/tier context
+          // Update permit labels and activity prices for the new date/tier context
           updatePermitLabels();
+          renderActivityPresets();
 
           // Validate nationality is set — warn if missing
           const tierVal = document.getElementById('pricingNationality').value;
@@ -1990,16 +2000,28 @@
       ? state.lodges.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')
       : '<option value="" disabled>⚠ No lodges — check backend connection</option>';
 
+    // Default adults/children from global fields
+    const defaultAdults = parseInt(document.getElementById('pricingAdults')?.value) || 2;
+    const defaultChildren = parseInt(document.getElementById('pricingChildren')?.value) || 0;
+
     el.innerHTML = `
       <div class="lodge-item-body">
         <select class="form-control" name="lodge_name_${idx}" style="margin-bottom:6px">
           <option value="">— Select lodge —</option>
           ${lodgeOptions}
         </select>
-        <select class="form-control" name="room_type_${idx}" style="font-size:var(--text-xs);margin-bottom:8px">
+        <select class="form-control" name="room_type_${idx}" style="font-size:var(--text-xs);margin-bottom:6px">
           <option value="">— select lodge first —</option>
         </select>
-        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+        <div style="margin-bottom:6px">
+          <label style="font-size:var(--text-xs);font-weight:600;color:var(--text-muted);display:block;margin-bottom:3px">Meal Plan</label>
+          <select class="form-control" name="meal_plan_${idx}" style="font-size:var(--text-xs)">
+            <option value="BB">BB — Bed &amp; Breakfast (base rate)</option>
+            <option value="HB">HB — Half Board (+$35/person/night)</option>
+            <option value="FB">FB — Full Board (+$65/person/night)</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:4px">
           <span class="lodge-nights-pill" title="Number of nights at this lodge">
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v1.5M5.5 8.5V10M1 5.5h1.5M8.5 5.5H10M2.6 2.6l1 1M7.4 7.4l1 1M2.6 8.4l1-1M7.4 3.6l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
             <input type="number" name="nights_${idx}" min="1" value="1" title="Nights at this lodge">
@@ -2010,6 +2032,22 @@
             <input type="number" name="rooms_${idx}" min="1" value="1" title="Rooms of this type">
             room(s)
           </span>
+        </div>
+        <div class="lodge-guest-row" style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:var(--text-xs);color:var(--text-muted)">Guests in this room type:</span>
+          <label style="display:flex;align-items:center;gap:3px;font-size:var(--text-xs);font-weight:600;color:var(--brand-green)">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="3" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M1 9c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            Adults
+            <input type="number" class="form-control" name="row_adults_${idx}" min="0" value="${defaultAdults}"
+              style="width:42px;height:24px;font-size:var(--text-xs);padding:2px 4px">
+          </label>
+          <label style="display:flex;align-items:center;gap:3px;font-size:var(--text-xs);font-weight:600;color:var(--brand-gold-dark)">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="2.5" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 9c0-1.7 1.3-3 3-3s3 1.3 3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            Children
+            <input type="number" class="form-control" name="row_children_${idx}" min="0" value="${defaultChildren}"
+              style="width:42px;height:24px;font-size:var(--text-xs);padding:2px 4px">
+          </label>
+          <span style="font-size:var(--text-xs);color:var(--text-muted)">(children 50% room rate)</span>
         </div>
       </div>
       <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.lodge-item').remove()" title="Remove lodge">
@@ -2025,6 +2063,110 @@
       lodgeSelect.addEventListener('change', function() {
         populateRoomTypes(this.value, roomTypeSelect);
       });
+    }
+  }
+
+  // Vehicle types and default rates
+  const VEHICLE_TYPES = [
+    { value: '4x4 Safari Vehicle', label: '4x4 Safari Vehicle (Land Cruiser)', rate: 120, seats: 7 },
+    { value: 'Safari Minivan', label: 'Safari Minivan / Hiace', rate: 100, seats: 8 },
+    { value: 'Coaster Bus', label: 'Coaster Bus (large groups)', rate: 150, seats: 26 },
+    { value: 'Self-Drive 4x4', label: 'Self-Drive 4x4 (fuel excl.)', rate: 90, seats: 5 },
+    { value: 'Airport Shuttle', label: 'Airport Shuttle (Entebbe)', rate: 60, seats: 4 },
+    { value: 'Boat Transfer', label: 'Boat Transfer / Water Taxi', rate: 80, seats: 10 },
+  ];
+
+  function _initVehicleDropdown() {
+    const sel = document.getElementById('vehicleDropdown');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Select vehicle type —</option>';
+    VEHICLE_TYPES.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.value;
+      opt.textContent = `${v.label} — $${v.rate}/day`;
+      opt.dataset.rate = v.rate;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', _updateVehicleHint);
+  }
+
+  function _updateVehicleHint() {
+    const sel = document.getElementById('vehicleDropdown');
+    const hint = document.getElementById('vehicleDropdownHint');
+    if (!sel || !hint) return;
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.value) {
+      hint.textContent = 'Select a vehicle type then click Add';
+      return;
+    }
+    const v = VEHICLE_TYPES.find(x => x.value === opt.value);
+    const days = parseInt(document.getElementById('vehicleDaysInput')?.value) || 1;
+    const fuelBuf = parseFloat(document.getElementById('fuelBufferInput')?.value || '10');
+    const total = days * v.rate * (1 + fuelBuf / 100);
+    hint.textContent = `$${v.rate}/day · ${v.seats} seats · ${days} day(s) ≈ $${total.toFixed(0)} incl. ${fuelBuf}% fuel buffer`;
+  }
+
+  function addVehicleItem(presetType, presetRate) {
+    const container = document.getElementById('vehicleItems');
+    if (!container) return;
+
+    // Resolve type and rate — from dropdown selection or preset args
+    const dropdownSel = document.getElementById('vehicleDropdown');
+    const dropdownDays = document.getElementById('vehicleDaysInput');
+    const selectedType = presetType || (dropdownSel ? dropdownSel.value : '') || VEHICLE_TYPES[0].value;
+    const vDef = VEHICLE_TYPES.find(v => v.value === selectedType) || VEHICLE_TYPES[0];
+    const defaultRate = presetRate || vDef.rate;
+    const defaultDays = parseInt(dropdownDays?.value) || Math.max(1, (parseInt(document.getElementById('pricingDays')?.value) || 7) - 1);
+
+    if (!selectedType) {
+      toast('warning', 'No vehicle selected', 'Please select a vehicle type from the dropdown');
+      return;
+    }
+
+    const idx = container.children.length;
+    const el = document.createElement('div');
+    el.className = 'vehicle-item';
+    el.style.cssText = 'display:flex;align-items:center;gap:8px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 12px;margin-bottom:6px;flex-wrap:wrap';
+    el.innerHTML = `
+      <span style="font-size:var(--text-xs);font-weight:600;flex:1;min-width:140px">${escapeHtml(selectedType)}</span>
+      <input type="hidden" name="veh_type_${idx}" value="${escapeHtml(selectedType)}">
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px">
+        Days:
+        <input type="number" class="form-control" name="veh_days_${idx}" min="1" value="${defaultDays}"
+          style="width:52px;height:28px;font-size:var(--text-xs);padding:2px 6px">
+      </label>
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:flex;align-items:center;gap:4px">
+        $/day:
+        <input type="number" class="form-control" name="veh_rate_${idx}" min="0" value="${defaultRate}"
+          style="width:60px;height:28px;font-size:var(--text-xs);padding:2px 6px">
+      </label>
+      <span class="veh-cost-preview" style="font-size:var(--text-xs);color:var(--brand-green);font-weight:600;min-width:80px"></span>
+      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.vehicle-item').remove()" title="Remove">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    `;
+    container.appendChild(el);
+
+    const daysInput = el.querySelector(`[name^="veh_days_"]`);
+    const rateInput = el.querySelector(`[name^="veh_rate_"]`);
+    const preview = el.querySelector('.veh-cost-preview');
+
+    function updateVehPreview() {
+      const d = parseInt(daysInput.value) || 0;
+      const r = parseFloat(rateInput.value) || 0;
+      const fuelBuf = parseFloat(document.getElementById('fuelBufferInput')?.value || '10') / 100;
+      const total = d * r * (1 + fuelBuf);
+      preview.textContent = total > 0 ? `≈ $${total.toFixed(0)}` : '';
+    }
+
+    daysInput.addEventListener('input', updateVehPreview);
+    rateInput.addEventListener('input', updateVehPreview);
+    updateVehPreview();
+
+    // Reset dropdown to placeholder after adding
+    if (dropdownSel && !presetType) {
+      dropdownSel.value = '';
+      _updateVehicleHint();
     }
   }
 
@@ -2207,42 +2349,73 @@
   // Max times the same activity can be added per itinerary
   const ACTIVITY_MAX_USES = 1;
 
+  // Get the price for an activity adjusted to the current nationality tier
+  function getActivityPriceForTier(act, tier) {
+    if (act.tier_rates && act.tier_rates[tier] != null) {
+      return act.tier_rates[tier];
+    }
+    return act.default_usd || 0;
+  }
+
   function renderActivityPresets() {
-    const container = document.getElementById('activityPresets');
-    if (!container || !state.activities) return;
-    const categories = [...new Set(state.activities.map(a => a.category))];
-    let html = '';
+    const sel = document.getElementById('activityDropdown');
+    if (!sel || !state.activities) return;
+    const tier = document.getElementById('pricingNationality')?.value || 'FNR';
+    const catOrder = ['activity', 'transport', 'flight', 'transfer', 'visa', 'conservation', 'gratuity', 'health', 'insurance'];
+    const categories = [...new Set(state.activities.map(a => a.category))].sort((a, b) => {
+      const ai = catOrder.indexOf(a), bi = catOrder.indexOf(b);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+
+    // Remember previously selected value so we can restore it after re-render
+    const prevVal = sel.value;
+
+    // Rebuild options
+    sel.innerHTML = '<option value="">— Select an activity —</option>';
     for (const cat of categories) {
       const items = state.activities.filter(a => a.category === cat);
-      html += `<div style="margin-bottom:var(--space-2)">
-        <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:4px">${cat}</div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px">
-          ${items.map(a => `
-            <button type="button" class="ai-suggestion-chip activity-chip"
-              data-activity-id="${escapeHtml(a.id)}"
-              onclick="window.TRVE.addActivityCost('${escapeHtml(a.id)}', '${escapeHtml(a.name)}', ${a.default_usd}, ${a.per_person})"
-              title="${escapeHtml(a.notes || '')}">
-              ${escapeHtml(a.name)}${a.default_usd > 0 ? ` ($${a.default_usd})` : ''}
-            </button>
-          `).join('')}
-        </div>
-      </div>`;
+      const grp = document.createElement('optgroup');
+      grp.label = cat.charAt(0).toUpperCase() + cat.slice(1);
+      for (const a of items) {
+        const price = getActivityPriceForTier(a, tier);
+        const hasTiers = !!(a.tier_rates);
+        const priceLabel = price > 0 ? ` — $${price}${hasTiers ? ` (${tier})` : ''}` : '';
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = `${a.name}${priceLabel}`;
+        opt.dataset.activityId = a.id;
+        opt.dataset.tierPrice = price;
+        opt.dataset.perPerson = a.per_person ? '1' : '0';
+        opt.title = a.notes || '';
+        grp.appendChild(opt);
+      }
+      sel.appendChild(grp);
     }
-    container.innerHTML = html;
-    // Re-apply disabled state if activities were previously added
-    _syncActivityButtonStates();
+
+    // Restore selection if still present
+    if (prevVal) sel.value = prevVal;
+
+    // Update hint with selected price info
+    _updateActivityHint(sel, tier);
+  }
+
+  function _updateActivityHint(sel, tier) {
+    const hint = document.getElementById('activityDropdownHint');
+    if (!hint) return;
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.value) {
+      hint.textContent = 'Select an activity then click Add to append it to the quotation';
+      return;
+    }
+    const price = parseFloat(opt.dataset.tierPrice) || 0;
+    const pp = opt.dataset.perPerson === '1';
+    hint.textContent = price > 0
+      ? `Price: $${price}${pp ? ' per person' : ' flat'} · nationality tier: ${tier || 'FNR'}`
+      : 'No standard price — edit manually after adding';
   }
 
   function _syncActivityButtonStates() {
-    const added = state.addedActivities || {};
-    document.querySelectorAll('.activity-chip[data-activity-id]').forEach(btn => {
-      const id = btn.dataset.activityId;
-      const count = added[id] || 0;
-      const atLimit = count >= ACTIVITY_MAX_USES;
-      btn.disabled = atLimit;
-      btn.style.opacity = atLimit ? '0.4' : '';
-      btn.title = atLimit ? '✓ Already added to this itinerary' : (btn.getAttribute('title') || '');
-    });
+    // No-op: chip buttons replaced by dropdown; kept for call-site compatibility
   }
 
   function addActivityCost(actId, name, amount, perPerson) {
@@ -2252,8 +2425,19 @@
       toast('warning', 'Already added', `${name} has already been added to this itinerary`);
       return;
     }
-    // Pre-fill the extra cost row with activity name and price from database
-    addPresetExtraCost(name, amount);
+    // Read nationality-adjusted price from dropdown option if available
+    const sel = document.getElementById('activityDropdown');
+    const opt = sel ? Array.from(sel.options).find(o => o.value === actId) : null;
+    const tierPrice = opt ? parseFloat(opt.dataset.tierPrice) : NaN;
+    const finalAmount = !isNaN(tierPrice) ? tierPrice : amount;
+
+    // Lookup per_person flag from catalogue to auto-set label
+    const act = (state.activities || []).find(a => a.id === actId);
+    const hasTiers = !!(act && act.tier_rates);
+    const tier = document.getElementById('pricingNationality')?.value || 'FNR';
+    const labelSuffix = hasTiers ? ` [${tier}]` : '';
+
+    addPresetExtraCost(`${name}${labelSuffix}`, finalAmount);
     // Track and disable button
     state.addedActivities[actId] = count + 1;
     _syncActivityButtonStates();
@@ -2267,6 +2451,13 @@
     document.getElementById('btnAddLodge').addEventListener('click', addLodgeItem);
     document.getElementById('btnAddExtra').addEventListener('click', addExtraCost);
 
+    // Transport section — dropdown + Add button
+    _initVehicleDropdown();
+    const btnAddVehicle = document.getElementById('btnAddVehicle');
+    if (btnAddVehicle) btnAddVehicle.addEventListener('click', () => addVehicleItem());
+    const vDaysInput = document.getElementById('vehicleDaysInput');
+    if (vDaysInput) vDaysInput.addEventListener('input', _updateVehicleHint);
+
     // MINOR-32: Preset extra cost buttons
     document.getElementById('btnAddVisaFee').addEventListener('click', () => {
       addPresetExtraCost('Uganda Single-Entry Visa (per person)', 50);
@@ -2275,10 +2466,41 @@
       addPresetExtraCost('Entebbe Airport Return Transfer', 150);
     });
 
-    // Wire up dynamic permit label updates on nationality tier or travel date change
+    // Activity dropdown: change → update hint; Add button → addActivityCost
+    const actDropdown = document.getElementById('activityDropdown');
+    const btnAddActivity = document.getElementById('btnAddActivity');
+    if (actDropdown) {
+      actDropdown.addEventListener('change', () => {
+        const tier = document.getElementById('pricingNationality')?.value || 'FNR';
+        _updateActivityHint(actDropdown, tier);
+      });
+    }
+    if (btnAddActivity) {
+      btnAddActivity.addEventListener('click', () => {
+        const sel = document.getElementById('activityDropdown');
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        if (!opt || !opt.value) {
+          toast('warning', 'No activity selected', 'Please select an activity from the dropdown first');
+          return;
+        }
+        const act = (state.activities || []).find(a => a.id === opt.value);
+        if (!act) return;
+        const price = parseFloat(opt.dataset.tierPrice) || 0;
+        addActivityCost(act.id, act.name, price, act.per_person);
+        // Reset dropdown to placeholder after adding
+        sel.value = '';
+        const tier = document.getElementById('pricingNationality')?.value || 'FNR';
+        _updateActivityHint(sel, tier);
+      });
+    }
+
+    // Wire up dynamic permit label updates AND activity price updates on nationality / date change
     const natSel = document.getElementById('pricingNationality');
     const dateSel = document.getElementById('pricingTravelStartDate');
-    if (natSel) natSel.addEventListener('change', updatePermitLabels);
+    if (natSel) natSel.addEventListener('change', () => {
+      updatePermitLabels();
+      renderActivityPresets(); // re-render dropdown with nationality-adjusted prices
+    });
     if (dateSel) dateSel.addEventListener('change', updatePermitLabels);
     // Initial label render
     updatePermitLabels();
@@ -2405,14 +2627,32 @@
     }
 
     try {
-      // Build accommodations array
+      const adults = parseInt(document.getElementById('pricingAdults').value) || 2;
+      const children = parseInt(document.getElementById('pricingChildren').value) || 0;
+
+      // Build accommodations array (with meal plan and per-row guest assignment)
       const accommodations = [];
-      document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, i) => {
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach((row) => {
         const lodge = row.querySelector(`[name^="lodge_name_"]`)?.value;
         const roomType = row.querySelector(`[name^="room_type_"]`)?.value || 'standard';
         const nights = parseInt(row.querySelector(`[name^="nights_"]`)?.value) || 1;
         const rooms = parseInt(row.querySelector(`[name^="rooms_"]`)?.value) || 1;
-        if (lodge) accommodations.push({ lodge, room_type: roomType, nights, rooms });
+        const mealPlan = row.querySelector(`[name^="meal_plan_"]`)?.value || 'BB';
+        const rowAdults = parseInt(row.querySelector(`[name^="row_adults_"]`)?.value) || adults;
+        const rowChildren = parseInt(row.querySelector(`[name^="row_children_"]`)?.value) || children;
+        if (lodge) accommodations.push({
+          lodge, room_type: roomType, nights, rooms,
+          meal_plan: mealPlan, adults: rowAdults, children: rowChildren
+        });
+      });
+
+      // Build vehicles array (explicit optional transport — no auto-insertion)
+      const vehicles = [];
+      document.querySelectorAll('#vehicleItems .vehicle-item').forEach((row) => {
+        const vtype = row.querySelector(`[name^="veh_type_"]`)?.value;
+        const vdays = parseInt(row.querySelector(`[name^="veh_days_"]`)?.value) || 1;
+        const vrate = parseFloat(row.querySelector(`[name^="veh_rate_"]`)?.value) || 120;
+        if (vtype) vehicles.push({ type: vtype, days: vdays, rate: vrate });
       });
 
       // Build permits array
@@ -2434,18 +2674,17 @@
       const payload = {
         itinerary_id: document.getElementById('pricingItinerary').value || null,
         nationality_tier: document.getElementById('pricingNationality').value,
-        pax: parseInt(document.getElementById('pricingPax').value) || 2,
+        adults,
+        children,
+        pax: adults + children,
         duration_days: parseInt(document.getElementById('pricingDays').value) || 7,
-        extra_vehicle_days: parseInt(document.getElementById('pricingVehicleDays').value) || 0,
         travel_start_date: document.getElementById('pricingTravelStartDate').value || null,
         include_insurance: document.getElementById('pricingIncludeInsurance').checked,
         commission_type: document.getElementById('pricingCommissionType').value || null,
-        accommodations: accommodations,
-        permits: permits,
-        extra_costs: extra_costs,
-        fuel_vehicle_type: document.getElementById('pricingFuelVehicleType')?.value || null,
-        fuel_route_km: parseFloat(document.getElementById('pricingFuelRouteKm')?.value) || null,
-        fuel_price_ugx: parseFloat(document.getElementById('pricingFuelPriceUgx')?.value) || 4690,
+        accommodations,
+        vehicles,
+        permits,
+        extra_costs,
       };
 
       const result = await apiFetch('/api/calculate-price', { method: 'POST', body: payload });
@@ -2496,7 +2735,7 @@
       <!-- Trip Header Card -->
       <div class="price-summary-card mb-5">
         <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.55);margin-bottom:var(--space-2)">
-          ${escapeHtml(result.nationality_tier || payload.nationality_tier || '—')} &middot; ${result.duration_days || '—'} Days &middot; ${result.pax || payload.pax || '—'} Pax
+          ${escapeHtml(result.nationality_tier || payload.nationality_tier || '—')} &middot; ${result.duration_days || '—'} Days &middot; ${result.adults || payload.adults || result.pax || '—'} Adults${(result.children || payload.children) ? ` + ${result.children || payload.children} Children` : ''}
         </div>
         <div style="font-size:var(--text-base);font-weight:600;color:#FFFFFF;margin-bottom:var(--space-4);line-height:1.4">
           ${escapeHtml(result.itinerary || 'Custom Trip')}

@@ -1800,7 +1800,9 @@ class EnquiryUpdate(BaseModel):
 class PricingRequest(BaseModel):
     itinerary_id: Optional[str] = None
     nationality_tier: str = "FNR"
-    pax: int = 2
+    pax: int = 2            # kept for backward compat; overridden by adults+children if provided
+    adults: int = 2
+    children: int = 0
     duration_days: Optional[int] = 7
     extra_vehicle_days: Optional[int] = 0
     travel_start_date: Optional[str] = None
@@ -1809,6 +1811,7 @@ class PricingRequest(BaseModel):
     accommodations: Optional[List[dict]] = []
     permits: Optional[List[dict]] = []
     extra_costs: Optional[List[dict]] = []
+    vehicles: Optional[List[dict]] = []   # explicit optional transport add-ons
 
 
 class CurateRequest(BaseModel):
@@ -2122,34 +2125,63 @@ def list_lodges():
 
 
 # --- Activities & Structured Costs ---
+# tier_rates: nationality-tiered prices where UWA / park operator applies differential pricing.
+# Activities WITHOUT tier_rates have fixed prices regardless of nationality.
+# Tiers: FNR (Foreign Non-Resident), FR (Foreign Resident), ROA (Rest of Africa),
+#         EAC (East African Community), Ugandan
 ACTIVITY_CATALOGUE = [
-    {"id": "boat_cruise_kazinga", "name": "Boat Cruise — Kazinga Channel", "category": "activity", "default_usd": 30, "per_person": True, "notes": "2-hour cruise, QENP"},
-    {"id": "boat_cruise_murchison", "name": "Boat Cruise — Murchison Falls", "category": "activity", "default_usd": 30, "per_person": True, "notes": "3-hour cruise to base of falls"},
+    # UWA-governed boat cruises — nationality-tiered (UWA tariff 2024-2026)
+    {"id": "boat_cruise_kazinga", "name": "Boat Cruise — Kazinga Channel",
+     "category": "activity", "default_usd": 40, "per_person": True,
+     "tier_rates": {"FNR": 40, "FR": 30, "ROA": 25, "EAC": 15, "Ugandan": 15},
+     "notes": "2-hour cruise, QENP. UWA-tiered rate."},
+    {"id": "boat_cruise_murchison", "name": "Boat Cruise — Murchison Falls (Nile)",
+     "category": "activity", "default_usd": 40, "per_person": True,
+     "tier_rates": {"FNR": 40, "FR": 30, "ROA": 25, "EAC": 15, "Ugandan": 15},
+     "notes": "3-hour cruise to base of falls. UWA-tiered rate."},
+    # UWA-governed nature walks inside parks
+    {"id": "nature_walk_forest", "name": "Guided Forest Nature Walk (park)",
+     "category": "activity", "default_usd": 30, "per_person": True,
+     "tier_rates": {"FNR": 30, "FR": 25, "ROA": 20, "EAC": 10, "Ugandan": 10},
+     "notes": "Inside national park boundary. UWA-tiered rate."},
+    {"id": "birdwatching_guided", "name": "Guided Birding Walk (park)",
+     "category": "activity", "default_usd": 30, "per_person": True,
+     "tier_rates": {"FNR": 30, "FR": 25, "ROA": 20, "EAC": 10, "Ugandan": 10},
+     "notes": "2-3 hours with specialist guide inside park. UWA-tiered rate."},
+    # Fixed-price activities (private operators — nationality does not affect price)
     {"id": "game_drive_half", "name": "Game Drive — Half Day", "category": "activity", "default_usd": 0, "per_person": False, "notes": "Included in vehicle hire"},
-    {"id": "rhino_tracking_ziwa", "name": "Rhino Tracking — Ziwa Sanctuary", "category": "activity", "default_usd": 40, "per_person": True, "notes": "Per person, walk-based"},
-    {"id": "community_walk", "name": "Community/Village Walk", "category": "activity", "default_usd": 20, "per_person": True, "notes": "Bigodi, Batwa Trail, etc."},
-    {"id": "canoe_bunyonyi", "name": "Canoe — Lake Bunyonyi", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Half-day canoe rental"},
-    {"id": "birdwatching_guided", "name": "Guided Birding Walk", "category": "activity", "default_usd": 25, "per_person": True, "notes": "2-3 hours with specialist guide"},
-    {"id": "cultural_batwa", "name": "Batwa Trail — Cultural Experience", "category": "activity", "default_usd": 45, "per_person": True, "notes": "Bwindi cultural immersion"},
-    {"id": "nature_walk_forest", "name": "Guided Forest Nature Walk", "category": "activity", "default_usd": 20, "per_person": True, "notes": "Self-guided or guided"},
-    {"id": "sport_fishing", "name": "Sport Fishing — Nile/Lake Victoria", "category": "activity", "default_usd": 50, "per_person": True, "notes": "Per rod per day"},
-    {"id": "white_water_jinja", "name": "White-Water Rafting — Jinja", "category": "activity", "default_usd": 140, "per_person": True, "notes": "Full day, Grade 5 Nile rapids"},
-    {"id": "bungee_jinja", "name": "Bungee Jump — Jinja", "category": "activity", "default_usd": 115, "per_person": True, "notes": "Over the Nile"},
-    {"id": "quad_bike", "name": "Quad Biking", "category": "activity", "default_usd": 90, "per_person": True, "notes": "Jinja / Entebbe"},
-    {"id": "horse_riding", "name": "Horse Riding Safari", "category": "activity", "default_usd": 80, "per_person": True, "notes": "Lake Mburo area"},
+    {"id": "rhino_tracking_ziwa", "name": "Rhino Tracking — Ziwa Sanctuary", "category": "activity", "default_usd": 40, "per_person": True, "notes": "Private sanctuary, fixed rate per person"},
+    {"id": "community_walk", "name": "Community/Village Walk", "category": "activity", "default_usd": 20, "per_person": True, "notes": "Bigodi, Batwa Trail, etc. Fixed community rate."},
+    {"id": "canoe_bunyonyi", "name": "Canoe — Lake Bunyonyi", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Half-day canoe rental, fixed rate"},
+    {"id": "cultural_batwa", "name": "Batwa Trail — Cultural Experience", "category": "activity", "default_usd": 45, "per_person": True, "notes": "Bwindi cultural immersion, fixed community rate"},
+    {"id": "sport_fishing", "name": "Sport Fishing — Nile/Lake Victoria", "category": "activity", "default_usd": 50, "per_person": True, "notes": "Per rod per day, private operator"},
+    {"id": "white_water_jinja", "name": "White-Water Rafting — Jinja", "category": "activity", "default_usd": 140, "per_person": True, "notes": "Full day, Grade 5 Nile rapids, private operator"},
+    {"id": "bungee_jinja", "name": "Bungee Jump — Jinja", "category": "activity", "default_usd": 115, "per_person": True, "notes": "Over the Nile, private operator"},
+    {"id": "quad_bike", "name": "Quad Biking", "category": "activity", "default_usd": 90, "per_person": True, "notes": "Jinja / Entebbe, private operator"},
+    {"id": "horse_riding", "name": "Horse Riding Safari", "category": "activity", "default_usd": 80, "per_person": True, "notes": "Lake Mburo area, private operator"},
+    {"id": "porter_bwindi", "name": "Porter — Gorilla/Chimp Trek", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Highly recommended, per trek, fixed"},
+    # Transport (optional add-ons — must be explicitly selected; NOT auto-inserted)
+    {"id": "vehicle_4x4_landcruiser", "name": "4x4 Land Cruiser (hire)", "category": "transport", "default_usd": 120, "per_person": False, "notes": "Per vehicle per day. Select days in Transport section."},
+    {"id": "vehicle_minivan", "name": "Safari Minivan / Hiace (hire)", "category": "transport", "default_usd": 100, "per_person": False, "notes": "Per vehicle per day."},
+    {"id": "vehicle_coaster", "name": "Coaster Bus (hire)", "category": "transport", "default_usd": 150, "per_person": False, "notes": "Per vehicle per day, large groups."},
+    {"id": "vehicle_selfdrive", "name": "Self-Drive 4x4 Rental", "category": "transport", "default_usd": 90, "per_person": False, "notes": "Per vehicle per day, fuel not included."},
+    # Flights
     {"id": "internal_flight_ebb_mfc", "name": "Internal Flight — EBB to Murchison", "category": "flight", "default_usd": 280, "per_person": True, "notes": "Aerolink Uganda one-way"},
     {"id": "internal_flight_ebb_kidepo", "name": "Internal Flight — EBB to Kidepo", "category": "flight", "default_usd": 320, "per_person": True, "notes": "Aerolink Uganda one-way"},
     {"id": "internal_flight_ebb_bwindi", "name": "Internal Flight — EBB to Bwindi (Kihihi)", "category": "flight", "default_usd": 250, "per_person": True, "notes": "Aerolink Uganda one-way"},
     {"id": "internal_flight_ebb_kla", "name": "Internal Flight — Kigali to Bwindi", "category": "flight", "default_usd": 300, "per_person": True, "notes": "One-way cross-border connection"},
+    # Transfers
     {"id": "transfer_entebbe", "name": "Airport Transfer — Entebbe/Kampala", "category": "transfer", "default_usd": 80, "per_person": False, "notes": "Per vehicle one-way"},
     {"id": "transfer_kigali", "name": "Airport Transfer — Kigali", "category": "transfer", "default_usd": 60, "per_person": False, "notes": "Per vehicle one-way"},
+    # Visas & Health
     {"id": "visa_uganda", "name": "Uganda Entry Visa", "category": "visa", "default_usd": 50, "per_person": True, "notes": "EAC members exempt"},
     {"id": "visa_rwanda", "name": "Rwanda Entry Visa", "category": "visa", "default_usd": 50, "per_person": True, "notes": "Most nationalities on arrival"},
+    {"id": "covid_test", "name": "PCR / Health Certificate (if required)", "category": "health", "default_usd": 60, "per_person": True, "notes": "Check current requirements"},
+    # Conservation
     {"id": "conservancy_fee", "name": "Community Conservancy Fee", "category": "conservation", "default_usd": 20, "per_person": True, "notes": "Various private conservancies"},
     {"id": "park_dev_levy", "name": "Park Development Levy", "category": "conservation", "default_usd": 5, "per_person": True, "notes": "Per park entry in Uganda"},
+    # Misc
     {"id": "driver_guide_tip", "name": "Driver-Guide Gratuity (suggested)", "category": "gratuity", "default_usd": 20, "per_person": False, "notes": "Per day suggestion"},
-    {"id": "porter_bwindi", "name": "Porter — Gorilla/Chimp Trek", "category": "activity", "default_usd": 15, "per_person": True, "notes": "Highly recommended, per trek"},
-    {"id": "covid_test", "name": "PCR / Health Certificate (if required)", "category": "health", "default_usd": 60, "per_person": True, "notes": "Check current requirements"},
     {"id": "travel_insurance_ext", "name": "Travel Insurance (external quote)", "category": "insurance", "default_usd": 0, "per_person": True, "notes": "Client arranges — amount varies"},
 ]
 
@@ -2390,10 +2422,17 @@ def approve_itinerary(enquiry_id: str, body: ApprovalRequest):
 # --- Pricing Calculator ---
 @app.post("/api/calculate-price")
 def calculate_price(body: PricingRequest):
-    pax = body.pax or 2
+    # Resolve guest counts — adults+children take precedence over legacy pax
+    adults = body.adults if body.adults > 0 else body.pax
+    children = max(0, body.children)
+    pax = adults + children          # total headcount (used for insurance/permits)
     days = body.duration_days or 7
     tier = body.nationality_tier or "FNR"
     travel_date = body.travel_start_date
+
+    # Meal plan surcharges per person per night (USD, on top of room rate)
+    # BB = Bed & Breakfast (base), HB = Half Board, FB = Full Board
+    MEAL_SURCHARGE = {"BB": 0, "HB": 35, "FB": 65}
 
     # 1. Accommodation
     accommodation_total = 0.0
@@ -2404,29 +2443,30 @@ def calculate_price(body: PricingRequest):
                 lodge_name = acc.get("lodge") or acc.get("lodge_name", "")
                 room = acc.get("room_type", "standard")
                 nights = acc.get("nights", 1)
-                # FIX: Try exact room_type match first (UI now sends exact DB values)
-                # ORDER BY net_rate_usd ASC → returns base/low-season rate as default
-                # Separate single supplement logic prevents double rate being returned for singles
+                rooms = max(1, acc.get("rooms", 1))
+                meal_plan = (acc.get("meal_plan") or "BB").upper()
+                # Per-row guest breakdown (if provided by UI); fallback to global
+                acc_adults = acc.get("adults", adults)
+                acc_children = acc.get("children", children)
+                # Meal plan surcharge per person per night
+                meal_surcharge = MEAL_SURCHARGE.get(meal_plan, 0)
+                # Lookup rate from DB (same fallback chain as before)
                 row = conn.execute(
                     "SELECT net_rate_usd FROM lodges WHERE lodge_name = ? AND room_type = ? ORDER BY net_rate_usd ASC LIMIT 1",
                     (lodge_name, room)
                 ).fetchone()
                 if not row:
-                    # Fallback 1: LIKE match (handles partial values / legacy data)
                     row = conn.execute(
                         "SELECT net_rate_usd FROM lodges WHERE lodge_name = ? AND room_type LIKE ? ORDER BY net_rate_usd ASC LIMIT 1",
                         (lodge_name, f"%{room}%")
                     ).fetchone()
                 if not row:
-                    # Fallback 2: lodge name only — prefer double/twin as base occupancy
-                    # Do NOT silently return single room data for double selections or vice versa
                     row = conn.execute(
                         "SELECT net_rate_usd FROM lodges WHERE lodge_name = ? "
                         "ORDER BY CASE WHEN lower(room_type) LIKE '%double%' OR lower(room_type) LIKE '%twin%' THEN 0 ELSE 1 END, net_rate_usd ASC LIMIT 1",
                         (lodge_name,)
                     ).fetchone()
                 if not row:
-                    # Fallback 3: fuzzy lodge name match
                     row = conn.execute(
                         "SELECT net_rate_usd FROM lodges WHERE lodge_name LIKE ? ORDER BY net_rate_usd ASC LIMIT 1",
                         (f"%{lodge_name}%",)
@@ -2436,31 +2476,42 @@ def calculate_price(body: PricingRequest):
                 else:
                     rate = acc.get("rate_per_night", 0)
                 name = lodge_name or "Lodge"
-                line_total = nights * rate * pax
+                # Adults at full rate + meal surcharge; children at 50% room rate + full meal surcharge
+                adult_rate_total = acc_adults * (rate + meal_surcharge)
+                child_rate_total = acc_children * (rate * 0.5 + meal_surcharge)
+                line_total = rooms * nights * (adult_rate_total + child_rate_total)
                 accommodation_total += line_total
+                meal_label = f" [{meal_plan}]" if meal_plan != "BB" else ""
+                child_note = f" ({acc_adults}A+{acc_children}C)" if acc_children > 0 else f" ({acc_adults} adults)"
                 accommodation_lines.append({
-                    "description": f"{name} — {room}",
+                    "description": f"{name} — {room}{meal_label}{child_note}",
                     "nights": nights,
+                    "rooms": rooms,
                     "rate_per_night": rate,
-                    "pax": pax,
+                    "meal_plan": meal_plan,
+                    "adults": acc_adults,
+                    "children": acc_children,
                     "total": round(line_total, 2),
                 })
 
-    # 2. Vehicle
-    # If extra_vehicle_days is explicitly set (>0) the frontend sends total vehicle days;
-    # otherwise derive from duration (arrival day has no full game drive).
-    if body.extra_vehicle_days and body.extra_vehicle_days > 0:
-        v_days = body.extra_vehicle_days
-    else:
-        v_days = max(1, days - 1)
-    vehicle_rate = CONFIG["vehicle_rate_per_day"]
-    vehicle_total = v_days * vehicle_rate
-    # Apply fuel buffer
+    # 2. Vehicles — EXPLICIT ONLY (user must select; no automatic insertion)
+    vehicle_total = 0.0
+    vehicle_lines = []
     fuel_buffer_pct = CONFIG.get("fuel_buffer_pct", 0)
-    if fuel_buffer_pct:
-        vehicle_total = vehicle_total * (1 + fuel_buffer_pct / 100)
+    if body.vehicles:
+        for veh in body.vehicles:
+            v_type = veh.get("type", "4x4 Safari Vehicle")
+            v_days = max(1, veh.get("days", 1))
+            v_rate = veh.get("rate", CONFIG["vehicle_rate_per_day"])
+            v_buf = veh.get("fuel_buffer_pct", fuel_buffer_pct)
+            v_total = v_days * v_rate * (1 + v_buf / 100)
+            vehicle_total += v_total
+            vehicle_lines.append({
+                "type": v_type, "days": v_days, "rate": v_rate,
+                "fuel_buffer_pct": v_buf, "total": round(v_total, 2)
+            })
 
-    # 3. Permits
+    # 3. Permits — per person, nationality-tiered
     permit_total = 0.0
     permit_lines = []
     if body.permits:
@@ -2479,7 +2530,7 @@ def calculate_price(body: PricingRequest):
             })
             permit_total += line_total
 
-    # 4. Insurance
+    # 4. Insurance (full pax)
     insurance_total = 0.0
     if body.include_insurance:
         insurance_rate = CONFIG["insurance_rate_per_person_per_day"]
@@ -2492,13 +2543,13 @@ def calculate_price(body: PricingRequest):
         for ex in body.extra_costs:
             desc = ex.get("description", "Extra")
             amount = ex.get("amount", 0)
-            per_person = ex.get("per_person", False)
-            line_total = amount * pax if per_person else amount
+            per_person_flag = ex.get("per_person", False)
+            line_total = amount * pax if per_person_flag else amount
             extras_total += line_total
             extra_lines.append({
                 "description": desc,
                 "amount": amount,
-                "per_person": per_person,
+                "per_person": per_person_flag,
                 "total": round(line_total, 2),
             })
 
@@ -2509,15 +2560,15 @@ def calculate_price(body: PricingRequest):
     commission_pct = 0.0
     commission_label = ""
     if body.commission_type:
-        rate = CONFIG["commission_rates"].get(body.commission_type, 0)
-        commission_pct = rate
-        commission_label = f"{body.commission_type.title()} ({rate}%)"
+        c_rate = CONFIG["commission_rates"].get(body.commission_type, 0)
+        commission_pct = c_rate
+        commission_label = f"{body.commission_type.title()} ({c_rate}%)"
 
     service_fee_pct = CONFIG["service_fee_pct"]
     service_fee = subtotal * (service_fee_pct / 100)
     commission_amount = subtotal * (commission_pct / 100) if commission_pct else 0
     grand_total = subtotal + service_fee + commission_amount
-    per_person = grand_total / pax if pax else grand_total
+    per_person_total = grand_total / pax if pax else grand_total
     fx_buffer_pct = CONFIG.get("fx_buffer_pct", 0)
     fx_rate = CONFIG["fx_rate"] * (1 + fx_buffer_pct / 100)
     grand_total_ugx = grand_total * fx_rate
@@ -2525,14 +2576,15 @@ def calculate_price(body: PricingRequest):
     # Build flat line_items array
     line_items = []
     for line in accommodation_lines:
-        line_items.append({"item": line["description"] + f" ({line['nights']} nights)", "total_usd": line["total"]})
-    if vehicle_total > 0:
-        fuel_pct = CONFIG["fuel_buffer_pct"]
-        line_items.append({"item": f"4x4 Safari Vehicle ({v_days} days @ ${vehicle_rate}/day + {fuel_pct}% fuel buffer)", "total_usd": round(vehicle_total, 2)})
+        line_items.append({"item": line["description"] + f" × {line['nights']} nights", "total_usd": line["total"]})
+    for vline in vehicle_lines:
+        buf_label = f" + {vline['fuel_buffer_pct']}% fuel buffer" if vline["fuel_buffer_pct"] else ""
+        line_items.append({"item": f"{vline['type']} ({vline['days']} days @ ${vline['rate']}/day{buf_label})", "total_usd": vline["total"]})
     for line in permit_lines:
-        line_items.append({"item": line["description"] + f" (x{line['qty']})", "total_usd": line["total"]})
+        line_items.append({"item": line["description"] + f" (×{line['qty']})", "total_usd": line["total"]})
     if insurance_total > 0:
-        line_items.append({"item": f"Travel Insurance ({pax} pax x {days} days)", "total_usd": round(insurance_total, 2)})
+        guest_label = f"{adults} adults" + (f" + {children} children" if children else "")
+        line_items.append({"item": f"Travel Insurance ({guest_label} × {days} days)", "total_usd": round(insurance_total, 2)})
     for line in extra_lines:
         line_items.append({"item": line["description"], "total_usd": line["total"]})
 
@@ -2548,7 +2600,7 @@ def calculate_price(body: PricingRequest):
         # Flat fields the frontend expects
         "total_usd": round(grand_total, 2),
         "total_ugx": round(grand_total_ugx, 0),
-        "per_person_usd": round(per_person, 2),
+        "per_person_usd": round(per_person_total, 2),
         "subtotal_usd": round(subtotal, 2),
         "line_items": line_items,
         "service_fee_label": f"TRVE Service Fee ({service_fee_pct}%)",
@@ -2560,13 +2612,18 @@ def calculate_price(body: PricingRequest):
         "fx_timestamp": "2026 avg",
         "duration_days": days,
         "pax": pax,
+        "adults": adults,
+        "children": children,
         "nationality_tier": tier,
         "itinerary": itn_name,
         # Keep structured data for PDF generation
         "pricing_data": {
-            "summary": {"pax": pax, "days": days, "nationality_tier": tier, "travel_start_date": travel_date},
+            "summary": {
+                "pax": pax, "adults": adults, "children": children,
+                "days": days, "nationality_tier": tier, "travel_start_date": travel_date
+            },
             "accommodation": {"lines": accommodation_lines, "total": round(accommodation_total, 2)},
-            "vehicle": {"days": v_days, "rate_per_day": vehicle_rate, "total": round(vehicle_total, 2)},
+            "vehicles": {"lines": vehicle_lines, "total": round(vehicle_total, 2)},
             "permits": {"lines": permit_lines, "total": round(permit_total, 2)},
             "insurance": {
                 "included": body.include_insurance,
@@ -2578,7 +2635,7 @@ def calculate_price(body: PricingRequest):
             "service_fee": {"label": f"TRVE Service Fee ({service_fee_pct}%)", "pct": service_fee_pct, "total": round(service_fee, 2)},
             "commission": {"label": commission_label, "pct": commission_pct, "total": round(commission_amount, 2)},
             "grand_total_usd": round(grand_total, 2),
-            "per_person_usd": round(per_person, 2),
+            "per_person_usd": round(per_person_total, 2),
             "fx_rate": fx_rate,
             "grand_total_ugx": round(grand_total_ugx, 0),
             "buffers": {
