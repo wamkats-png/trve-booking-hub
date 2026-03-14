@@ -2642,17 +2642,46 @@
     return Array.from({length: rooms}, (_, i) => base + (i < extra ? 1 : 0));
   }
 
-  // Split each room's occupant count into {adults, children} proportionally.
-  // Adults are assigned first; children fill remaining slots.
+  // Split each room's occupant count into {adults, children}.
+  // Hotel rule: children must share a room with at least 1 adult — never alone.
+  // Adults are placed first (max 2 per room); children fill only rooms that have adults.
   function _computeAdultChildSplit(distribution, totalAdults, totalChildren) {
-    let remA = totalAdults, remC = totalChildren;
-    return distribution.map(n => {
-      const a = Math.min(n, remA);
-      const c = n - a;
+    const rooms = distribution.length;
+    const result = Array.from({length: rooms}, () => ({ adults: 0, children: 0 }));
+
+    // Pass 1 — distribute adults (standard hotel max: 2 adults per room)
+    let remA = totalAdults;
+    for (let i = 0; i < rooms && remA > 0; i++) {
+      const a = Math.min(distribution[i], 2, remA);
+      result[i].adults = a;
       remA -= a;
-      remC -= c;
-      return { adults: a, children: c };
-    });
+    }
+
+    if (totalChildren === 0) return result;
+
+    // Pass 2 — place children only into rooms that already have ≥1 adult
+    let remC = totalChildren;
+    for (let i = 0; i < rooms && remC > 0; i++) {
+      if (result[i].adults > 0) {
+        const free = Math.max(0, distribution[i] - result[i].adults);
+        const assign = Math.min(free, remC);
+        result[i].children = assign;
+        remC -= assign;
+      }
+    }
+
+    // Pass 3 — overflow: if children remain (all adult rooms at distribution cap),
+    // pile them into the first adult room — over-capacity warning will fire for the user.
+    if (remC > 0) {
+      for (let i = 0; i < rooms && remC > 0; i++) {
+        if (result[i].adults > 0) {
+          result[i].children += remC;
+          remC = 0;
+        }
+      }
+    }
+
+    return result;
   }
 
   // ---------------------------------------------------------------------------
@@ -2902,7 +2931,11 @@
   }
   window.TRVE._setRoomExtra = _setRoomExtra;
 
-  // Auto-distribute all guests across all rooms using the computed distribution model.
+  // Auto-distribute all guests across all rooms using hotel booking logic.
+  // Hotel rules enforced:
+  //   • Children must always share a room with at least 1 adult (never alone).
+  //   • Under-5 children do not count toward room capacity (cot only).
+  //   • Maximum 2 adults per room.
   function _autoAssignGuests() {
     _syncGuestPool();
     const { adults, children } = _getBasicPax();
@@ -2921,20 +2954,74 @@
     if (rooms.length === 0) return;
     _accomPushHistory();
     state.roomAssignments = {};
-    const dist  = _computeDistributionCached(totalGuests, rooms.length);
-    const split = _computeAdultChildSplit(dist, adults, children);
+
     const adultGs = (state.guestPool || []).filter(g => g.type === 'adult');
     const childGs = (state.guestPool || []).filter(g => g.type === 'child');
-    let ai = 0, ci = 0;
+
+    // --- Adults-only path: simple even distribution ---
+    if (childGs.length === 0) {
+      const dist = _computeDistributionCached(totalGuests, rooms.length);
+      let ai = 0;
+      rooms.forEach((room, r) => {
+        for (let i = 0; i < dist[r] && ai < adultGs.length; i++, ai++) {
+          state.roomAssignments[adultGs[ai].id] = room.key;
+        }
+      });
+      _renderGuestAssignmentUI();
+      _renderAccommPricingSummary();
+      _checkCapacityMismatch();
+      return;
+    }
+
+    // --- Mixed path: hotel-aware two-phase distribution ---
+
+    // Phase 1: distribute adults evenly across rooms (max 2 per room).
+    const adultDist = _computeDistributionCached(adults, rooms.length);
+    let ai = 0;
     rooms.forEach((room, r) => {
-      const { adults: ra, children: rc } = split[r];
-      for (let i = 0; i < ra && ai < adultGs.length; i++, ai++) {
+      const cap = Math.min(adultDist[r], 2);
+      for (let i = 0; i < cap && ai < adultGs.length; i++, ai++) {
         state.roomAssignments[adultGs[ai].id] = room.key;
       }
-      for (let i = 0; i < rc && ci < childGs.length; i++, ci++) {
-        state.roomAssignments[childGs[ci].id] = room.key;
-      }
     });
+
+    // Phase 2: place children only into rooms that have ≥1 adult.
+    // U5 children (age < 5) do NOT count toward maxOcc — they need a cot, not a bed.
+    // Regular children count as 1 occupant each.
+    let ci = 0;
+    for (const room of rooms) {
+      if (ci >= childGs.length) break;
+      const roomAdults = adultGs.filter(a => state.roomAssignments[a.id] === room.key);
+      if (roomAdults.length === 0) continue; // no adult in this room — skip
+
+      while (ci < childGs.length) {
+        const child = childGs[ci];
+        const isUnderFive = _isU5(child);
+        // Count currently occupied beds (adults + non-U5 children already placed here)
+        const bedsUsed = roomAdults.length +
+          childGs.filter(c => state.roomAssignments[c.id] === room.key && !_isU5(c)).length;
+        const bedCost = isUnderFive ? 0 : 1; // U5 needs cot, not a bed
+        if (bedsUsed + bedCost > room.maxOcc) break; // room is full for bed-occupying guests
+        state.roomAssignments[child.id] = room.key;
+        ci++;
+      }
+    }
+
+    // Phase 3: overflow — if children still unassigned (all adult rooms at bed capacity),
+    // pile them into the first adult room so no child is ever left alone.
+    // An over-capacity warning will appear, prompting the user to add a room.
+    if (ci < childGs.length) {
+      const fallbackRoom = rooms.find(r =>
+        adultGs.some(a => state.roomAssignments[a.id] === r.key)
+      );
+      if (fallbackRoom) {
+        while (ci < childGs.length) {
+          state.roomAssignments[childGs[ci].id] = fallbackRoom.key;
+          ci++;
+        }
+      }
+    }
+
     _renderGuestAssignmentUI();
     _renderAccommPricingSummary();
     _checkCapacityMismatch();
