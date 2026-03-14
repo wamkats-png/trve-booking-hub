@@ -191,6 +191,7 @@
     childSharingConfirmed: {}, // {roomKey: bool} — user confirmed child sharing per room slot
     guestPool: [],         // [{id,type,label,age}] — guest objects derived from Basic Details pax
     roomAssignments: {},   // {guestId: 'rowIdx:roomIdx'} — absent/null = unassigned (in pool)
+    roomExtras: {},        // {rowKey: {dietary, packedLunch}} — per-room special requirements
     accomHistory: [],      // undo stack — each entry is a snapshot of lodge-row config
     accomFuture:  [],      // redo stack
   };
@@ -2221,9 +2222,11 @@
           <div>
             <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Meal Plan</label>
             <select class="form-control" name="meal_plan_${idx}" style="font-size:var(--text-xs);height:30px">
-              <option value="BB"${initMeal==='BB'?' selected':''}>BB — Bed &amp; Breakfast</option>
-              <option value="HB"${initMeal==='HB'?' selected':''}>HB — Half Board (+$35/pax/night)</option>
-              <option value="FB"${initMeal==='FB'?' selected':''}>FB — Full Board (+$65/pax/night)</option>
+              <option value="RO"${initMeal==='RO'?' selected':''}>RO — Room Only (no meals)</option>
+              <option value="BB"${initMeal==='BB'?' selected':''}>BB — Bed &amp; Breakfast (breakfast)</option>
+              <option value="HB"${initMeal==='HB'?' selected':''}>HB — Half Board (breakfast + dinner)</option>
+              <option value="FB"${initMeal==='FB'?' selected':''}>FB — Full Board (all meals)</option>
+              <option value="AI"${initMeal==='AI'?' selected':''}>AI — All Inclusive (meals + drinks)</option>
             </select>
           </div>
         </div>
@@ -2653,6 +2656,36 @@
   }
 
   // ---------------------------------------------------------------------------
+  // CHILD MEAL & OCCUPANCY TIER HELPERS
+  // ---------------------------------------------------------------------------
+
+  // Age-banded meal pricing (Section 4 of booking logic spec).
+  // Returns {multiplier, label, free, cotNeeded, highChairNeeded, confirmNeeded}
+  function _getChildMealTier(age) {
+    if (age === null || age === undefined) {
+      return { multiplier: 0.5, label: 'Child rate (age unknown — assumed 5–11)', free: false };
+    }
+    if (age < 2)  return { multiplier: 0, label: 'FREE — under 2', free: true, cotNeeded: true, highChairNeeded: true };
+    if (age < 5)  return { multiplier: 0, label: 'FREE / token — age 2–4 (confirm with property)', free: true, cotNeeded: true, confirmNeeded: true };
+    if (age < 12) return { multiplier: 0.5, label: 'Child rate — 50% of adult (age 5–11)', free: false };
+    return          { multiplier: 1.0, label: 'Full adult rate (age 12+)', free: false };
+  }
+
+  // True when a guest object represents an under-5 child (free occupant).
+  function _isU5(guest) {
+    return guest.type === 'child' && guest.age !== null && guest.age !== undefined && guest.age < 5;
+  }
+
+  // Meal plan human-readable label.
+  const MEAL_PLAN_LABELS = {
+    RO: 'Room Only (no meals)',
+    BB: 'Bed & Breakfast (breakfast only)',
+    HB: 'Half Board (breakfast + dinner)',
+    FB: 'Full Board (all meals)',
+    AI: 'All Inclusive (all meals + drinks)',
+  };
+
+  // ---------------------------------------------------------------------------
   // UNDO / REDO FOR ACCOMMODATION CONFIGURATION
   // Snapshots the full lodge-row config before each structural change.
   // ---------------------------------------------------------------------------
@@ -2667,6 +2700,7 @@
         mealPlan:  row.querySelector('[name^="meal_plan_"]')?.value  || 'BB',
       })),
       assignments: { ...state.roomAssignments },
+      roomExtras:  JSON.parse(JSON.stringify(state.roomExtras || {})),
     };
   }
 
@@ -2703,6 +2737,7 @@
     container.innerHTML = '';
     rows.forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true, skipRender: true }));
     state.roomAssignments = { ...assignments };
+    state.roomExtras      = JSON.parse(JSON.stringify(snap.roomExtras || {}));
     _renderGuestAssignmentUI();   // renders pool panel + all room cards
     _renderAccommPricingSummary();
     _checkCapacityMismatch();
@@ -2763,7 +2798,13 @@
     return (state.guestPool || []).filter(g => !state.roomAssignments[g.id]);
   }
 
-  // Returns {ok, warning?, error?, suggestions?}
+  // Returns {ok, warnings?[], error?, suggestions?[]}
+  // Applies the full occupancy rule set from the booking logic spec:
+  //   - Children under 5 are FREE occupants — do not count against maxOcc
+  //   - Every room must have ≥1 adult when any child is present
+  //   - Standard: max 2 adults per room
+  //   - Older children (5+) count toward maxOcc
+  //   - U5 children need cots; under-2 need high chairs
   function _validateDrop(guestId, rowIdx, roomIdx) {
     const row = document.querySelector(`#lodgeItems .lodge-item[data-idx="${rowIdx}"]`);
     if (!row) return { error: 'Room not found' };
@@ -2774,26 +2815,51 @@
     if (roomIdx >= roomCount) return { error: 'Room index out of range' };
     const guest = (state.guestPool || []).find(g => g.id === guestId);
     if (!guest) return { error: 'Guest not found' };
+
     // Current room occupants, excluding the guest being moved
-    const current   = _getGuestsInRoom(rowIdx, roomIdx).filter(g => g.id !== guestId);
-    const curAdults = current.filter(g => g.type === 'adult').length;
-    const curChild  = current.filter(g => g.type === 'child').length;
-    const newAdults = curAdults + (guest.type === 'adult' ? 1 : 0);
-    const newChild  = curChild  + (guest.type === 'child' ? 1 : 0);
-    const newTotal  = newAdults + newChild;
+    const current        = _getGuestsInRoom(rowIdx, roomIdx).filter(g => g.id !== guestId);
+    const curAdults      = current.filter(g => g.type === 'adult').length;
+    const curU5          = current.filter(g => _isU5(g)).length;
+    const curOlderChild  = current.filter(g => g.type === 'child' && !_isU5(g)).length;
+
+    const addingAdult       = guest.type === 'adult';
+    const addingU5          = _isU5(guest);
+    const addingOlderChild  = guest.type === 'child' && !addingU5;
+
+    const newAdults      = curAdults     + (addingAdult      ? 1 : 0);
+    const newU5          = curU5         + (addingU5         ? 1 : 0);
+    const newOlderChild  = curOlderChild + (addingOlderChild ? 1 : 0);
+    const newTotalChild  = newU5 + newOlderChild;
+
+    // Rule: every room with children must have at least 1 adult
+    if (newAdults === 0 && newTotalChild > 0) {
+      return { error: 'Every room must have at least 1 adult. Assign an adult to this room first.', suggestions: [] };
+    }
+
     // Standard rule: max 2 adults per room
     if (newAdults > 2) {
-      return { error: 'Maximum 2 adults per room', suggestions: ['add-room', 'upgrade'] };
+      return { error: 'Maximum 2 adults per room (standard rule).', suggestions: ['add-room', 'upgrade'] };
     }
-    if (newTotal > maxOcc) {
-      // Family rule: 1 adult + up to 2 children (children share a bed, count as ½)
-      const childBeds = Math.ceil(newChild / 2);
-      if (newAdults <= 1 && newChild <= 2 && newAdults + childBeds <= maxOcc) {
-        return { ok: true, warning: 'Child-sharing: 2 children share 1 bed' };
-      }
-      return { error: `Exceeds room capacity (${maxOcc})`, suggestions: ['add-room', 'upgrade', 'reassign'] };
+
+    // Occupancy check: U5 children do NOT count against maxOcc.
+    // Only adults + children aged 5+ count.
+    const occupancyCount = newAdults + newOlderChild;
+    if (occupancyCount > maxOcc) {
+      return { error: `Exceeds room capacity (${maxOcc}). Children under 5 don't count, but adults + older children do.`, suggestions: ['add-room', 'upgrade', 'reassign'] };
     }
-    return { ok: true };
+
+    // Collect cot/high chair warnings (informational, not blocking)
+    const warnings = [];
+    if (newU5 > 0) {
+      warnings.push(`${newU5} cot${newU5 > 1 ? 's' : ''} needed for child${newU5 > 1 ? 'ren' : ''} under 5 — confirm availability with property.`);
+    }
+    const under2Count = current.filter(g => g.type === 'child' && g.age !== null && g.age < 2).length
+                      + (addingU5 && guest.age !== null && guest.age < 2 ? 1 : 0);
+    if (under2Count > 0) {
+      warnings.push(`High chair needed for child${under2Count > 1 ? 'ren' : ''} under 2 — request at booking.`);
+    }
+
+    return { ok: true, warnings };
   }
 
   // Assign guest to room; validates, records history, re-renders.
@@ -2803,6 +2869,10 @@
     if (v.error) {
       _showAssignmentError(v.error, v.suggestions || [], rowIdx, roomIdx);
       return false;
+    }
+    if (v.warnings && v.warnings.length > 0) {
+      // Non-blocking: toast the warnings after assigning
+      setTimeout(() => v.warnings.forEach(w => toast('info', 'Room note', w)), 100);
     }
     _accomPushHistory();
     state.roomAssignments[guestId] = `${rowIdx}:${roomIdx}`;
@@ -2823,6 +2893,14 @@
     _checkCapacityMismatch();
   }
   window.TRVE._unassignGuest = _unassignGuest;
+
+  // Store per-room extras (dietary requirements, packed lunches, etc.)
+  function _setRoomExtra(roomKey, field, value) {
+    if (!state.roomExtras) state.roomExtras = {};
+    if (!state.roomExtras[roomKey]) state.roomExtras[roomKey] = {};
+    state.roomExtras[roomKey][field] = value;
+  }
+  window.TRVE._setRoomExtra = _setRoomExtra;
 
   // Auto-distribute all guests across all rooms using the computed distribution model.
   function _autoAssignGuests() {
@@ -3046,6 +3124,21 @@
           <span style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600">Child-sharing:</span>
           <span style="font-size:10px;color:var(--text-secondary)"> ${nAdults} adult + ${nChildren} children — 2 children share 1 bed ✓</span>
         </div>` : '';
+      // Cot / high chair extras (auto-flag for U5 children — Section 2 Step 5)
+      const u5InRoom     = guests.filter(g => _isU5(g));
+      const under2InRoom = guests.filter(g => g.type === 'child' && g.age !== null && g.age < 2);
+      const extrasHTML   = u5InRoom.length > 0 ? `
+        <div style="padding:6px 10px;background:rgba(99,102,241,.05);border-top:1px solid rgba(99,102,241,.15);display:flex;flex-wrap:wrap;gap:8px">
+          ${u5InRoom.length > 0 ? `<span style="font-size:10px;color:#6366f1;display:flex;align-items:center;gap:3px">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="1" y="3" width="8" height="6" rx=".8" stroke="currentColor" stroke-width="1.1"/><path d="M3 3V2a1 1 0 012 0v1" stroke="currentColor" stroke-width="1.1"/></svg>
+            ${u5InRoom.length} cot${u5InRoom.length > 1 ? 's' : ''} needed
+          </span>` : ''}
+          ${under2InRoom.length > 0 ? `<span style="font-size:10px;color:#6366f1;display:flex;align-items:center;gap:3px">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="2.5" r="1.5" stroke="currentColor" stroke-width="1.1"/><path d="M2 9c0-1.66 1.34-3 3-3s3 1.34 3 3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+            High chair needed
+          </span>` : ''}
+          <span style="font-size:9px;color:var(--text-muted);align-self:center">Confirm availability at booking</span>
+        </div>` : '';
       html += `
         <div class="room-assignment-card" data-room-idx="${r}"
           style="margin-bottom:8px;border:1px solid ${borderCol};border-radius:var(--radius-md);overflow:hidden">
@@ -3062,13 +3155,38 @@
             ondrop="window.TRVE._onRoomDrop(event, ${rowIdx}, ${r})">
             ${chipsHTML}
           </div>
-          ${warningHTML}${sharingHTML}
+          ${warningHTML}${sharingHTML}${extrasHTML}
         </div>`;
     }
+    // Dietary + special requests per lodge row
+    const mealPlan    = row.querySelector('[name^="meal_plan_"]')?.value || 'BB';
+    const rowKey      = `row-${rowIdx}`;
+    const extras      = (state.roomExtras || {})[rowKey] || {};
+    const showPacked  = mealPlan === 'HB' || mealPlan === 'FB';
     const footerColor = assignedInRow === totalGuests ? 'var(--text-muted)' : 'var(--text-secondary)';
-    html += `<div style="font-size:10px;color:${footerColor};text-align:right;margin-top:2px">
-      Assigned to this lodge: <strong>${assignedInRow}</strong>
-    </div>`;
+    html += `
+      <div style="font-size:10px;color:${footerColor};text-align:right;margin-top:2px;margin-bottom:8px">
+        Assigned to this lodge: <strong>${assignedInRow}</strong>
+      </div>
+      <div style="margin-top:6px;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md)">
+        <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Special Requirements</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div>
+            <label style="font-size:10px;color:var(--text-secondary);display:block;margin-bottom:3px">Dietary requirements / allergies</label>
+            <input type="text" class="form-control" placeholder="e.g. vegetarian, halal, nut allergy"
+              style="font-size:var(--text-xs);height:28px"
+              value="${escapeHtml(extras.dietary || '')}"
+              oninput="window.TRVE._setRoomExtra('${rowKey}', 'dietary', this.value)">
+          </div>
+          ${showPacked ? `
+          <label style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text-secondary);cursor:pointer">
+            <input type="checkbox" ${extras.packedLunch ? 'checked' : ''}
+              onchange="window.TRVE._setRoomExtra('${rowKey}', 'packedLunch', this.checked)"
+              style="width:13px;height:13px">
+            Request packed lunch on excursion days (${MEAL_PLAN_LABELS[mealPlan] || mealPlan})
+          </label>` : ''}
+        </div>
+      </div>`;
     container.innerHTML = html;
   }
 
@@ -3284,55 +3402,125 @@
   window.TRVE._removeStaffRoom  = _removeStaffRoom;
   window.TRVE.addStaffRoomItem  = addStaffRoomItem;
 
-  // Accommodation pricing summary (guest total + staff total)
+  // Accommodation pricing summary — age-banded per-guest pricing (Sections 3-6 of booking logic spec).
   function _renderAccommPricingSummary() {
     const panel = document.getElementById('accomPricingSummary');
     if (!panel) return;
 
-    // Compute guest room costs — adults/children from Basic Details (single source of truth)
     const { adults: globalAdults, children: globalChildren } = _getBasicPax();
-    let guestTotal = 0;
-    document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
+
+    // Build per-lodge-row breakdown using age-banded child pricing
+    let guestTotal  = 0;
+    let rowsHTML    = '';
+
+    document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, rowIdx) => {
       const lodge    = row.querySelector('[name^="lodge_name_"]')?.value;
       if (!lodge) return;
       const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1;
       const nights   = parseInt(row.querySelector('[name^="nights_"]')?.value) || 1;
       const roomType = row.querySelector('[name^="room_type_"]')?.value        || '';
+      const mealPlan = row.querySelector('[name^="meal_plan_"]')?.value        || 'BB';
       const lodgeData = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodge);
-      const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType) || (lodgeData?.room_types || [])[0];
+      const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
+              || (lodgeData?.room_types || [])[0];
       const rate = rt?.net_rate_usd || 0;
       if (!rate) return;
-      // Cost = rooms × nights × (adults × rate + children × 50% rate)
-      // adults/children are the global totals — the backend distributes across rooms
-      guestTotal += nights * (globalAdults * rate + globalChildren * rate * 0.5);
+
+      const mealLabel = MEAL_PLAN_LABELS[mealPlan] || mealPlan;
+      const isRO = mealPlan === 'RO';
+
+      // Adult meal cost
+      const adultMealCost = isRO ? 0 : (
+        mealPlan === 'HB' ? 35 :
+        mealPlan === 'FB' ? 65 :
+        mealPlan === 'AI' ? 85 : 0
+      );
+
+      // Age-banded child costs
+      let childLinesHTML = '';
+      let childMealTotal = 0;
+      const childGuests = (state.guestPool || []).filter(g => g.type === 'child');
+
+      if (childGuests.length > 0) {
+        const tierGroups = {};
+        childGuests.forEach(g => {
+          const tier = _getChildMealTier(g.age);
+          const key  = tier.label;
+          if (!tierGroups[key]) tierGroups[key] = { tier, count: 0 };
+          tierGroups[key].count++;
+        });
+        Object.values(tierGroups).forEach(({ tier, count }) => {
+          const perNight = isRO ? 0 : adultMealCost * tier.multiplier;
+          const subtotal = nights * count * perNight;
+          childMealTotal += subtotal;
+          const confirmMark = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
+          childLinesHTML += `
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding-left:12px">
+              <span>Children ×${count} — ${tier.label}${confirmMark}</span>
+              <span style="font-family:var(--font-mono)">${tier.free && !isRO ? 'FREE' : fmtMoney(subtotal)}</span>
+            </div>`;
+        });
+      }
+
+      // Room accommodation cost (rate per room × rooms × nights)
+      const roomCost  = rooms * nights * rate;
+      // Adult meal supplement (if not RO)
+      const adultMealTotal = isRO ? 0 : nights * globalAdults * adultMealCost;
+      const rowTotal  = roomCost + adultMealTotal + childMealTotal;
+      guestTotal     += rowTotal;
+
+      // Cot requirements across all rooms
+      const u5Total    = (state.guestPool || []).filter(g => _isU5(g)).length;
+      const under2Total = (state.guestPool || []).filter(g => g.type === 'child' && g.age !== null && g.age < 2).length;
+
+      rowsHTML += `
+        <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-secondary);margin-bottom:4px">
+            ${escapeHtml(lodge)} — ${escapeHtml(roomType) || 'Standard'} × ${rooms} room${rooms !== 1 ? 's' : ''}
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px">
+            ${mealLabel} · ${nights} night${nights !== 1 ? 's' : ''}
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:2px">
+            <span>Room rate (${rooms} × ${nights}n × ${fmtMoney(rate)})</span>
+            <span style="font-family:var(--font-mono)">${fmtMoney(roomCost)}</span>
+          </div>
+          ${!isRO && adultMealTotal > 0 ? `
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-bottom:2px;padding-left:12px">
+            <span>Adults ×${globalAdults} meal plan — $${adultMealCost}/pax/night</span>
+            <span style="font-family:var(--font-mono)">${fmtMoney(adultMealTotal)}</span>
+          </div>` : ''}
+          ${childLinesHTML}
+          ${u5Total > 0 ? `<div style="font-size:10px;color:#6366f1;margin-top:3px">⊕ ${u5Total} cot${u5Total > 1 ? 's' : ''} required${under2Total > 0 ? ` · ${under2Total} high chair${under2Total > 1 ? 's' : ''}` : ''} — confirm with property</div>` : ''}
+          <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);font-weight:700;margin-top:4px">
+            <span>Row subtotal</span>
+            <span style="font-family:var(--font-mono)">${fmtMoney(rowTotal)}</span>
+          </div>
+        </div>`;
     });
 
-    // Compute staff room costs (ones allocated to 'guest' itinerary count here, others separate)
+    // Staff rooms
     let staffGuestTotal = 0, staffOpTotal = 0, staffCoTotal = 0;
     document.querySelectorAll('#staffRoomItems .staff-room-item').forEach(el => {
-      const nights   = parseInt(el.querySelector('[name^="sr_nights_"]')?.value)  || 0;
-      const rate     = parseFloat(el.querySelector('[name^="sr_rate_"]')?.value)  || 0;
-      const pricing  = el.querySelector('[name^="sr_pricing_"]:checked')?.value   || 'operating';
-      const subtotal = nights * rate;
-      if (pricing === 'guest')     staffGuestTotal += subtotal;
-      else if (pricing === 'company') staffCoTotal += subtotal;
-      else                         staffOpTotal   += subtotal;
+      const nights  = parseInt(el.querySelector('[name^="sr_nights_"]')?.value)  || 0;
+      const rate    = parseFloat(el.querySelector('[name^="sr_rate_"]')?.value)  || 0;
+      const pricing = el.querySelector('[name^="sr_pricing_"]:checked')?.value   || 'operating';
+      const sub     = nights * rate;
+      if (pricing === 'guest')        staffGuestTotal += sub;
+      else if (pricing === 'company') staffCoTotal    += sub;
+      else                            staffOpTotal    += sub;
     });
 
-    const staffTotal  = staffGuestTotal + staffOpTotal + staffCoTotal;
-    const grandTotal  = guestTotal + staffGuestTotal; // only guest-charged staff rooms add to invoice
-
-    if (guestTotal === 0 && staffTotal === 0) { panel.style.display = 'none'; return; }
+    const grandTotal = guestTotal + staffGuestTotal;
+    if (guestTotal === 0 && staffGuestTotal === 0 && staffOpTotal === 0 && staffCoTotal === 0) {
+      panel.style.display = 'none'; return;
+    }
     panel.style.display = '';
 
     panel.innerHTML = `
       <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;margin-top:var(--space-3)">
-        <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px">Accommodation Cost Preview</div>
-        ${guestTotal > 0 ? `
-        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px">
-          <span>Guest accommodation</span>
-          <strong style="font-family:var(--font-mono)">${fmtMoney(guestTotal)}</strong>
-        </div>` : ''}
+        <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Accommodation Cost Preview</div>
+        ${rowsHTML}
         ${staffGuestTotal > 0 ? `
         <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px;color:var(--brand-gold-dark,#b45309)">
           <span>Staff rooms (on guest invoice)</span>
@@ -4242,10 +4430,16 @@
         // Derive per-room adult/child counts from Basic Details for accurate per-guest pricing
         const perRoomAdults   = rooms > 0 ? Math.ceil(adults   / rooms) : adults;
         const perRoomChildren = rooms > 0 ? Math.ceil(children / rooms) : children;
+        // Age-banded child data for meal pricing
+        const childGuests     = (state.guestPool || []).filter(g => g.type === 'child');
+        const childrenFree    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return t.free; }).length;
+        const childrenHalf    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return !t.free && t.multiplier === 0.5; }).length;
+        const childrenFull    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return !t.free && t.multiplier === 1.0; }).length;
         if (lodge) accommodations.push({
           lodge, room_type: roomType, nights, rooms,
           meal_plan: mealPlan,
           adults: perRoomAdults, children: perRoomChildren,
+          children_free: childrenFree, children_half: childrenHalf, children_full: childrenFull,
           guest_label: guestLabel,
         });
       });
