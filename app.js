@@ -189,6 +189,8 @@
     _staffRoomSeq: 0,      // stable index for staff rooms
     childAges: [],         // [age|null, ...] one entry per child, null = age not entered
     childSharingConfirmed: {}, // {roomKey: bool} — user confirmed child sharing per room slot
+    guestPool: [],         // [{id,type,label,age}] — guest objects derived from Basic Details pax
+    roomAssignments: {},   // {guestId: 'rowIdx:roomIdx'} — absent/null = unassigned (in pool)
     accomHistory: [],      // undo stack — each entry is a snapshot of lodge-row config
     accomFuture:  [],      // redo stack
   };
@@ -554,6 +556,8 @@
   window.TRVE = {
     navigate, loadPipeline, saveFxRateAtQuote, addActivityCost, addVehicleItem,
     _updateGuestName, _updateLodgeRowDates, _toggleGuestRoom, _syncLodgeGuestAssignments,
+    _renderGuestAssignmentUI: () => _renderGuestAssignmentUI?.(),
+    _syncGuestPool: () => _syncGuestPool?.(),
   };
 
   /* ============================================================
@@ -2103,6 +2107,8 @@
     } catch (_) {
       addLodgeItem();
     }
+    _syncGuestPool();
+    _renderGuestAssignmentUI();
   }
 
   // cfg optional: {lodgeName, roomType, rooms, nights, mealPlan, skipHistory}
@@ -2334,7 +2340,7 @@
   function _autoSyncRoomGuests(row) {
     const rowIdx = parseInt(row.dataset.idx);
     _updateLodgeTotalGuestsHint(row);
-    _renderRoomGuestAssignment(row, rowIdx);
+    _renderLodgeRoomCards(row, rowIdx);
     _updateRoomOccupancyBadge(row, rowIdx);
     _checkCapacityMismatch();
   }
@@ -2652,13 +2658,16 @@
   // ---------------------------------------------------------------------------
 
   function _accomSnapshot() {
-    return Array.from(document.querySelectorAll('#lodgeItems .lodge-item')).map(row => ({
-      lodgeName: row.querySelector('[name^="lodge_name_"]')?.value || '',
-      roomType:  row.querySelector('[name^="room_type_"]')?.value  || '',
-      rooms:     parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1,
-      nights:    parseInt(row.querySelector('[name^="nights_"]')?.value) || 1,
-      mealPlan:  row.querySelector('[name^="meal_plan_"]')?.value  || 'BB',
-    }));
+    return {
+      rows: Array.from(document.querySelectorAll('#lodgeItems .lodge-item')).map(row => ({
+        lodgeName: row.querySelector('[name^="lodge_name_"]')?.value || '',
+        roomType:  row.querySelector('[name^="room_type_"]')?.value  || '',
+        rooms:     parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1,
+        nights:    parseInt(row.querySelector('[name^="nights_"]')?.value) || 1,
+        mealPlan:  row.querySelector('[name^="meal_plan_"]')?.value  || 'BB',
+      })),
+      assignments: { ...state.roomAssignments },
+    };
   }
 
   // Call BEFORE making a structural change.  Pushes current state onto undo stack.
@@ -2688,9 +2697,14 @@
   function _restoreAccomSnapshot(snap) {
     const container = document.getElementById('lodgeItems');
     if (!container) return;
+    // Support both old array format and new {rows, assignments} format
+    const rows        = Array.isArray(snap) ? snap : (snap.rows || []);
+    const assignments = Array.isArray(snap) ? {}   : (snap.assignments || {});
     container.innerHTML = '';
-    (snap || []).forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true, skipRender: true }));
-    _renderAccommPricingSummary(); // single render after all rows are restored
+    rows.forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true, skipRender: true }));
+    state.roomAssignments = { ...assignments };
+    _renderGuestAssignmentUI();   // renders pool panel + all room cards
+    _renderAccommPricingSummary();
     _checkCapacityMismatch();
   }
 
@@ -2707,136 +2721,355 @@
   window.TRVE._accomUndo = _accomUndo;
   window.TRVE._accomRedo = _accomRedo;
 
-  // Update guest assignment checkboxes in all lodge rows
+  // Re-render all lodge row room cards.  Delegates to _renderGuestAssignmentUI.
   function _syncLodgeGuestAssignments() {
-    document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, roomIdx) => {
-      _renderRoomGuestAssignment(row, roomIdx);
+    _renderGuestAssignmentUI();
+  }
+
+  // ---------------------------------------------------------------------------
+  // GUEST POOL & DRAG-DROP ROOM ASSIGNMENT
+  // ---------------------------------------------------------------------------
+
+  // Build / reconcile guest pool from pax counts + child ages.
+  // Preserves existing room assignments for guests that still exist.
+  function _syncGuestPool() {
+    const { adults, children } = _getBasicPax();
+    if (!state.guestPool)       state.guestPool = [];
+    if (!state.roomAssignments) state.roomAssignments = {};
+    const newPool = [];
+    for (let i = 0; i < adults; i++) {
+      newPool.push({ id: `a${i}`, type: 'adult', label: `Adult ${i + 1}` });
+    }
+    for (let i = 0; i < children; i++) {
+      const age = (state.childAges || [])[i] ?? null;
+      const ageLabel = age !== null ? ` (age ${age})` : '';
+      newPool.push({ id: `c${i}`, type: 'child', age, label: `Child ${i + 1}${ageLabel}` });
+    }
+    // Drop assignments for guests no longer in the pool
+    const valid = new Set(newPool.map(g => g.id));
+    for (const gid of Object.keys(state.roomAssignments)) {
+      if (!valid.has(gid)) delete state.roomAssignments[gid];
+    }
+    state.guestPool = newPool;
+    _distCache.clear();
+  }
+
+  function _getGuestsInRoom(rowIdx, roomIdx) {
+    const key = `${rowIdx}:${roomIdx}`;
+    return (state.guestPool || []).filter(g => state.roomAssignments[g.id] === key);
+  }
+
+  function _getUnassignedGuests() {
+    return (state.guestPool || []).filter(g => !state.roomAssignments[g.id]);
+  }
+
+  // Returns {ok, warning?, error?, suggestions?}
+  function _validateDrop(guestId, rowIdx, roomIdx) {
+    const row = document.querySelector(`#lodgeItems .lodge-item[data-idx="${rowIdx}"]`);
+    if (!row) return { error: 'Room not found' };
+    const roomType  = row.querySelector('[name^="room_type_"]')?.value || '';
+    const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
+    const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const roomCount = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+    if (roomIdx >= roomCount) return { error: 'Room index out of range' };
+    const guest = (state.guestPool || []).find(g => g.id === guestId);
+    if (!guest) return { error: 'Guest not found' };
+    // Current room occupants, excluding the guest being moved
+    const current   = _getGuestsInRoom(rowIdx, roomIdx).filter(g => g.id !== guestId);
+    const curAdults = current.filter(g => g.type === 'adult').length;
+    const curChild  = current.filter(g => g.type === 'child').length;
+    const newAdults = curAdults + (guest.type === 'adult' ? 1 : 0);
+    const newChild  = curChild  + (guest.type === 'child' ? 1 : 0);
+    const newTotal  = newAdults + newChild;
+    // Standard rule: max 2 adults per room
+    if (newAdults > 2) {
+      return { error: 'Maximum 2 adults per room', suggestions: ['add-room', 'upgrade'] };
+    }
+    if (newTotal > maxOcc) {
+      // Family rule: 1 adult + up to 2 children (children share a bed, count as ½)
+      const childBeds = Math.ceil(newChild / 2);
+      if (newAdults <= 1 && newChild <= 2 && newAdults + childBeds <= maxOcc) {
+        return { ok: true, warning: 'Child-sharing: 2 children share 1 bed' };
+      }
+      return { error: `Exceeds room capacity (${maxOcc})`, suggestions: ['add-room', 'upgrade', 'reassign'] };
+    }
+    return { ok: true };
+  }
+
+  // Assign guest to room; validates, records history, re-renders.
+  function _assignGuest(guestId, rowIdx, roomIdx) {
+    if (!state.roomAssignments) state.roomAssignments = {};
+    const v = _validateDrop(guestId, rowIdx, roomIdx);
+    if (v.error) {
+      _showAssignmentError(v.error, v.suggestions || [], rowIdx, roomIdx);
+      return false;
+    }
+    _accomPushHistory();
+    state.roomAssignments[guestId] = `${rowIdx}:${roomIdx}`;
+    _renderGuestAssignmentUI();
+    _renderAccommPricingSummary();
+    _checkCapacityMismatch();
+    return true;
+  }
+  window.TRVE._assignGuest = _assignGuest;
+
+  // Return guest to the unassigned pool.
+  function _unassignGuest(guestId) {
+    if (!state.roomAssignments || !state.roomAssignments[guestId]) return;
+    _accomPushHistory();
+    delete state.roomAssignments[guestId];
+    _renderGuestAssignmentUI();
+    _renderAccommPricingSummary();
+    _checkCapacityMismatch();
+  }
+  window.TRVE._unassignGuest = _unassignGuest;
+
+  // Auto-distribute all guests across all rooms using the computed distribution model.
+  function _autoAssignGuests() {
+    _syncGuestPool();
+    const { adults, children } = _getBasicPax();
+    const totalGuests = adults + children;
+    if (totalGuests === 0) return;
+    const rooms = [];
+    document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, rowIdx) => {
+      const roomCount = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+      const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
+      const roomType  = row.querySelector('[name^="room_type_"]')?.value  || '';
+      const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+      for (let r = 0; r < roomCount; r++) {
+        rooms.push({ rowIdx, roomIdx: r, maxOcc, key: `${rowIdx}:${r}` });
+      }
+    });
+    if (rooms.length === 0) return;
+    _accomPushHistory();
+    state.roomAssignments = {};
+    const dist  = _computeDistributionCached(totalGuests, rooms.length);
+    const split = _computeAdultChildSplit(dist, adults, children);
+    const adultGs = (state.guestPool || []).filter(g => g.type === 'adult');
+    const childGs = (state.guestPool || []).filter(g => g.type === 'child');
+    let ai = 0, ci = 0;
+    rooms.forEach((room, r) => {
+      const { adults: ra, children: rc } = split[r];
+      for (let i = 0; i < ra && ai < adultGs.length; i++, ai++) {
+        state.roomAssignments[adultGs[ai].id] = room.key;
+      }
+      for (let i = 0; i < rc && ci < childGs.length; i++, ci++) {
+        state.roomAssignments[childGs[ci].id] = room.key;
+      }
+    });
+    _renderGuestAssignmentUI();
+    _renderAccommPricingSummary();
+    _checkCapacityMismatch();
+  }
+  window.TRVE._autoAssignGuests = _autoAssignGuests;
+
+  // Drag-and-drop event handlers
+  function _onGuestDragStart(event, guestId) {
+    event.dataTransfer.setData('guestId', guestId);
+    event.dataTransfer.effectAllowed = 'move';
+  }
+  window.TRVE._onGuestDragStart = _onGuestDragStart;
+
+  function _onRoomDrop(event, rowIdx, roomIdx) {
+    event.preventDefault();
+    event.currentTarget.style.background = '';
+    const guestId = event.dataTransfer.getData('guestId');
+    if (guestId) _assignGuest(guestId, rowIdx, roomIdx);
+  }
+  window.TRVE._onRoomDrop = _onRoomDrop;
+
+  function _onDropToPool(event) {
+    event.preventDefault();
+    const guestId = event.dataTransfer.getData('guestId');
+    if (guestId) _unassignGuest(guestId);
+  }
+  window.TRVE._onDropToPool = _onDropToPool;
+
+  function _onDragOver(event) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    event.currentTarget.style.background = 'rgba(34,197,94,.06)';
+  }
+  window.TRVE._onDragOver = _onDragOver;
+
+  function _onDragLeave(event) {
+    event.currentTarget.style.background = '';
+  }
+  window.TRVE._onDragLeave = _onDragLeave;
+
+  // Show a short-lived error balloon on the room card.
+  function _showAssignmentError(message, suggestions, rowIdx, roomIdx) {
+    const row = document.querySelector(`#lodgeItems .lodge-item[data-idx="${rowIdx}"]`);
+    if (!row) return;
+    const card = row.querySelectorAll('.room-assignment-card')[roomIdx];
+    if (!card) return;
+    let errEl = card.querySelector('.assignment-error');
+    if (!errEl) {
+      errEl = document.createElement('div');
+      errEl.className = 'assignment-error';
+      errEl.style.cssText = 'font-size:10px;color:var(--danger);padding:5px 10px;background:rgba(220,38,38,.07);border-top:1px solid rgba(220,38,38,.2);margin-top:4px';
+      card.appendChild(errEl);
+    }
+    const actions = (suggestions || []).map(s => {
+      if (s === 'add-room')  return `<button type="button" onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'),+1)" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">+ Add Room</button>`;
+      if (s === 'upgrade')   return `<button type="button" onclick="window.TRVE._suggestRoomUpgrade(${rowIdx},'',0,0)" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">Upgrade Room Type</button>`;
+      if (s === 'reassign')  return `<button type="button" onclick="window.TRVE._autoAssignGuests()" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">Auto Reassign</button>`;
+      return '';
+    }).join(' ');
+    errEl.innerHTML = `⚠ ${escapeHtml(message)}${actions ? `<div style="margin-top:4px">${actions}</div>` : ''}`;
+    setTimeout(() => errEl?.remove(), 4000);
+  }
+
+  // Build HTML for a draggable guest chip.
+  function _guestChipHTML(guest, opts = {}) {
+    const { inRoom = false } = opts;
+    const isAdult = guest.type === 'adult';
+    const isYoung = guest.type === 'child' && guest.age !== null && guest.age < 5;
+    const color   = isAdult ? 'var(--brand-green)' : 'var(--brand-gold-dark,#b45309)';
+    const aIco = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" style="flex-shrink:0"><circle cx="5" cy="3" r="1.8" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 9.5c0-1.9 1.6-3.5 3.5-3.5s3.5 1.6 3.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
+    const cIco = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" style="flex-shrink:0"><circle cx="5" cy="2.5" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 9.5c0-1.7 1.3-3 3-3s3 1.3 3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
+    const icon   = isAdult ? aIco : cIco;
+    const badge  = isYoung ? `<span style="font-size:8px;padding:1px 3px;border-radius:3px;background:var(--brand-gold,#f59e0b);color:#fff;font-weight:600;flex-shrink:0">U5</span>` : '';
+    const remove = inRoom  ? `<button type="button" title="Remove from room" onclick="window.TRVE._unassignGuest('${guest.id}')" style="margin-left:2px;border:none;background:none;cursor:pointer;font-size:12px;line-height:1;color:var(--text-muted);padding:0 2px;opacity:.7">×</button>` : '';
+    return `<div class="guest-chip" data-guest-id="${guest.id}" draggable="true"
+      ondragstart="window.TRVE._onGuestDragStart(event,'${guest.id}')"
+      style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-surface);border:1px solid var(--border);border-radius:5px;padding:3px 7px;font-size:var(--text-xs);color:${color};cursor:grab;user-select:none;white-space:nowrap;box-shadow:0 1px 2px rgba(0,0,0,.06)">${icon}<span>${escapeHtml(guest.label)}</span>${badge}${remove}</div>`;
+  }
+
+  // Full UI render: guest pool panel above #lodgeItems + room cards in each lodge row.
+  function _renderGuestAssignmentUI() {
+    // Ensure guest pool panel exists immediately above #lodgeItems
+    let poolPanel = document.getElementById('guestPoolPanel');
+    if (!poolPanel) {
+      poolPanel = document.createElement('div');
+      poolPanel.id = 'guestPoolPanel';
+      const lodgeItems = document.getElementById('lodgeItems');
+      if (lodgeItems) lodgeItems.parentNode.insertBefore(poolPanel, lodgeItems);
+    }
+    const { adults, children } = _getBasicPax();
+    const totalGuests = adults + children;
+    if (totalGuests === 0) {
+      poolPanel.innerHTML = '';
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, idx) => {
+        const c = row.querySelector('.lodge-guest-assign-list');
+        if (c) c.innerHTML = `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Set guest count in Basic Details above to assign guests to rooms.</span>`;
+      });
+      return;
+    }
+    _syncGuestPool();
+    const unassigned = _getUnassignedGuests();
+    const allAssigned = unassigned.length === 0;
+    poolPanel.innerHTML = `
+      <div style="margin-bottom:12px;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--bg-subtle);border-bottom:1px solid var(--border)">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="4" cy="3.5" r="2" stroke="currentColor" stroke-width="1.2"/><circle cx="9" cy="3.5" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M.5 12c0-2.2 1.6-4 3.5-4h5c1.9 0 3.5 1.8 3.5 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em">Guest List</span>
+          <span style="font-size:10px;color:${allAssigned ? 'var(--success)' : 'var(--danger)'}">
+            ${totalGuests} guests · ${allAssigned ? 'all assigned ✓' : `${unassigned.length} unassigned`}
+          </span>
+          <div style="margin-left:auto">
+            <button type="button" class="btn btn-xs"
+              style="font-size:10px;padding:3px 12px;background:var(--brand-green);color:#fff;border:none;font-weight:600;border-radius:4px"
+              onclick="window.TRVE._autoAssignGuests()">Auto Assign Rooms</button>
+          </div>
+        </div>
+        <div id="guestPoolDropZone"
+          style="padding:10px 12px;min-height:48px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+                 background:${allAssigned ? 'var(--bg-subtle)' : 'var(--bg-main,#fff)'};
+                 border-bottom:2px dashed ${allAssigned ? 'transparent' : 'var(--border)'};
+                 border-radius:0 0 var(--radius-md) var(--radius-md);transition:background .15s"
+          ondragover="window.TRVE._onDragOver(event)"
+          ondragleave="window.TRVE._onDragLeave(event)"
+          ondrop="window.TRVE._onDropToPool(event)">
+          ${allAssigned
+            ? `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">All guests assigned ✓ — drag back here to unassign</span>`
+            : unassigned.map(g => _guestChipHTML(g)).join('')}
+        </div>
+      </div>`;
+    // Render room cards for every lodge row
+    document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, rowIdx) => {
+      _renderLodgeRoomCards(row, rowIdx);
+      _updateRoomOccupancyBadge(row, rowIdx);
     });
   }
 
-  // Compute and display room-by-room occupancy.
-  // Derives all values from Basic Details (never from manual per-room inputs).
-  // Distribution: ceil(totalGuests/rooms) front-loaded, e.g. 5/3 → [2,2,1].
-  // Validation: sum(distribution) === totalGuests, perRoom ≤ maxOcc (unless child sharing).
-  function _renderRoomGuestAssignment(row, roomIdx) {
+  // Render drag-drop room cards inside one lodge row.
+  function _renderLodgeRoomCards(row, rowIdx) {
     const container = row.querySelector('.lodge-guest-assign-list');
     if (!container) return;
-
-    const rooms       = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
-    const roomTypeVal = row.querySelector('[name^="room_type_"]')?.value || '';
-    const lodgeName   = row.querySelector('[name^="lodge_name_"]')?.value || '';
-    const maxOcc      = _getMaxOccupancy(roomTypeVal, lodgeName) || 2;
-
-    // Single source of truth: Basic Details
+    const rooms     = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+    const roomType  = row.querySelector('[name^="room_type_"]')?.value || '';
+    const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
+    const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
-
-    if (totalGuests === 0) {
-      container.innerHTML = '<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Set guest count in Basic Details above to see room distribution.</span>';
-      _updateRoomOccupancyBadge(row, roomIdx);
+    if (totalGuests === 0 || !roomType) {
+      container.innerHTML = `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">${!roomType ? 'Select lodge and room type above to enable guest assignment.' : 'Set guest count in Basic Details.'}</span>`;
       return;
     }
-
-    // Compute how many guests go in each physical room
-    const distribution = _computeDistributionCached(totalGuests, rooms);
-    const split        = _computeAdultChildSplit(distribution, totalAdults, totalChildren);
-
-    const adultIcon = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="3" r="1.8" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 9.5c0-1.9 1.6-3.5 3.5-3.5s3.5 1.6 3.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
-    const childIcon = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="2.5" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 9.5c0-1.7 1.3-3 3-3s3 1.3 3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
-    const youngChildCount = _getYoungChildCount();
-
     let html = '';
-    let assignedTotal = 0;
-
-    distribution.forEach((n, r) => {
-      assignedTotal += n;
-      const { adults: ra, children: rc } = split[r];
-      const roomKey   = `${roomIdx}-${r}`;
-      const confirmed = !!state.childSharingConfirmed[roomKey];
-      const sharing   = _childSharingApplies(ra, rc, maxOcc);
-      const exceeded  = n > maxOcc && !sharing;
-
-      const borderCol = exceeded ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : 'var(--border)';
-      const badgeBg   = exceeded ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : n > 0 ? 'var(--success)' : 'var(--bg-surface)';
-
-      const adultTags = Array.from({length: ra}, () =>
-        `<span style="display:inline-flex;align-items:center;gap:3px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:var(--text-xs);color:var(--brand-green)">${adultIcon} Adult</span>`
-      ).join('');
-      const childTags = Array.from({length: rc}, (_, ci) => {
-        const isYoung = ci < youngChildCount;
-        return `<span style="display:inline-flex;align-items:center;gap:3px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:var(--text-xs);color:var(--brand-gold-dark,#b45309)">${childIcon} Child${isYoung ? ' <span style="font-size:8px">(under 5)</span>' : ''}</span>`;
-      }).join('');
-
+    let assignedInRow = 0;
+    for (let r = 0; r < rooms; r++) {
+      const guests    = _getGuestsInRoom(rowIdx, r);
+      const nAdults   = guests.filter(g => g.type === 'adult').length;
+      const nChildren = guests.filter(g => g.type === 'child').length;
+      const n         = guests.length;
+      assignedInRow  += n;
+      const childBeds   = Math.ceil(nChildren / 2);
+      const sharingOk   = nAdults <= 1 && nChildren <= 2 && (nAdults + childBeds) <= maxOcc;
+      const adultOver   = nAdults > 2;
+      const exceeded    = n > maxOcc && !sharingOk;
+      const sharing     = n > maxOcc && sharingOk;
+      const hasError    = exceeded || adultOver;
+      const borderCol   = hasError ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : 'var(--border)';
+      const badgeBg     = hasError ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : n > 0 ? 'var(--success)' : 'var(--bg-surface)';
+      const badgeColor  = n > 0 ? '#fff' : 'var(--text-muted)';
+      const chipsHTML   = guests.length > 0
+        ? guests.map(g => _guestChipHTML(g, { inRoom: true })).join('')
+        : `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Drop guests here</span>`;
+      const warningHTML = hasError ? `
+        <div style="padding:7px 10px;background:rgba(220,38,38,.06);border-top:1px solid rgba(220,38,38,.2)">
+          <div style="font-size:10px;color:var(--danger);font-weight:600;margin-bottom:5px">
+            ${adultOver ? 'Maximum 2 adults per room.' : `Exceeds room capacity of ${maxOcc}.`} Resolve:
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--brand-green);color:#fff;border:none"
+              onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'), +1)">+ Add Room</button>
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._suggestRoomUpgrade(${rowIdx},'${escapeHtml(roomType)}',${n},${maxOcc})">Upgrade Room Type</button>
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._autoAssignGuests()">Auto Reassign</button>
+          </div>
+        </div>` : '';
+      const sharingHTML = sharing ? `
+        <div style="padding:7px 10px;background:rgba(245,158,11,.06);border-top:1px solid rgba(245,158,11,.3)">
+          <span style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600">Child-sharing:</span>
+          <span style="font-size:10px;color:var(--text-secondary)"> ${nAdults} adult + ${nChildren} children — 2 children share 1 bed ✓</span>
+        </div>` : '';
       html += `
-        <div style="margin-bottom:8px;border:1px solid ${borderCol};border-radius:var(--radius-md);overflow:hidden">
-          <div style="display:flex;align-items:center;gap:6px;padding:5px 10px;background:var(--bg-subtle);border-bottom:1px solid ${borderCol}">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="1" y="2.5" width="8" height="6.5" rx=".8" stroke="currentColor" stroke-width="1.2"/><path d="M1 5h8" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 5v4" stroke="currentColor" stroke-width="1.2"/></svg>
+        <div class="room-assignment-card" data-room-idx="${r}"
+          style="margin-bottom:8px;border:1px solid ${borderCol};border-radius:var(--radius-md);overflow:hidden">
+          <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg-subtle);border-bottom:1px solid ${borderCol}">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style="flex-shrink:0"><rect x="1" y="2.5" width="8" height="6.5" rx=".8" stroke="currentColor" stroke-width="1.2"/><path d="M1 5h8" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 5v4" stroke="currentColor" stroke-width="1.2"/></svg>
             <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-secondary)">Room ${r + 1}</span>
-            ${roomTypeVal ? `<span style="font-size:10px;color:var(--text-muted)">${escapeHtml(roomTypeVal)}</span>` : ''}
-            <span style="font-size:9px;color:var(--text-muted)">Capacity: ${maxOcc}</span>
-            <span style="margin-left:auto;font-size:9px;padding:1px 8px;border-radius:8px;background:${badgeBg};color:#fff;font-weight:600">
-              ${n}/${maxOcc}
-            </span>
-            ${exceeded ? `<span style="font-size:9px;color:var(--danger);font-weight:700">Overcrowded!</span>` : ''}
-            ${sharing && confirmed ? `<span style="font-size:9px;color:var(--brand-gold-dark,#b45309);font-weight:700">Child sharing ✓</span>` : ''}
-            ${sharing && !confirmed ? `<span style="font-size:9px;color:var(--brand-gold,#f59e0b);font-weight:700">Confirm sharing</span>` : ''}
+            <span style="font-size:10px;color:var(--text-muted)">${escapeHtml(roomType)} · Max ${maxOcc}</span>
+            <span style="margin-left:auto;font-size:9px;padding:1px 8px;border-radius:8px;background:${badgeBg};color:${badgeColor};font-weight:600;min-width:28px;text-align:center">${n}/${maxOcc}</span>
           </div>
-          <div style="padding:7px 10px">
-            <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:${exceeded || sharing ? '8px' : '0'}">
-              ${adultTags}${childTags}
-            </div>
-            ${sharing ? `
-            <div style="font-size:var(--text-xs);padding:7px 10px;border-radius:var(--radius-md);background:rgba(245,158,11,.08);border:1px solid var(--brand-gold,#f59e0b);margin-bottom:6px">
-              <div style="font-weight:700;color:var(--brand-gold-dark,#b45309);margin-bottom:4px">
-                This room exceeds standard adult occupancy. However, young children sharing is permitted.
-              </div>
-              <div style="color:var(--text-secondary);font-size:10px;margin-bottom:6px">
-                ${ra} adult${ra !== 1 ? 's' : ''} + ${rc} child${rc !== 1 ? 'ren' : ''} (${youngChildCount} under 5) — sharing arrangement
-              </div>
-              ${!confirmed ? `
-              <div style="display:flex;gap:5px;flex-wrap:wrap">
-                <button type="button" class="btn btn-xs" style="font-size:10px;padding:3px 10px;background:var(--brand-gold,#f59e0b);color:#fff;border:none;font-weight:600"
-                  onclick="window.TRVE._confirmChildSharing('${roomKey}', true)">
-                  Accept arrangement
-                </button>
-                <button type="button" class="btn btn-xs" style="font-size:10px;padding:3px 10px;background:var(--bg-surface);border:1px solid var(--border)"
-                  onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'), +1)">
-                  Add another room instead
-                </button>
-              </div>` : `
-              <div style="display:flex;align-items:center;gap:6px">
-                <span style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600">Arrangement confirmed</span>
-                <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 7px;background:var(--bg-surface);border:1px solid var(--border)"
-                  onclick="window.TRVE._confirmChildSharing('${roomKey}', false)">Undo</button>
-              </div>`}
-            </div>` : ''}
-            ${exceeded ? `
-            <div style="font-size:var(--text-xs);color:var(--danger);font-weight:600;margin-bottom:6px">
-              Max capacity for ${escapeHtml(roomTypeVal || 'this room type')} is ${maxOcc}. Please resolve:
-            </div>
-            <div style="display:flex;flex-wrap:wrap;gap:5px">
-              <button type="button" class="btn btn-xs" style="font-size:10px;padding:3px 8px;background:var(--brand-green);color:#fff;border:none"
-                onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'), +1)">
-                + Add Room
-              </button>
-              <button type="button" class="btn btn-xs" style="font-size:10px;padding:3px 8px;background:var(--bg-surface);border:1px solid var(--border)"
-                onclick="window.TRVE._suggestRoomUpgrade(${roomIdx}, '${escapeHtml(roomTypeVal)}', ${n}, ${maxOcc})">
-                Upgrade Room Type
-              </button>
-            </div>` : ''}
+          <div class="room-drop-zone"
+            style="padding:8px 10px;min-height:44px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;transition:background .12s"
+            ondragover="window.TRVE._onDragOver(event)"
+            ondragleave="window.TRVE._onDragLeave(event)"
+            ondrop="window.TRVE._onRoomDrop(event, ${rowIdx}, ${r})">
+            ${chipsHTML}
           </div>
+          ${warningHTML}${sharingHTML}
         </div>`;
-    });
-
-    // Footer: total assigned verification
-    html += `
-      <div style="font-size:10px;color:${assignedTotal === totalGuests ? 'var(--text-muted)' : 'var(--danger)'};margin-top:4px;text-align:right">
-        Total guests accommodated: <strong>${assignedTotal}</strong> / ${totalGuests}
-        ${assignedTotal !== totalGuests ? ' ⚠ mismatch' : ''}
-      </div>`;
-
+    }
+    const footerColor = assignedInRow === totalGuests ? 'var(--text-muted)' : 'var(--text-secondary)';
+    html += `<div style="font-size:10px;color:${footerColor};text-align:right;margin-top:2px">
+      Assigned to this lodge: <strong>${assignedInRow}</strong>
+    </div>`;
     container.innerHTML = html;
-    _updateRoomOccupancyBadge(row, roomIdx);
   }
 
   function _confirmChildSharing(roomKey, confirmed) {
@@ -3133,7 +3366,7 @@
   }
 
   // Badge derived entirely from Basic Details ÷ rooms vs maxOcc — no manual inputs.
-  function _updateRoomOccupancyBadge(row, roomIdx) {
+  function _updateRoomOccupancyBadge(row, rowIdx) {
     const badge = row.querySelector('.lodge-occupancy-badge');
     if (!badge) return;
     const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
@@ -3142,31 +3375,28 @@
       row.querySelector('[name^="lodge_name_"]')?.value
     ) || 2;
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
-    const totalGuests   = totalAdults + totalChildren;
-    const perRoom       = totalGuests > 0 ? Math.ceil(totalGuests / rooms) : 0;
-
-    const sharing  = perRoom > maxOcc && _childSharingApplies(
-      Math.ceil(totalAdults / rooms), Math.ceil(totalChildren / rooms), maxOcc
-    );
-    const exceeded = maxOcc > 0 && perRoom > maxOcc && !sharing;
+    const totalGuests = totalAdults + totalChildren;
+    // Use actual assigned count if assignments exist, else fall back to computed
+    let assignedInRow = 0;
+    for (let r = 0; r < rooms; r++) assignedInRow += _getGuestsInRoom(rowIdx, r).length;
+    const hasAssignments = assignedInRow > 0 || Object.keys(state.roomAssignments || {}).length > 0;
+    const displayed = hasAssignments ? assignedInRow : totalGuests;
+    const perRoom   = rooms > 0 ? Math.ceil(displayed / rooms) : 0;
+    const isOver    = perRoom > maxOcc;
 
     badge.textContent = totalGuests > 0
-      ? `${totalGuests} guests · ${perRoom}/${maxOcc} per room`
+      ? `${displayed}/${totalGuests} guests · ${perRoom}/${maxOcc} per room`
       : '—';
-    badge.style.background = exceeded
+    badge.style.background = isOver
       ? 'var(--danger)'
-      : sharing ? 'var(--brand-gold,#f59e0b)'
       : totalGuests > 0 ? 'var(--success)' : 'var(--bg-surface)';
     badge.style.color      = totalGuests > 0 ? '#fff' : 'var(--text-muted)';
-    badge.style.borderColor = exceeded
+    badge.style.borderColor = isOver
       ? 'var(--danger)'
-      : sharing ? 'var(--brand-gold,#f59e0b)'
       : totalGuests > 0 ? 'var(--success)' : 'var(--border)';
-    badge.title = exceeded
-      ? `Overcrowded! ${perRoom} per room needed but max is ${maxOcc}.`
-      : sharing
-        ? `Child-sharing: ${perRoom} per room (max ${maxOcc}) — young children permitted.`
-        : `${totalGuests} guests across ${rooms} room${rooms !== 1 ? 's' : ''}.`;
+    badge.title = isOver
+      ? `Overcrowded! ${perRoom} per room but max is ${maxOcc}.`
+      : `${displayed} of ${totalGuests} guests assigned across ${rooms} room${rooms !== 1 ? 's' : ''}.`;
   }
 
   function _getMaxOccupancy(roomType, lodgeName) {
@@ -3207,12 +3437,14 @@
       hasAnyRow = true;
     });
 
-    if (!hasAnyRow || totalCapacity >= totalGuests) {
+    // Also check for manually unassigned guests
+    const unassignedCount = _getUnassignedGuests().length;
+    if (!hasAnyRow || (totalCapacity >= totalGuests && unassignedCount === 0)) {
       alertEl.style.display = 'none';
       return;
     }
 
-    const gap = totalGuests - totalCapacity;
+    const gap = Math.max(totalGuests - totalCapacity, unassignedCount);
 
     // One-click resolution buttons
     const addRoomBtn = `
@@ -3819,6 +4051,8 @@
       const total = (parseInt(adultsInput?.value) || 0) + (parseInt(childrenInput?.value) || 0);
       syncGuestRecords(total);
       renderChildAgeInputs();
+      _syncGuestPool();        // reconcile guest pool objects with new pax count
+      _renderGuestAssignmentUI(); // refresh pool panel + room cards
       _checkCapacityMismatch();
     }
     if (adultsInput) adultsInput.addEventListener('change', _syncGuestsFromForm);
