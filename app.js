@@ -2004,9 +2004,11 @@
         const itn = state.itineraries.find(i => i.id === sel.value);
         if (itn) {
           if (itn.duration_days) {
-            document.getElementById('pricingDays').value = itn.duration_days;
+            const daysEl = document.getElementById('pricingDays');
+            if (daysEl) daysEl.value = itn.duration_days;
             // Vehicle days default to duration - 1 (arrival day has no game drive)
-            document.getElementById('pricingVehicleDays').value = itn.vehicle_days || Math.max(1, (itn.duration_days || 7) - 1);
+            const vDaysEl = document.getElementById('pricingVehicleDays');
+            if (vDaysEl) vDaysEl.value = itn.vehicle_days || Math.max(1, (itn.duration_days || 7) - 1);
           }
           // Auto-check permits based on itinerary destinations/activities
           const activities = [].concat(itn.activities || itn.highlights || []).join(' ').toLowerCase();
@@ -2049,7 +2051,10 @@
                 const cEl = document.getElementById('pricingChildren');
                 if (cEl) cEl.value = 0;
               }
-              if (enq.travel_start_date) document.getElementById('pricingTravelStartDate').value = enq.travel_start_date;
+              if (enq.travel_start_date) {
+                const tsdEl = document.getElementById('pricingTravelStartDate');
+                if (tsdEl) tsdEl.value = enq.travel_start_date;
+              }
             }
           }
 
@@ -2058,7 +2063,8 @@
           renderActivityPresets();
 
           // Validate nationality is set — warn if missing
-          const tierVal = document.getElementById('pricingNationality').value;
+          const natEl = document.getElementById('pricingNationality');
+          const tierVal = natEl ? natEl.value : '';
           if (!tierVal) {
             toast('warning', 'Nationality tier not set',
               'Set the guest nationality tier. UWA permit rates differ significantly by category (FNR / FR / EAC).');
