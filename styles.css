@@ -280,6 +280,7 @@ a:hover { text-decoration: underline; }
 
 .sidebar-nav {
   flex: 1;
+  min-height: 0;
   padding: var(--space-4) var(--space-2);
   overflow-y: auto;
   overflow-x: hidden;
