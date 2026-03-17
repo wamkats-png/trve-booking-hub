@@ -194,6 +194,16 @@
     roomExtras: {},        // {rowKey: {dietary, packedLunch}} — per-room special requirements
     accomHistory: [],      // undo stack — each entry is a snapshot of lodge-row config
     accomFuture:  [],      // redo stack
+    roomOverrides: {},     // {roomKey: {overridden:bool, reason:string, timestamp:string}} — soft-warning overrides
+    overrideLog:  [],      // audit log [{roomKey, reason, timestamp, guestIds}]
+    accommodation: {
+      base_cost: 0,
+      adjustment: { type: null, value: 0, reason: '' },
+      final_cost: 0,
+      adjustmentLog: [],      // audit trail [{type, value, reason, user, timestamp, prevFinal, newFinal}]
+      adjustmentHistory: [],  // undo stack for adjustments
+      adjustmentFuture:  [],  // redo stack for adjustments
+    },
   };
 
   /* ============================================================
@@ -483,8 +493,12 @@
     if (el._removing) return;
     el._removing = true;
     el.classList.add('removing');
-    // Use setTimeout as reliable fallback — transitionend can fail if element is hidden
-    setTimeout(() => { if (el.parentNode) el.remove(); }, 250);
+    // Primary: remove immediately when CSS transition ends
+    const cleanup = () => { if (el.parentNode) el.remove(); };
+    el.addEventListener('transitionend', cleanup, { once: true });
+    // Fallback: guarantee DOM removal even if transitionend doesn't fire
+    // (e.g. element scrolled offscreen, tab backgrounded, or transition skipped)
+    setTimeout(cleanup, 300);
   }
 
   /* ============================================================
@@ -2378,6 +2392,13 @@
         if (dateEl && approvedEnq.travel_start_date) dateEl.value = approvedEnq.travel_start_date;
         const daysEl = document.getElementById('pricingDays');
         if (daysEl && approvedEnq.duration_days) daysEl.value = approvedEnq.duration_days;
+        // Derive and populate travel_end_date so nights calculation has both bounds
+        const endDateEl = document.getElementById('pricingTravelEndDate');
+        if (endDateEl && approvedEnq.travel_start_date && approvedEnq.duration_days && !endDateEl.value) {
+          const endDate = new Date(approvedEnq.travel_start_date);
+          endDate.setDate(endDate.getDate() + approvedEnq.duration_days - 1); // inclusive
+          endDateEl.value = endDate.toISOString().slice(0, 10);
+        }
       }
 
       const tierLabel = approvedEnq.nationality_tier ? ` · Nationality: ${approvedEnq.nationality_tier}` : '';
@@ -2561,16 +2582,35 @@
       : '<option value="" disabled>⚠ No lodges — check backend connection</option>';
 
     // Auto-derive nights from trip dates (checkout − checkin) or days − 1
+    // computeTripDates: duration_days = (endDate - startDate) + 1 (inclusive); nights = duration_days - 1
     const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
     const endDateVal   = document.getElementById('pricingTravelEndDate')?.value   || '';
-    const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 7;
-    let autoNights = Math.max(1, tripDays - 1);
+    const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    let totalNights;
     if (startDateVal && endDateVal) {
+      // Primary: compute from actual date range
       const diff = Math.round((new Date(endDateVal) - new Date(startDateVal)) / 86400000);
-      if (diff > 0) autoNights = diff;
+      totalNights = Math.max(1, diff); // nights = endDate - startDate (not +1 which would be duration_days)
+    } else if (tripDays > 0) {
+      // Secondary: derive from duration field (nights = duration_days - 1)
+      totalNights = Math.max(1, tripDays - 1);
+    } else {
+      // No data yet — safe minimum; avoids the hardcoded-7 / 6-nights false default
+      totalNights = 1;
     }
+
+    // For 2nd+ lodges, default to remaining unallocated nights (min 1)
+    let autoNights = totalNights;
+    if (idx > 0 && !cfg.nights) {
+      let usedNights = 0;
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
+        usedNights += parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
+      });
+      autoNights = Math.max(1, totalNights - usedNights);
+    }
+
     const initRooms   = cfg.rooms   || 1;
-    const initNights  = cfg.nights  || autoNights;
+    const initNights  = cfg.nights  ?? autoNights;
     const initMeal    = cfg.mealPlan || 'FB';
 
     // Check-in / check-out display
@@ -2590,13 +2630,13 @@
     el.innerHTML = `
       <div class="lodge-item-body">
 
-        <!-- ① Date bar — auto-synced from Basic Data -->
+        <!-- ① Date bar — auto-synced (cascading across lodge rows) -->
         <div class="lodge-date-bar" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:7px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);font-size:var(--text-xs);color:var(--text-secondary)">
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="1.5" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 4h9" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 1v1.5M7.5 1v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
           Check-in:&nbsp;<strong class="lodge-checkin-display">${checkInDisplay}</strong>
           &nbsp;&rarr;&nbsp;
           Check-out:&nbsp;<strong class="lodge-checkout-display">${checkOutDisplay}</strong>
-          <span style="color:var(--text-muted);margin-left:4px">(${initNights} nights)</span>
+          <span class="lodge-nights-badge" style="color:var(--text-muted);margin-left:4px">(${initNights} nights)</span>
           <label style="display:flex;align-items:center;gap:4px;margin-left:auto;cursor:pointer;font-size:var(--text-xs);color:var(--text-muted)">
             <input type="checkbox" class="lodge-custom-dates-toggle" style="width:11px;height:11px">
             Custom stay dates
@@ -2778,6 +2818,7 @@
     // Initial render
     _autoSyncRoomGuests(el);
     if (!cfg.skipRender) _renderAccommPricingSummary();
+    _updateLodgeRowDates(); // cascade dates including this new row
     _validateAndShowNightsSummary();
   }
 
@@ -2863,6 +2904,7 @@
     _syncLodgeGuestAssignments();
     _checkCapacityMismatch();
     _renderAccommPricingSummary();
+    _updateLodgeRowDates(); // re-cascade dates after removal
     _validateAndShowNightsSummary();
   }
   window.TRVE._removeLodgeItem = _removeLodgeItem;
@@ -3041,12 +3083,16 @@
     const days = parseInt(document.getElementById('pricingDays')?.value) || 0;
     const expected = days > 0 ? Math.max(1, days - 1) : null;
 
-    // Sum all lodge nights
-    let assigned = 0;
-    const rows = document.querySelectorAll('#lodgeItems .lodge-item');
-    rows.forEach(row => {
-      assigned += parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
-    });
+    // Collect per-row data
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    const rowData = rows.map((row, i) => ({
+      nights: parseInt(row.querySelector('.lodge-nights-input')?.value) || 0,
+      name:   row.querySelector('[name^="lodge_name_"]')?.value || `Lodge ${i + 1}`,
+    }));
+    const assigned = rowData.reduce((s, r) => s + r.nights, 0);
+
+    // Check for any zero-night rows (data integrity)
+    const zeroNightRows = rowData.filter(r => r.nights === 0);
 
     // Get or create the banner element
     let banner = document.getElementById('nightsSummaryBanner');
@@ -3065,41 +3111,48 @@
       return true;
     }
 
-    const match = assigned === expected;
+    const match = assigned === expected && zeroNightRows.length === 0;
     const diff  = assigned - expected;
-    const sign  = diff > 0 ? '+' : '';
 
     if (match) {
       banner.style.display = '';
+      const multiInfo = rows.length > 1
+        ? ` &nbsp;·&nbsp; ${rows.length} lodges: ${rowData.map(r => `${r.name.split(' ')[0]} = ${r.nights}n`).join(' + ')}`
+        : '';
       banner.innerHTML = `
         <div style="display:flex;align-items:center;gap:6px;padding:7px 12px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius-md);font-size:var(--text-xs)">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="var(--success)" stroke-width="1.3"/><path d="M3.5 6l2 2 3-3" stroke="var(--success)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span style="color:var(--success);font-weight:700">Nights match</span>
-          <span style="color:var(--text-secondary)">Total nights assigned: <strong>${assigned}</strong> = expected (${days} days − 1)</span>
+          <span style="color:var(--text-secondary)">Total nights assigned: <strong>${assigned}</strong> = expected (${days} days − 1)${multiInfo}</span>
         </div>`;
     } else {
       const overUnder = diff > 0 ? 'over by' : 'short by';
       const absD = Math.abs(diff);
+      let detail = '';
+      if (zeroNightRows.length > 0) {
+        detail = `Lodges with 0 nights: ${zeroNightRows.map(r => r.name.split(' ')[0]).join(', ')}. Set at least 1 night per lodge.`;
+      } else if (rows.length > 1) {
+        const remaining = expected - assigned;
+        detail = `Adjust lodge nights so they sum to ${expected}. Current: ${rowData.map(r => `${r.name.split(' ')[0]} = ${r.nights}`).join(' + ')} = ${assigned}.`
+               + (remaining > 0 ? ` Need ${remaining} more night${remaining !== 1 ? 's' : ''}.` : ` Remove ${Math.abs(remaining)} night${Math.abs(remaining) !== 1 ? 's' : ''}.`);
+      } else {
+        detail = `Set this lodge's nights to ${expected} to match the ${days}-day trip.`;
+      }
       banner.style.display = '';
       banner.innerHTML = `
         <div style="display:flex;align-items:start;gap:8px;padding:10px 12px;background:rgba(220,38,38,.05);border:1px solid rgba(220,38,38,.35);border-radius:var(--radius-md);font-size:var(--text-xs)">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style="flex-shrink:0;margin-top:1px"><circle cx="6.5" cy="6.5" r="5.5" stroke="var(--danger)" stroke-width="1.3"/><path d="M6.5 3.5v3.2" stroke="var(--danger)" stroke-width="1.5" stroke-linecap="round"/><circle cx="6.5" cy="9" r=".6" fill="var(--danger)"/></svg>
-          <div>
+          <div style="flex:1">
             <div style="font-weight:700;color:var(--danger);margin-bottom:3px">Nights mismatch — pricing and quotation blocked</div>
             <div style="color:var(--text-secondary);margin-bottom:4px">
               Total nights assigned: <strong>${assigned}</strong>
               &nbsp;·&nbsp; Expected: <strong>${expected}</strong> (${days} days − 1)
               &nbsp;·&nbsp; <strong style="color:var(--danger)">${overUnder} ${absD} night${absD !== 1 ? 's' : ''}</strong>
             </div>
-            <div style="color:var(--text-muted)">
-              ${rows.length > 1
-                ? `Adjust lodge nights so they sum to ${expected}. Current: ${Array.from(rows).map((r, i) => {
-                    const n = parseInt(r.querySelector('.lodge-nights-input')?.value) || 0;
-                    const lname = r.querySelector('[name^="lodge_name_"]')?.value || `Lodge ${i+1}`;
-                    return `${lname.split(' ')[0]} = ${n}`;
-                  }).join(' + ')} = ${assigned}.`
-                : `Set this lodge's nights to ${expected} to match the ${days}-day trip.`}
-            </div>
+            <div style="color:var(--text-muted);margin-bottom:${rows.length > 1 ? 6 : 0}px">${detail}</div>
+            ${rows.length > 1 ? `
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._autoDistributeNights()">Auto-Distribute Nights</button>` : ''}
           </div>
         </div>`;
     }
@@ -3116,24 +3169,48 @@
     const endVal = document.getElementById('pricingTravelEndDate')?.value;
     const days = parseInt(document.getElementById('pricingDays')?.value) || 0;
 
-    // Sync duration when both dates provided
+    // Sync duration when both dates provided.
+    // INCLUSIVE logic: 3 Apr → 6 Apr = 4 days (not 3).
+    // Formula: duration_days = (endDate - startDate in days) + 1
+    // Formula: nights        = duration_days - 1
     if (startVal && endVal) {
-      const diffMs = new Date(endVal) - new Date(startVal);
-      const diffDays = Math.round(diffMs / 86400000);
-      if (diffDays > 0) {
+      const diffMs  = new Date(endVal) - new Date(startVal);
+      const diffDays = Math.round(diffMs / 86400000) + 1; // inclusive
+      if (diffDays >= 1) {
         const daysEl = document.getElementById('pricingDays');
-        if (daysEl && parseInt(daysEl.value) !== diffDays) {
-          daysEl.value = diffDays;
-          _syncLodgeNightsFromDays(diffDays);
+        if (daysEl) {
+          if (parseInt(daysEl.value) !== diffDays) {
+            daysEl.value = diffDays;
+            _syncLodgeNightsFromDays(diffDays);
+          }
+          daysEl.readOnly = true; // lock when dates are provided
+          daysEl.title = 'Auto-calculated from travel dates (inclusive). Edit dates above to change.';
+          daysEl.style.background = 'var(--bg-subtle)';
         }
+        // Show nights hint below the duration field and in the date range hint
+        const nights = diffDays - 1;
+        const hintText = `${diffDays} day${diffDays !== 1 ? 's' : ''} · ${nights} night${nights !== 1 ? 's' : ''} (inclusive)`;
+        const hint = document.getElementById('pricingDateRangeHint');
+        if (hint) { hint.textContent = hintText; hint.style.display = ''; }
+        const daysHint = document.getElementById('pricingDaysNightsHint');
+        if (daysHint) { daysHint.textContent = `${nights} night${nights !== 1 ? 's' : ''} · auto-calculated from dates`; daysHint.style.display = ''; }
       }
-    } else if (startVal && days > 0) {
-      // Compute end date from start + days
-      const end = new Date(startVal);
-      end.setDate(end.getDate() + days);
-      const endInput = document.getElementById('pricingTravelEndDate');
-      if (endInput && !endInput.value) {
-        endInput.value = end.toISOString().slice(0, 10);
+    } else {
+      // Unlock pricingDays when dates are cleared
+      const daysEl = document.getElementById('pricingDays');
+      if (daysEl) { daysEl.readOnly = false; daysEl.style.background = ''; daysEl.title = ''; }
+      const hint = document.getElementById('pricingDateRangeHint');
+      if (hint) hint.style.display = 'none';
+      const daysHint = document.getElementById('pricingDaysNightsHint');
+      if (daysHint) daysHint.style.display = 'none';
+      if (startVal && days > 0) {
+        // Compute end date from start + days - 1 (inclusive)
+        const end = new Date(startVal);
+        end.setDate(end.getDate() + days - 1);
+        const endInput = document.getElementById('pricingTravelEndDate');
+        if (endInput && !endInput.value) {
+          endInput.value = end.toISOString().slice(0, 10);
+        }
       }
     }
 
@@ -3151,33 +3228,197 @@
       }
     }
 
-    // Update check-in / check-out display on each lodge row
-    document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
-      _updateLodgeRowDates(row);
-    });
+    // Update check-in / check-out display on ALL lodge rows (cascading)
+    _updateLodgeRowDates();
 
     // Re-validate nights totals whenever dates/duration change
     _validateAndShowNightsSummary();
   }
 
-  function _updateLodgeRowDates(row) {
+  // Update check-in/check-out display for ALL lodge rows in sequence (cascade).
+  // Row 1: check-in = trip start; Row N: check-in = Row (N-1) check-out.
+  // Rows with "Custom stay dates" checked keep their own date inputs and are treated
+  // as anchors — subsequent non-custom rows resume cascading from that anchor's checkout.
+  // Also accepts a single row argument for backward-compat but always re-cascades all rows.
+  function _updateLodgeRowDates(_row) {
     const startVal = document.getElementById('pricingTravelStartDate')?.value;
-    const checkInEl = row.querySelector('.lodge-checkin-display');
-    const checkOutEl = row.querySelector('.lodge-checkout-display');
-    if (!checkInEl || !checkOutEl) return;
-    if (!startVal) { checkInEl.textContent = '—'; checkOutEl.textContent = '—'; return; }
-    const customToggle = row.querySelector('.lodge-custom-dates-toggle');
-    const isCustom = customToggle && customToggle.checked;
-    if (!isCustom) {
-      const nights = parseInt(row.querySelector('.lodge-nights-input')?.value) || 1;
-      const checkIn = new Date(startVal);
-      const checkOut = new Date(checkIn);
-      checkOut.setDate(checkOut.getDate() + nights);
-      const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-      checkInEl.textContent = fmt(checkIn);
-      checkOutEl.textContent = fmt(checkOut);
-    }
+    const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    if (rows.length === 0) return;
+
+    // Running cursor: starts at trip start date
+    let cursor = startVal ? new Date(startVal) : null;
+
+    rows.forEach((row, i) => {
+      const checkInEl  = row.querySelector('.lodge-checkin-display');
+      const checkOutEl = row.querySelector('.lodge-checkout-display');
+      const badgeEl    = row.querySelector('.lodge-nights-badge');
+      const customToggle = row.querySelector('.lodge-custom-dates-toggle');
+      const isCustom   = customToggle?.checked;
+      const nights     = parseInt(row.querySelector('.lodge-nights-input')?.value) || 1;
+
+      if (isCustom) {
+        // Custom row: read from explicit date inputs; update cursor to this checkout
+        const ciInput = row.querySelector('.lodge-custom-checkin');
+        const coInput = row.querySelector('.lodge-custom-checkout');
+        const ciVal   = ciInput?.value;
+        const coVal   = coInput?.value;
+        // Auto-fill checkout from custom check-in + nights if checkout not set
+        if (ciVal && !coVal && coInput) {
+          const co = new Date(ciVal);
+          co.setDate(co.getDate() + nights);
+          coInput.value = co.toISOString().slice(0, 10);
+        }
+        if (ciVal) cursor = coVal ? new Date(coVal) : null;
+        if (badgeEl) badgeEl.textContent = `(${nights} nights)`;
+      } else {
+        // Auto row: derive from cursor
+        if (!cursor) {
+          if (checkInEl)  checkInEl.textContent  = '—';
+          if (checkOutEl) checkOutEl.textContent = '—';
+          if (badgeEl)    badgeEl.textContent    = `(${nights} nights)`;
+          // Advance cursor even without a start date (accumulate nights)
+          return;
+        }
+        const checkIn  = new Date(cursor);
+        const checkOut = new Date(cursor);
+        checkOut.setDate(checkOut.getDate() + nights);
+        if (checkInEl)  checkInEl.textContent  = fmt(checkIn);
+        if (checkOutEl) checkOutEl.textContent = fmt(checkOut);
+        if (badgeEl)    badgeEl.textContent    = `(${nights} nights)`;
+        cursor = checkOut; // advance cascade cursor
+      }
+    });
+
+    // Rebuild trip timeline bar after any date update
+    _buildTripTimeline();
   }
+
+  // ---------------------------------------------------------------------------
+  // TRIP TIMELINE — visual strip showing lodge segments across trip nights
+  // ---------------------------------------------------------------------------
+
+  // Palette for up to 8 lodges (cycles if more)
+  const _TIMELINE_COLORS = [
+    '#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#f97316','#84cc16'
+  ];
+
+  // Build (or update) the trip timeline bar above the lodge items.
+  // Shows a horizontal strip with one segment per lodge, proportional to nights.
+  function _buildTripTimeline() {
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    let tlEl = document.getElementById('tripTimelineBar');
+
+    // Hide timeline if only 1 lodge or no trip dates
+    const startVal = document.getElementById('pricingTravelStartDate')?.value;
+    if (rows.length <= 1) { if (tlEl) tlEl.style.display = 'none'; return; }
+
+    if (!tlEl) {
+      const lodgeItems = document.getElementById('lodgeItems');
+      if (!lodgeItems) return;
+      tlEl = document.createElement('div');
+      tlEl.id = 'tripTimelineBar';
+      lodgeItems.parentNode.insertBefore(tlEl, lodgeItems);
+    }
+    tlEl.style.display = '';
+
+    const days   = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    const expected = days > 0 ? Math.max(1, days - 1) : null;
+
+    // Collect segment data from rows
+    const segments = rows.map((row, i) => {
+      const name    = row.querySelector('[name^="lodge_name_"]')?.value || `Lodge ${i + 1}`;
+      const nights  = parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
+      const ciText  = row.querySelector('.lodge-checkin-display')?.textContent  || '';
+      const coText  = row.querySelector('.lodge-checkout-display')?.textContent || '';
+      return { name, nights, ciText, coText, color: _TIMELINE_COLORS[i % _TIMELINE_COLORS.length] };
+    });
+
+    const totalNightsAssigned = segments.reduce((s, seg) => s + seg.nights, 0);
+    const baseTotal = expected || totalNightsAssigned || 1;
+
+    const segmentsHTML = segments.map((seg, i) => {
+      const pct = totalNightsAssigned > 0 ? (seg.nights / baseTotal * 100).toFixed(1) : (100 / segments.length).toFixed(1);
+      const shortName = seg.name.split(' ').slice(0, 2).join(' ');
+      const tooltip   = `${seg.name}: ${seg.ciText} → ${seg.coText} (${seg.nights} night${seg.nights !== 1 ? 's' : ''})`;
+      return `<div title="${escapeHtml(tooltip)}"
+        style="flex:${pct};min-width:0;background:${seg.color};border-radius:${i===0?'var(--radius-md) 0 0 var(--radius-md)':''}${i===segments.length-1?' var(--radius-md) var(--radius-md) 0 0':''};
+               display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:default;position:relative">
+        <span style="font-size:9px;color:#fff;font-weight:700;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;padding:0 4px;text-shadow:0 1px 2px rgba(0,0,0,.4)">${escapeHtml(shortName)} · ${seg.nights}n</span>
+      </div>`;
+    }).join('');
+
+    const dayLabels = (() => {
+      if (!startVal || !expected) return '';
+      let html = '<div style="display:flex;gap:0;margin-bottom:2px">';
+      let cursor = new Date(startVal);
+      const fmt  = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      let nightIdx = 0;
+      segments.forEach(seg => {
+        const pct = (seg.nights / baseTotal * 100).toFixed(1);
+        html += `<div style="flex:${pct};min-width:0;font-size:9px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${fmt(cursor)}">
+          ${fmt(cursor)}
+        </div>`;
+        cursor.setDate(cursor.getDate() + seg.nights);
+      });
+      html += `<div style="font-size:9px;color:var(--text-muted);white-space:nowrap;padding-left:2px">${fmt(cursor)}</div>`;
+      html += '</div>';
+      return html;
+    })();
+
+    const mismatch = expected !== null && totalNightsAssigned !== expected;
+    const borderCol = mismatch ? 'var(--danger)' : 'var(--border)';
+
+    tlEl.innerHTML = `
+      <div style="margin-bottom:10px;padding:10px 12px;background:var(--bg-subtle);border:1px solid ${borderCol};border-radius:var(--radius-md)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">
+            Trip Timeline — ${rows.length} lodge${rows.length !== 1 ? 's' : ''}
+            ${expected ? ` · ${totalNightsAssigned}/${expected} nights allocated` : ''}
+          </span>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="btn btn-xs" title="Distribute remaining nights evenly across all lodges"
+              style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._autoDistributeNights()">
+              Auto-Distribute
+            </button>
+          </div>
+        </div>
+        ${dayLabels}
+        <div style="display:flex;height:28px;border-radius:var(--radius-md);overflow:hidden;border:1px solid rgba(0,0,0,.08)">
+          ${segmentsHTML}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+          ${segments.map((seg, i) => `
+            <span style="display:flex;align-items:center;gap:3px;font-size:10px;color:var(--text-secondary)">
+              <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${seg.color}"></span>
+              ${escapeHtml(seg.name.split(' ').slice(0,3).join(' '))} (${seg.nights}n)
+            </span>`).join('')}
+        </div>
+      </div>`;
+  }
+  window.TRVE._buildTripTimeline = _buildTripTimeline;
+
+  // Distribute total trip nights evenly across all lodge rows.
+  // Remainders are front-loaded (first lodge gets +1 if not divisible evenly).
+  function _autoDistributeNights() {
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    if (rows.length === 0) return;
+    const days    = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    const total   = days > 0 ? Math.max(1, days - 1) : null;
+    if (!total) { toast('warn', 'Set trip duration', 'Enter the number of trip days before auto-distributing nights.'); return; }
+    _accomPushHistory();
+    const base  = Math.floor(total / rows.length);
+    const extra = total % rows.length;
+    rows.forEach((row, i) => {
+      const inp = row.querySelector('.lodge-nights-input');
+      if (inp) inp.value = base + (i < extra ? 1 : 0);
+    });
+    _updateLodgeRowDates();
+    _validateAndShowNightsSummary();
+    _renderAccommPricingSummary();
+  }
+  window.TRVE._autoDistributeNights = _autoDistributeNights;
 
   // ---------------------------------------------------------------------------
   // GUEST ID SYSTEM
@@ -3412,16 +3653,90 @@
   // CHILD MEAL & OCCUPANCY TIER HELPERS
   // ---------------------------------------------------------------------------
 
-  // Age-banded meal pricing (Section 4 of booking logic spec).
-  // Returns {multiplier, label, free, cotNeeded, highChairNeeded, confirmNeeded}
-  function _getChildMealTier(age) {
+  // Age-banded meal pricing — aligns with lodge child policy tiers.
+  // Thresholds: under 5 = free, 5–9 = child rate (50%), 10+ = half/adult rate.
+  // Returns {multiplier, label, free, cotNeeded, highChairNeeded, confirmNeeded, ageGroup}
+  function _getChildMealTier(age, lodgePolicy) {
+    const p = lodgePolicy || {};
+    const freeUnder  = p.free_under_age  ?? 5;
+    const childUnder = p.child_under_age ?? 10;
     if (age === null || age === undefined) {
-      return { multiplier: 0.5, label: 'Child rate (age unknown — assumed 5–11)', free: false };
+      return { multiplier: 0.5, label: 'Child rate (age unknown — assumed 5–9)', free: false, ageGroup: 'mid' };
     }
-    if (age < 2)  return { multiplier: 0, label: 'FREE — under 2', free: true, cotNeeded: true, highChairNeeded: true };
-    if (age < 5)  return { multiplier: 0, label: 'FREE / token — age 2–4 (confirm with property)', free: true, cotNeeded: true, confirmNeeded: true };
-    if (age < 12) return { multiplier: 0.5, label: 'Child rate — 50% of adult (age 5–11)', free: false };
-    return          { multiplier: 1.0, label: 'Full adult rate (age 12+)', free: false };
+    if (age < 2)         return { multiplier: 0,   label: 'FREE — under 2', free: true, cotNeeded: true, highChairNeeded: true, ageGroup: 'infant' };
+    if (age < freeUnder) return { multiplier: 0,   label: `FREE / token — age 2–${freeUnder - 1} (confirm with property)`, free: true, cotNeeded: true, confirmNeeded: true, ageGroup: 'young' };
+    if (age < childUnder) return { multiplier: 0.5, label: `Child rate — 50% of adult (age ${freeUnder}–${childUnder - 1})`, free: false, ageGroup: 'mid' };
+    return                      { multiplier: p.older_child_multiplier ?? 0.5, label: `Half/configured rate (age ${childUnder}+)`, free: false, ageGroup: 'older' };
+  }
+
+  // Return lodge-specific child sharing policy from supplier data.
+  // Falls back to sensible defaults if no supplier data available.
+  function _getLodgeChildPolicy(lodgeName) {
+    const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+    const policy = lodge?.child_policy || {};
+    return {
+      free_under_age:          policy.free_under_age          ?? 5,
+      child_under_age:         policy.child_under_age         ?? 10,
+      older_child_multiplier:  policy.older_child_multiplier  ?? 0.5,
+      max_adults_per_room:     policy.max_adults_per_room     ?? 2,
+      child_sharing_allowed:   policy.child_sharing_allowed   ?? true,
+      max_children_sharing:    policy.max_children_sharing    ?? 3,
+    };
+  }
+
+  // Log a soft-warning override to the audit trail.
+  function _logOverride(roomKey, reason, guestIds) {
+    if (!state.overrideLog) state.overrideLog = [];
+    const entry = { roomKey, reason: reason || '(no reason given)', timestamp: new Date().toISOString(), guestIds: guestIds || [] };
+    state.overrideLog.push(entry);
+    if (!state.roomOverrides) state.roomOverrides = {};
+    state.roomOverrides[roomKey] = { overridden: true, reason: entry.reason, timestamp: entry.timestamp };
+    console.info('[RoomOverride]', entry);
+  }
+
+  // Show a modal confirmation dialog for soft-warning overrides.
+  // Calls onConfirm(reason) when user confirms, or nothing when they cancel.
+  function _showOverrideConfirmDialog(message, roomKey, onConfirm) {
+    // Remove any existing dialog first
+    document.getElementById('roomOverrideDialog')?.remove();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'roomOverrideDialog';
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+    backdrop.innerHTML = `
+      <div style="background:var(--bg-card,#fff);border-radius:var(--radius-lg,10px);box-shadow:0 8px 32px rgba(0,0,0,.22);padding:24px 28px;max-width:420px;width:90%;font-family:inherit">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.6"/><path d="M9 5.5v4" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.8" stroke-linecap="round"/><circle cx="9" cy="12.5" r=".9" fill="var(--brand-gold,#f59e0b)"/></svg>
+          <span style="font-size:var(--text-sm,13px);font-weight:700;color:var(--brand-gold-dark,#b45309)">Override Room Warning</span>
+        </div>
+        <p style="font-size:var(--text-xs,11px);color:var(--text-secondary);margin:0 0 6px">${message}</p>
+        <p style="font-size:var(--text-xs,11px);color:var(--text-muted);margin:0 0 14px;font-style:italic">This configuration is allowed based on lodge policy. Ensure pricing and rooming are correct.</p>
+        <label style="font-size:var(--text-xs,11px);font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Reason for override <span style="color:var(--danger)">*</span></label>
+        <input id="overrideReasonInput" type="text" class="form-control"
+          placeholder="e.g. Family group — 1 adult with 2 young children, lodge confirmed"
+          style="font-size:var(--text-xs,11px);margin-bottom:14px;width:100%;box-sizing:border-box">
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button id="overrideCancelBtn" type="button" class="btn btn-xs" style="font-size:var(--text-xs,11px);padding:5px 14px;background:var(--bg-surface);border:1px solid var(--border)">Cancel</button>
+          <button id="overrideConfirmBtn" type="button" class="btn btn-xs" style="font-size:var(--text-xs,11px);padding:5px 14px;background:var(--brand-gold,#f59e0b);color:#fff;border:none;font-weight:700">Override and Proceed</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const input    = backdrop.querySelector('#overrideReasonInput');
+    const confirmB = backdrop.querySelector('#overrideConfirmBtn');
+    const cancelB  = backdrop.querySelector('#overrideCancelBtn');
+    input.focus();
+    const close = () => backdrop.remove();
+    cancelB.addEventListener('click', close);
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
+    confirmB.addEventListener('click', () => {
+      const reason = input.value.trim();
+      if (!reason) { input.style.borderColor = 'var(--danger)'; input.focus(); return; }
+      close();
+      onConfirm(reason);
+    });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') confirmB.click();
+      if (e.key === 'Escape') close();
+    });
   }
 
   // True when a guest object represents an under-5 child (free occupant).
@@ -3446,11 +3761,14 @@
   function _accomSnapshot() {
     return {
       rows: Array.from(document.querySelectorAll('#lodgeItems .lodge-item')).map(row => ({
-        lodgeName: row.querySelector('[name^="lodge_name_"]')?.value || '',
-        roomType:  row.querySelector('[name^="room_type_"]')?.value  || '',
-        rooms:     parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1,
-        nights:    parseInt(row.querySelector('[name^="nights_"]')?.value) || 1,
-        mealPlan:  row.querySelector('[name^="meal_plan_"]')?.value  || 'BB',
+        lodgeName:    row.querySelector('[name^="lodge_name_"]')?.value || '',
+        roomType:     row.querySelector('[name^="room_type_"]')?.value  || '',
+        rooms:        parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1,
+        nights:       parseInt(row.querySelector('[name^="nights_"]')?.value) || 1,
+        mealPlan:     row.querySelector('[name^="meal_plan_"]')?.value  || 'BB',
+        customDates:  row.querySelector('.lodge-custom-dates-toggle')?.checked || false,
+        customCheckin:  row.querySelector('.lodge-custom-checkin')?.value  || '',
+        customCheckout: row.querySelector('.lodge-custom-checkout')?.value || '',
       })),
       assignments: { ...state.roomAssignments },
       roomExtras:  JSON.parse(JSON.stringify(state.roomExtras || {})),
@@ -3491,9 +3809,24 @@
     rows.forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true, skipRender: true }));
     state.roomAssignments = { ...assignments };
     state.roomExtras      = JSON.parse(JSON.stringify(snap.roomExtras || {}));
+    // Restore custom date fields for each row if snapshot captured them
+    Array.from(container.querySelectorAll('.lodge-item')).forEach((row, i) => {
+      const cfg = rows[i];
+      if (!cfg) return;
+      if (cfg.customDates) {
+        const toggle = row.querySelector('.lodge-custom-dates-toggle');
+        if (toggle) { toggle.checked = true; toggle.dispatchEvent(new Event('change')); }
+        const ci = row.querySelector('.lodge-custom-checkin');
+        const co = row.querySelector('.lodge-custom-checkout');
+        if (ci && cfg.customCheckin)  ci.value  = cfg.customCheckin;
+        if (co && cfg.customCheckout) co.value  = cfg.customCheckout;
+      }
+    });
+    _updateLodgeRowDates();       // re-cascade dates
     _renderGuestAssignmentUI();   // renders pool panel + all room cards
     _renderAccommPricingSummary();
     _checkCapacityMismatch();
+    _validateAndShowNightsSummary();
   }
 
   function _updateUndoRedoButtons() {
@@ -3593,13 +3926,15 @@
     return (state.guestPool || []).filter(g => !state.roomAssignments[g.id]);
   }
 
-  // Returns {ok, warnings?[], error?, suggestions?[]}
-  // Applies the full occupancy rule set from the booking logic spec:
-  //   - Children under 5 are FREE occupants — do not count against maxOcc
-  //   - Every room must have ≥1 adult when any child is present
-  //   - Standard: max 2 adults per room
-  //   - Older children (5+) count toward maxOcc
-  //   - U5 children need cots; under-2 need high chairs
+  // Returns {ok, warnings?[], error?, softWarning?, message?, suggestions?[]}
+  // WARNING CLASSIFICATION:
+  //   Hard errors  (error field set)       — block progression:
+  //     • No adult present when children are being assigned
+  //     • Adults alone exceed maxOcc
+  //     • Room index out of range / guest not found
+  //   Soft warnings (softWarning:true)     — alert but allow override:
+  //     • Non-standard occupancy: adult + multiple children exceeding standard capacity
+  //     • Capacity edge cases permitted by lodge child-sharing policy
   // rtIdx is the room-type-entry index within the lodge row (default 0).
   function _validateDrop(guestId, rowIdx, rtIdx, roomIdx) {
     // Handle 3-arg legacy calls (no rtIdx): _validateDrop(guestId, rowIdx, roomIdx)
@@ -3609,6 +3944,7 @@
     const roomType  = _getRoomTypeForEntry(row, rtIdx);
     const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
     const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const lodgePolicy = _getLodgeChildPolicy(lodgeName);
     const roomCount = _getRoomsCountForEntry(row, rtIdx);
     if (roomIdx >= roomCount) return { error: 'Room index out of range' };
     const guest = (state.guestPool || []).find(g => g.id === guestId);
@@ -3629,20 +3965,40 @@
     const newOlderChild  = curOlderChild + (addingOlderChild ? 1 : 0);
     const newTotalChild  = newU5 + newOlderChild;
 
-    // Rule: every room with children must have at least 1 adult
+    // HARD ERROR: every room with children must have at least 1 adult (data integrity)
     if (newAdults === 0 && newTotalChild > 0) {
       return { error: 'Every room must have at least 1 adult. Assign an adult to this room first.', suggestions: [] };
     }
 
-    // Standard rule: max 2 adults per room
-    if (newAdults > 2) {
-      return { error: 'Maximum 2 adults per room (standard rule).', suggestions: ['add-room', 'upgrade'] };
+    // HARD ERROR: adults alone exceed room capacity — cannot be overridden by child policy
+    if (newAdults > maxOcc) {
+      return { error: `Adults alone exceed room capacity (${maxOcc}). Add another room or upgrade room type.`, suggestions: ['add-room', 'upgrade'] };
+    }
+
+    // Standard max-adults check (hard error if no children present, soft if family group)
+    const maxAdultsPolicy = lodgePolicy.max_adults_per_room ?? 2;
+    if (newAdults > maxAdultsPolicy && newTotalChild === 0) {
+      return { error: `Maximum ${maxAdultsPolicy} adults per room (standard rule).`, suggestions: ['add-room', 'upgrade'] };
     }
 
     // Occupancy check: U5 children do NOT count against maxOcc.
     // Only adults + children aged 5+ count.
     const occupancyCount = newAdults + newOlderChild;
     if (occupancyCount > maxOcc) {
+      // SOFT WARNING: capacity exceeded but may be allowed under lodge child-sharing policy
+      if (lodgePolicy.child_sharing_allowed && newTotalChild > 0) {
+        const roomKey = _makeRoomKey(rowIdx, rtIdx, roomIdx);
+        const alreadyOverridden = !!(state.roomOverrides || {})[roomKey]?.overridden;
+        return {
+          softWarning: true,
+          alreadyOverridden,
+          message: `Room exceeds standard adult capacity (${maxOcc}) but may be allowed under child sharing policy. ` +
+            `Current: ${newAdults} adult${newAdults !== 1 ? 's' : ''} + ${newTotalChild} child${newTotalChild !== 1 ? 'ren' : ''}.`,
+          suggestions: ['adjust', 'override'],
+          roomKey,
+        };
+      }
+      // HARD ERROR: no child sharing policy applicable
       return { error: `Exceeds room capacity (${maxOcc}). Children under 5 don't count, but adults + older children do.`, suggestions: ['add-room', 'upgrade', 'reassign'] };
     }
 
@@ -3662,26 +4018,52 @@
 
   // Assign guest to room; validates, records history, re-renders.
   // rtIdx (room-type-entry index) defaults to 0 for backward compatibility.
-  function _assignGuest(guestId, rowIdx, rtIdx, roomIdx) {
+  // Returns true on success, false on hard error, and 'pending' when a soft-warning dialog is shown.
+  function _assignGuest(guestId, rowIdx, rtIdx, roomIdx, _skipOverrideCheck) {
     if (arguments.length === 3) { roomIdx = rtIdx; rtIdx = 0; } // legacy 3-arg call
     if (!state.roomAssignments) state.roomAssignments = {};
     const v = _validateDrop(guestId, rowIdx, rtIdx, roomIdx);
+
+    // HARD ERROR — block assignment
     if (v.error) {
       _showAssignmentError(v.error, v.suggestions || [], rowIdx, rtIdx, roomIdx);
       return false;
     }
+
+    // SOFT WARNING — show override dialog unless already overridden for this room
+    if (v.softWarning && !_skipOverrideCheck) {
+      const { roomKey, message, alreadyOverridden } = v;
+      if (alreadyOverridden) {
+        // Room was already overridden by user — proceed silently
+        _doAssign(guestId, rowIdx, rtIdx, roomIdx, roomKey);
+        return true;
+      }
+      _showOverrideConfirmDialog(message, roomKey, (reason) => {
+        const guestIds = _getGuestsInRoom(rowIdx, rtIdx, roomIdx).map(g => g.id).concat(guestId);
+        _logOverride(roomKey, reason, guestIds);
+        _doAssign(guestId, rowIdx, rtIdx, roomIdx, roomKey);
+        toast('info', 'Override applied', 'Room configuration overridden based on lodge policy. Verify pricing.');
+      });
+      return 'pending';
+    }
+
+    // All clear (or override already applied)
     if (v.warnings && v.warnings.length > 0) {
-      // Non-blocking: toast the warnings after assigning
       setTimeout(() => v.warnings.forEach(w => toast('info', 'Room note', w)), 100);
     }
-    _accomPushHistory();
-    state.roomAssignments[guestId] = _makeRoomKey(rowIdx, rtIdx, roomIdx);
-    _renderGuestAssignmentUI();
-    _renderAccommPricingSummary();
-    _checkCapacityMismatch();
+    _doAssign(guestId, rowIdx, rtIdx, roomIdx, _makeRoomKey(rowIdx, rtIdx, roomIdx));
     return true;
   }
   window.TRVE._assignGuest = _assignGuest;
+
+  // Internal: commit the assignment after all checks pass.
+  function _doAssign(guestId, rowIdx, rtIdx, roomIdx, roomKey) {
+    _accomPushHistory();
+    state.roomAssignments[guestId] = roomKey || _makeRoomKey(rowIdx, rtIdx, roomIdx);
+    _renderGuestAssignmentUI();
+    _renderAccommPricingSummary();
+    _checkCapacityMismatch();
+  }
 
   // Return guest to the unassigned pool.
   function _unassignGuest(guestId) {
@@ -3952,7 +4334,8 @@
   // Helper: render room assignment cards for one room-type-entry.
   // container = the .lodge-guest-assign-list element inside the entry.
   function _renderRoomCardsForEntry(container, rowIdx, rtIdx, roomType, lodgeName, rooms) {
-    const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const maxOcc      = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const lodgePolicy = _getLodgeChildPolicy(lodgeName);
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
     if (totalGuests === 0 || !roomType) {
@@ -3962,27 +4345,41 @@
     let html = '';
     let assignedCount = 0;
     for (let r = 0; r < rooms; r++) {
+      const roomKey   = _makeRoomKey(rowIdx, rtIdx, r);
       const guests    = _getGuestsInRoom(rowIdx, rtIdx, r);
       const nAdults   = guests.filter(g => g.type === 'adult').length;
       const nChildren = guests.filter(g => g.type === 'child').length;
+      const nU5       = guests.filter(g => _isU5(g)).length;
       const n         = guests.length;
       assignedCount  += n;
-      const childBeds   = Math.ceil(nChildren / 2);
-      const sharingOk   = nAdults <= 1 && nChildren <= 2 && (nAdults + childBeds) <= maxOcc;
-      const adultOver   = nAdults > 2;
-      const exceeded    = n > maxOcc && !sharingOk;
-      const sharing     = n > maxOcc && sharingOk;
-      const hasError    = exceeded || adultOver;
-      const borderCol   = hasError ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : 'var(--border)';
-      const badgeBg     = hasError ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : n > 0 ? 'var(--success)' : 'var(--bg-surface)';
-      const badgeColor  = n > 0 ? '#fff' : 'var(--text-muted)';
+      const occupancyCount = nAdults + (nChildren - nU5); // U5 don't count against capacity
+      const isOverridden   = !!(state.roomOverrides || {})[roomKey]?.overridden;
+      const adultOver      = nAdults > (lodgePolicy.max_adults_per_room ?? 2) && nChildren === 0;
+      const adultExceedsCap = nAdults > maxOcc;
+      // Hard error: adults alone bust capacity or no-child adult overflow
+      const hasError       = adultExceedsCap || adultOver;
+      // Soft warning: occupancy exceeded due to children (overridable)
+      const softOver       = !hasError && occupancyCount > maxOcc;
+      const softAllowed    = softOver && lodgePolicy.child_sharing_allowed && !isOverridden;
+      const softConfirmed  = softOver && isOverridden;
+      // Classic child-sharing: fits within maxOcc with child-bed-sharing math
+      const childBeds      = Math.ceil(nChildren / 2);
+      const sharingOk      = !softOver && nAdults >= 1 && nChildren > 0 && (nAdults + childBeds) <= maxOcc && n > maxOcc;
+      const borderCol = hasError
+        ? 'var(--danger)'
+        : (softAllowed ? 'var(--brand-gold,#f59e0b)' : softConfirmed ? 'var(--success)' : sharingOk ? 'var(--brand-gold,#f59e0b)' : 'var(--border)');
+      const badgeBg   = hasError
+        ? 'var(--danger)'
+        : (softAllowed ? 'var(--brand-gold,#f59e0b)' : softConfirmed ? 'var(--success)' : n > 0 ? 'var(--success)' : 'var(--bg-surface)');
+      const badgeColor = n > 0 ? '#fff' : 'var(--text-muted)';
       const chipsHTML   = guests.length > 0
         ? guests.map(g => _guestChipHTML(g, { inRoom: true })).join('')
         : `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Drop guests here</span>`;
+      // Hard error block
       const warningHTML = hasError ? `
         <div style="padding:7px 10px;background:rgba(220,38,38,.06);border-top:1px solid rgba(220,38,38,.2)">
           <div style="font-size:10px;color:var(--danger);font-weight:600;margin-bottom:5px">
-            ${adultOver ? 'Maximum 2 adults per room.' : `Exceeds room capacity of ${maxOcc}.`} Resolve:
+            ${adultExceedsCap ? `Adults exceed room capacity (${maxOcc}).` : `Maximum ${lodgePolicy.max_adults_per_room ?? 2} adults per room.`} Resolve:
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:5px">
             <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--brand-green);color:#fff;border:none"
@@ -3993,7 +4390,30 @@
               onclick="window.TRVE._autoAssignGuests()">Auto Reassign</button>
           </div>
         </div>` : '';
-      const sharingHTML = sharing ? `
+      // Soft warning block — overridable by user
+      const softWarningHTML = softAllowed ? `
+        <div style="padding:7px 10px;background:rgba(245,158,11,.06);border-top:1px solid rgba(245,158,11,.3)">
+          <div style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600;margin-bottom:4px">
+            ⚠ Warning: This room exceeds standard occupancy but may be allowed for families.
+          </div>
+          <div style="font-size:10px;color:var(--text-secondary);margin-bottom:5px">
+            ${nAdults} adult${nAdults !== 1 ? 's' : ''} + ${nChildren} child${nChildren !== 1 ? 'ren' : ''} in ${escapeHtml(roomType)} (max ${maxOcc}). Child-sharing policy may apply.
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'), +1)">Adjust Room Allocation</button>
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--brand-gold,#f59e0b);color:#fff;border:none;font-weight:600"
+              onclick="window.TRVE._triggerRoomOverride('${escapeHtml(roomKey)}',${rowIdx},${rtIdx},${r})">Override and Proceed</button>
+          </div>
+        </div>` : '';
+      // Soft override confirmed block
+      const softConfirmedHTML = softConfirmed ? `
+        <div style="padding:7px 10px;background:rgba(34,197,94,.06);border-top:1px solid rgba(34,197,94,.25)">
+          <span style="font-size:10px;color:var(--success,#16a34a);font-weight:600">✓ Override applied — lodge policy confirmed.</span>
+          <span style="font-size:10px;color:var(--text-muted);margin-left:4px">Verify pricing reflects child rates.</span>
+        </div>` : '';
+      // Classic child-sharing note (within capacity)
+      const sharingHTML = sharingOk ? `
         <div style="padding:7px 10px;background:rgba(245,158,11,.06);border-top:1px solid rgba(245,158,11,.3)">
           <span style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600">Child-sharing:</span>
           <span style="font-size:10px;color:var(--text-secondary)"> ${nAdults} adult + ${nChildren} children — 2 children share 1 bed ✓</span>
@@ -4028,12 +4448,33 @@
             ondrop="window.TRVE._onRoomDrop(event, ${rowIdx}, ${rtIdx}, ${r})">
             ${chipsHTML}
           </div>
-          ${warningHTML}${sharingHTML}${extrasHTML}
+          ${warningHTML}${softWarningHTML}${softConfirmedHTML}${sharingHTML}${extrasHTML}
         </div>`;
     }
     container.innerHTML = html;
     return assignedCount;
   }
+
+  // Trigger soft-warning override dialog from a room card button.
+  function _triggerRoomOverride(roomKey, rowIdx, rtIdx, roomIdx) {
+    const row = document.querySelector(`#lodgeItems .lodge-item[data-idx="${rowIdx}"]`);
+    const lodgeName = row?.querySelector('[name^="lodge_name_"]')?.value || '';
+    const roomType  = _getRoomTypeForEntry(row, rtIdx);
+    const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const guests    = _getGuestsInRoom(rowIdx, rtIdx, roomIdx);
+    const nAdults   = guests.filter(g => g.type === 'adult').length;
+    const nChildren = guests.filter(g => g.type === 'child').length;
+    const message   = `Room exceeds standard adult capacity (${maxOcc}) but allowed under child sharing policy. ` +
+      `Current: ${nAdults} adult${nAdults !== 1 ? 's' : ''} + ${nChildren} child${nChildren !== 1 ? 'ren' : ''} in ${roomType}.`;
+    _showOverrideConfirmDialog(message, roomKey, (reason) => {
+      _logOverride(roomKey, reason, guests.map(g => g.id));
+      _renderGuestAssignmentUI();
+      _renderAccommPricingSummary();
+      _checkCapacityMismatch();
+      toast('info', 'Override applied', 'Room configuration overridden based on lodge policy. Verify pricing.');
+    });
+  }
+  window.TRVE._triggerRoomOverride = _triggerRoomOverride;
 
   // Render drag-drop room cards inside one lodge row.
   // Iterates all .room-type-entry elements within the row.
@@ -4154,13 +4595,17 @@
         state.lodges.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')
       : '<option value="">— No lodges in database —</option>';
 
-    const tripDays  = parseInt(document.getElementById('pricingDays')?.value) || 7;
+    const tripDays  = parseInt(document.getElementById('pricingDays')?.value) || 0;
     const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
     const endDateVal   = document.getElementById('pricingTravelEndDate')?.value   || '';
-    let autoNights = Math.max(1, tripDays - 1);
+    let autoNights;
     if (startDateVal && endDateVal) {
       const diff = Math.round((new Date(endDateVal) - new Date(startDateVal)) / 86400000);
-      if (diff > 0) autoNights = diff;
+      autoNights = Math.max(1, diff);
+    } else if (tripDays > 0) {
+      autoNights = Math.max(1, tripDays - 1);
+    } else {
+      autoNights = 1;
     }
 
     const el = document.createElement('div');
@@ -4363,27 +4808,40 @@
         mealPlan === 'AI' ? 85 : 0
       );
 
-      // Age-banded child costs
+      // Age-banded child costs — room rate + meal supplement split by age tier
+      const lodgePolicy = _getLodgeChildPolicy(lodge);
       let childLinesHTML = '';
+      let childRoomTotal = 0;
       let childMealTotal = 0;
       const childGuests = (state.guestPool || []).filter(g => g.type === 'child');
       if (childGuests.length > 0) {
         const tierGroups = {};
         childGuests.forEach(g => {
-          const tier = _getChildMealTier(g.age);
+          const tier = _getChildMealTier(g.age, lodgePolicy);
           const key  = tier.label;
           if (!tierGroups[key]) tierGroups[key] = { tier, count: 0 };
           tierGroups[key].count++;
         });
+        // Compute average room rate across all room-type-entries for child room rate calculation
+        const avgRoomRate = priceItems.length > 0
+          ? priceItems.reduce((s, i) => s + i.rate, 0) / priceItems.length
+          : 0;
         Object.values(tierGroups).forEach(({ tier, count }) => {
-          const perNight = isRO ? 0 : adultMealCost * tier.multiplier;
-          const subtotal = nights * count * perNight;
-          childMealTotal += subtotal;
-          const confirmMark = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
+          const roomPerNight  = tier.free ? 0 : avgRoomRate * tier.multiplier;
+          const mealPerNight  = isRO ? 0 : adultMealCost * tier.multiplier;
+          const roomSub       = nights * count * roomPerNight;
+          const mealSub       = nights * count * mealPerNight;
+          childRoomTotal     += roomSub;
+          childMealTotal     += mealSub;
+          const total         = roomSub + mealSub;
+          const confirmMark   = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
+          const pricingDetail = tier.free
+            ? 'FREE (cot only)'
+            : `${fmtMoney(roomPerNight + mealPerNight)}/night`;
           childLinesHTML += `
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding-left:12px">
-              <span>Children ×${count} — ${tier.label}${confirmMark}</span>
-              <span style="font-family:var(--font-mono)">${tier.free && !isRO ? 'FREE' : fmtMoney(subtotal)}</span>
+              <span>Children ×${count} — ${tier.label}${confirmMark} (${pricingDetail})</span>
+              <span style="font-family:var(--font-mono)">${tier.free ? 'FREE' : fmtMoney(total)}</span>
             </div>`;
         });
       }
@@ -4403,12 +4861,15 @@
 
       // Adult meal supplement (if not RO)
       const adultMealTotal = isRO ? 0 : nights * globalAdults * adultMealCost;
-      const rowTotal  = roomCost + adultMealTotal + childMealTotal;
+      const rowTotal  = roomCost + adultMealTotal + childRoomTotal + childMealTotal;
       guestTotal     += rowTotal;
 
       // Cot requirements across all rooms
       const u5Total    = (state.guestPool || []).filter(g => _isU5(g)).length;
       const under2Total = (state.guestPool || []).filter(g => g.type === 'child' && g.age !== null && g.age < 2).length;
+
+      // Check for any active overrides in this lodge row
+      const hasOverride = Object.values(state.roomOverrides || {}).some(o => o.overridden);
 
       // Summary label for the lodge header
       const totalRooms = priceItems.reduce((s, i) => s + i.rooms, 0);
@@ -4430,6 +4891,7 @@
           </div>` : ''}
           ${childLinesHTML}
           ${u5Total > 0 ? `<div style="font-size:10px;color:#6366f1;margin-top:3px">⊕ ${u5Total} cot${u5Total > 1 ? 's' : ''} required${under2Total > 0 ? ` · ${under2Total} high chair${under2Total > 1 ? 's' : ''}` : ''} — confirm with property</div>` : ''}
+          ${hasOverride ? `<div style="font-size:10px;color:var(--brand-gold-dark,#b45309);margin-top:3px">⚑ Override active — lodge child-sharing policy applied. Verify pricing impact.</div>` : ''}
           <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);font-weight:700;margin-top:4px">
             <span>Row subtotal</span>
             <span style="font-family:var(--font-mono)">${fmtMoney(rowTotal)}</span>
@@ -4455,9 +4917,46 @@
     }
     panel.style.display = '';
 
+    // ── Store base cost and compute final (adjusted) cost ─────────────────────
+    state.accommodation.base_cost  = grandTotal;
+    state.accommodation.final_cost = computeAdjustedAccommodationCost(grandTotal, state.accommodation.adjustment);
+    const adj       = state.accommodation.adjustment;
+    const finalCost = state.accommodation.final_cost;
+    const hasAdj    = !!adj.type;
+    const diff      = finalCost - grandTotal;  // negative = discount, positive = addition
+
+    // ── Adjustment type labels ─────────────────────────────────────────────────
+    const adjTypeLabel = { override: 'Override', discount: 'Discount', manual_add: 'Manual Add' };
+
+    // ── Diff display: show signed delta ───────────────────────────────────────
+    const diffDisplay = diff === 0 ? '' : (diff > 0
+      ? `<span style="color:var(--danger,#ef4444);font-family:var(--font-mono)">+${fmtMoney(diff)}</span>`
+      : `<span style="color:var(--brand-green,#22c55e);font-family:var(--font-mono)">${fmtMoney(diff)}</span>`);
+
+    // ── Audit log HTML (last 5 entries) ───────────────────────────────────────
+    const logEntries = (state.accommodation.adjustmentLog || []).slice(-5).reverse();
+    const logHTML = logEntries.length === 0 ? '' : `
+      <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+        <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:4px">Adjustment History (last 5)</div>
+        ${logEntries.map(e => `
+          <div style="font-size:9px;color:var(--text-muted);margin-bottom:2px;display:flex;justify-content:space-between;gap:8px">
+            <span>${e.type === 'reset' ? '↩ Reset' : `${adjTypeLabel[e.type] || e.type}: ${fmtMoney(e.value)}`} — <em>${escapeHtml(e.reason)}</em></span>
+            <span style="white-space:nowrap;font-family:var(--font-mono)">${new Date(e.timestamp).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
+          </div>`).join('')}
+      </div>`;
+
+    // ── Inline error placeholder ───────────────────────────────────────────────
+    const adjUndoDisabled = state.accommodation.adjustmentHistory.length === 0 ? 'disabled' : '';
+    const adjRedoDisabled = state.accommodation.adjustmentFuture.length  === 0 ? 'disabled' : '';
+
     panel.innerHTML = `
       <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;margin-top:var(--space-3)">
-        <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Accommodation Cost Preview</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Accommodation Cost Preview</div>
+          <button type="button" onclick="window.TRVE._toggleAccomEditPanel()" style="font-size:10px;padding:2px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--text-secondary)">
+            ✏ Edit Cost
+          </button>
+        </div>
         ${rowsHTML}
         ${staffGuestTotal > 0 ? `
         <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px;color:var(--brand-gold-dark,#b45309)">
@@ -4474,14 +4973,280 @@
           <span>Staff rooms (company paid)</span>
           <span style="font-family:var(--font-mono)">${fmtMoney(staffCoTotal)}</span>
         </div>` : ''}
+
+        <!-- Calculated cost row -->
         <div style="display:flex;justify-content:space-between;font-size:var(--text-sm);font-weight:700;border-top:1px solid var(--border);padding-top:6px;margin-top:4px">
-          <span>Total accommodation (guest invoice)</span>
-          <span style="font-family:var(--font-mono);color:var(--brand-green)">${fmtMoney(grandTotal)}</span>
+          <span>Calculated cost (guest invoice)</span>
+          <span style="font-family:var(--font-mono);color:${hasAdj ? 'var(--text-muted)' : 'var(--brand-green)'};${hasAdj ? 'text-decoration:line-through' : ''}">${fmtMoney(grandTotal)}</span>
         </div>
+
+        <!-- Adjusted cost row (visible only when adjustment active) -->
+        ${hasAdj ? `
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-sm);font-weight:700;padding-top:3px;color:var(--brand-gold-dark,#b45309)">
+          <span style="display:flex;align-items:center;gap:6px">
+            <span style="background:var(--brand-gold,#f59e0b);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:.04em">${adjTypeLabel[adj.type] || adj.type}</span>
+            Adjusted cost
+          </span>
+          <span style="font-family:var(--font-mono);color:var(--brand-green)">${fmtMoney(finalCost)}</span>
+        </div>
+        <!-- Difference row -->
+        <div style="display:flex;justify-content:space-between;font-size:10px;padding-top:2px;color:var(--text-muted)">
+          <span>Difference from calculated</span>
+          <span>${diffDisplay}</span>
+        </div>
+        <!-- Reason row -->
+        <div style="font-size:9px;color:var(--text-muted);font-style:italic;margin-top:2px">Reason: ${escapeHtml(adj.reason)}</div>
+        ` : ''}
+
         ${staffOpTotal + staffCoTotal > 0 ? `
         <div style="font-size:9px;color:var(--text-muted);margin-top:4px">+${fmtMoney(staffOpTotal + staffCoTotal)} in operational staff costs (not invoiced to guest)</div>` : ''}
+
+        <!-- ── Edit Adjustment Panel ─────────────────────────────────────────── -->
+        <div id="accomAdjustPanel" style="display:none;margin-top:12px;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm)">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-secondary);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+            <span>Edit Accommodation Cost</span>
+            <span style="display:flex;gap:4px">
+              <button type="button" onclick="window.TRVE._undoAccomAdjustment()" ${adjUndoDisabled} title="Undo" style="font-size:10px;padding:1px 6px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text-secondary)" ${adjUndoDisabled ? 'style="opacity:.45;cursor:not-allowed"' : ''}>↩ Undo</button>
+              <button type="button" onclick="window.TRVE._redoAccomAdjustment()" ${adjRedoDisabled} title="Redo" style="font-size:10px;padding:1px 6px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text-secondary)" ${adjRedoDisabled ? 'style="opacity:.45;cursor:not-allowed"' : ''}>↪ Redo</button>
+            </span>
+          </div>
+
+          <!-- Adjustment type -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px">Adjustment Type</label>
+              <select id="accomAdjType" style="width:100%;font-size:var(--text-xs);padding:4px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card)">
+                <option value="">— Select type —</option>
+                <option value="override"   ${adj.type === 'override'   ? 'selected' : ''}>Override (set final amount)</option>
+                <option value="discount"   ${adj.type === 'discount'   ? 'selected' : ''}>Discount (reduce by amount)</option>
+                <option value="manual_add" ${adj.type === 'manual_add' ? 'selected' : ''}>Manual Add (increase by amount)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px">Value (USD)</label>
+              <input id="accomAdjValue" type="number" min="0" step="0.01"
+                value="${adj.value || ''}"
+                placeholder="0.00"
+                style="width:100%;font-size:var(--text-xs);padding:4px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);font-family:var(--font-mono)">
+            </div>
+          </div>
+
+          <!-- Reason -->
+          <div style="margin-bottom:8px">
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px">Reason <span style="color:var(--danger,#ef4444)">*</span></label>
+            <input id="accomAdjReason" type="text" maxlength="200"
+              value="${escapeHtml(adj.reason || '')}"
+              placeholder="e.g. Negotiated group discount, early-bird rate, correction…"
+              style="width:100%;font-size:var(--text-xs);padding:4px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card)">
+          </div>
+
+          <!-- Inline validation message -->
+          <div id="accomAdjError" style="font-size:10px;color:var(--danger,#ef4444);margin-bottom:6px;display:none"></div>
+
+          <!-- Live preview of what the result will be -->
+          <div id="accomAdjPreview" style="font-size:10px;color:var(--text-muted);margin-bottom:8px;padding:4px 6px;background:var(--bg-subtle);border-radius:3px;font-family:var(--font-mono)">
+            Calculated: ${fmtMoney(grandTotal)} → Final: ${fmtMoney(finalCost)}
+          </div>
+
+          <!-- Actions -->
+          <div style="display:flex;gap:6px">
+            <button type="button" onclick="(function(){
+              const t=document.getElementById('accomAdjType')?.value;
+              const v=document.getElementById('accomAdjValue')?.value;
+              const r=document.getElementById('accomAdjReason')?.value;
+              const err=document.getElementById('accomAdjError');
+              const errMsg=window.TRVE._validateAccomAdj(t,v,r);
+              if(errMsg){if(err){err.textContent=errMsg;err.style.display='block';}return;}
+              if(err)err.style.display='none';
+              window.TRVE._applyAccomAdjustment(t,v,r);
+            })()"
+              style="flex:1;font-size:var(--text-xs);padding:5px 10px;background:var(--brand-green,#22c55e);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">
+              ✓ Apply Adjustment
+            </button>
+            ${hasAdj ? `
+            <button type="button" onclick="window.TRVE._resetAccomAdjustment()"
+              style="font-size:var(--text-xs);padding:5px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--danger,#ef4444)">
+              ✕ Reset to Calculated
+            </button>` : ''}
+          </div>
+
+          ${logHTML}
+        </div>
+        <!-- ── End Edit Panel ──────────────────────────────────────────────────── -->
       </div>`;
   }
+
+  // ── ACCOMMODATION COST ADJUSTMENT ENGINE ───────────────────────────────────
+
+  /**
+   * Pure computation: applies an adjustment to a base accommodation cost.
+   * Types: 'override' (set final = value), 'discount' (base − value), 'manual_add' (base + value)
+   * Guardrail: final cost is clamped to 0 minimum.
+   */
+  function computeAdjustedAccommodationCost(base, adjustment) {
+    if (!adjustment || !adjustment.type) return base;
+    const val = parseFloat(adjustment.value) || 0;
+    let final;
+    if (adjustment.type === 'override')    final = val;
+    else if (adjustment.type === 'discount')    final = base - val;
+    else if (adjustment.type === 'manual_add')  final = base + val;
+    else return base;
+    return final < 0 ? 0 : final;
+  }
+
+  /** Validate an adjustment form submission. Returns error string or null. */
+  function _validateAccomAdjustment(type, value, reason) {
+    if (!type) return 'Select an adjustment type.';
+    const val = parseFloat(value);
+    if (isNaN(val) || value === '') return 'Enter a numeric value.';
+    if (val < 0) return 'Value must be 0 or greater.';
+    if (!reason || !reason.trim()) return 'A reason is required.';
+    if (type === 'override' && val === 0) return 'Override to $0 — confirm this is intentional by entering a reason.';
+    return null;
+  }
+
+  /** Apply a new adjustment, write audit log entry, update state, re-render. */
+  function _applyAccomAdjustment(type, value, reason) {
+    const errMsg = _validateAccomAdjustment(type, value, reason);
+    if (errMsg) { toast('error', 'Invalid adjustment', errMsg); return; }
+
+    const accom = state.accommodation;
+    const prevAdj   = { ...accom.adjustment };
+    const prevFinal = accom.final_cost;
+
+    // Push to undo stack before mutating
+    accom.adjustmentHistory.push({ adjustment: prevAdj, final_cost: prevFinal });
+    if (accom.adjustmentHistory.length > 30) accom.adjustmentHistory.shift();
+    accom.adjustmentFuture = [];
+
+    accom.adjustment = { type, value: parseFloat(value), reason: reason.trim() };
+    accom.final_cost = computeAdjustedAccommodationCost(accom.base_cost, accom.adjustment);
+
+    // Audit log entry
+    accom.adjustmentLog.push({
+      type, value: parseFloat(value), reason: reason.trim(),
+      user: state.coordinator || 'Unknown',
+      timestamp: new Date().toISOString(),
+      prevFinal,
+      newFinal: accom.final_cost,
+    });
+
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+    toast('success', 'Adjustment applied', `Final cost: ${fmtMoney(accom.final_cost)}`);
+  }
+
+  /** Clear the current adjustment, restore base cost. */
+  function _resetAccomAdjustment() {
+    const accom = state.accommodation;
+    if (!accom.adjustment.type) return;
+
+    const prevAdj   = { ...accom.adjustment };
+    const prevFinal = accom.final_cost;
+
+    accom.adjustmentHistory.push({ adjustment: prevAdj, final_cost: prevFinal });
+    if (accom.adjustmentHistory.length > 30) accom.adjustmentHistory.shift();
+    accom.adjustmentFuture = [];
+
+    accom.adjustment = { type: null, value: 0, reason: '' };
+    accom.final_cost = accom.base_cost;
+
+    accom.adjustmentLog.push({
+      type: 'reset', value: 0, reason: 'Adjustment cleared',
+      user: state.coordinator || 'Unknown',
+      timestamp: new Date().toISOString(),
+      prevFinal,
+      newFinal: accom.final_cost,
+    });
+
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+    toast('info', 'Adjustment removed', 'Cost reset to calculated value.');
+  }
+
+  /** Undo last adjustment change. */
+  function _undoAccomAdjustment() {
+    const accom = state.accommodation;
+    if (accom.adjustmentHistory.length === 0) return;
+    accom.adjustmentFuture.push({ adjustment: { ...accom.adjustment }, final_cost: accom.final_cost });
+    const prev = accom.adjustmentHistory.pop();
+    accom.adjustment = { ...prev.adjustment };
+    accom.final_cost = computeAdjustedAccommodationCost(accom.base_cost, accom.adjustment);
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+  }
+
+  /** Redo last undone adjustment. */
+  function _redoAccomAdjustment() {
+    const accom = state.accommodation;
+    if (accom.adjustmentFuture.length === 0) return;
+    accom.adjustmentHistory.push({ adjustment: { ...accom.adjustment }, final_cost: accom.final_cost });
+    const next = accom.adjustmentFuture.pop();
+    accom.adjustment = { ...next.adjustment };
+    accom.final_cost = computeAdjustedAccommodationCost(accom.base_cost, accom.adjustment);
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+  }
+
+  /** Persist adjustment to localStorage. */
+  function _persistAccomAdjustment() {
+    try {
+      const data = {
+        adjustment: state.accommodation.adjustment,
+        adjustmentLog: state.accommodation.adjustmentLog,
+      };
+      localStorage.setItem('trve_accom_adjustment', JSON.stringify(data));
+    } catch (_) { /* storage unavailable — silent */ }
+  }
+
+  /** Restore adjustment from localStorage on page load. */
+  function _restoreAccomAdjustment() {
+    try {
+      const raw = localStorage.getItem('trve_accom_adjustment');
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data && data.adjustment) {
+        state.accommodation.adjustment = data.adjustment;
+        state.accommodation.adjustmentLog = data.adjustmentLog || [];
+      }
+    } catch (_) { /* corrupt storage — ignore */ }
+  }
+
+  window.TRVE._applyAccomAdjustment  = _applyAccomAdjustment;
+  window.TRVE._resetAccomAdjustment  = _resetAccomAdjustment;
+  window.TRVE._undoAccomAdjustment   = _undoAccomAdjustment;
+  window.TRVE._redoAccomAdjustment   = _redoAccomAdjustment;
+  window.TRVE._validateAccomAdj      = _validateAccomAdjustment;
+  window.TRVE._toggleAccomEditPanel  = function() {
+    const panel = document.getElementById('accomAdjustPanel');
+    if (!panel) return;
+    const isHidden = panel.style.display === 'none' || panel.style.display === '';
+    panel.style.display = isHidden ? 'block' : 'none';
+    if (!isHidden) return;
+    // Wire live preview on inputs when opening
+    const typeEl  = document.getElementById('accomAdjType');
+    const valueEl = document.getElementById('accomAdjValue');
+    const prevEl  = document.getElementById('accomAdjPreview');
+    function _updateLivePreview() {
+      if (!prevEl) return;
+      const t = typeEl?.value;
+      const v = parseFloat(valueEl?.value);
+      const base = state.accommodation.base_cost;
+      if (!t || isNaN(v)) {
+        prevEl.textContent = `Calculated: ${fmtMoney(base)} → Final: (select type & value)`;
+        return;
+      }
+      const simFinal = computeAdjustedAccommodationCost(base, { type: t, value: v });
+      const simDiff  = simFinal - base;
+      const diffStr  = simDiff === 0 ? '' : ` (${simDiff > 0 ? '+' : ''}${fmtMoney(simDiff)})`;
+      prevEl.textContent = `Calculated: ${fmtMoney(base)} → Final: ${fmtMoney(simFinal)}${diffStr}`;
+    }
+    if (typeEl)  typeEl.addEventListener('change', _updateLivePreview);
+    if (valueEl) valueEl.addEventListener('input',  _updateLivePreview);
+    _updateLivePreview();
+  };
+
+  // ── END ADJUSTMENT ENGINE ───────────────────────────────────────────────────
 
   function _toggleGuestRoom(guestIdx, roomIdx, checked) {
     if (state.guestRecords[guestIdx]) {
@@ -4552,6 +5317,7 @@
 
   // Checks that room configuration (rooms × maxOcc across all lodge rows) can fit
   // totalGuests from Basic Details. Uses computed model — no manual per-room inputs.
+  // Distinguishes hard capacity errors from soft warnings (child-sharing scenarios).
   function _checkCapacityMismatch() {
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
@@ -4599,6 +5365,12 @@
 
     const gap = Math.max(totalGuests - totalCapacity, unassignedCount);
 
+    // Determine if this is a soft-warning scenario (gap is entirely due to young children)
+    // Young children (<5) need cots but do not take up beds — so effective occupancy is lower.
+    const youngChildCount = _getYoungChildCount();
+    const effectiveGuests = totalGuests - youngChildCount; // occupancy-relevant guests
+    const isSoftCapacity  = totalChildren > 0 && effectiveGuests <= totalCapacity && unassignedCount === 0;
+
     // One-click resolution buttons
     const addRoomBtn = `
       <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--brand-green);color:#fff;border:none;font-weight:600"
@@ -4628,37 +5400,109 @@
       </button>` : '';
 
     alertEl.style.display = '';
-    alertEl.innerHTML = `
-      <div style="border:1px solid var(--danger);border-radius:var(--radius-md);padding:12px 14px;margin-top:8px;background:rgba(220,38,38,.05)">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="var(--danger)" stroke-width="1.4"/><path d="M7 4v3.5" stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round"/><circle cx="7" cy="10" r=".7" fill="var(--danger)"/></svg>
-          <span style="font-size:var(--text-xs);font-weight:700;color:var(--danger)">Accommodation Incomplete</span>
-        </div>
-        <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
-          Total guests (Basic Details): <strong>${totalGuests}</strong>
-          (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
-        </div>
-        <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:8px">
-          Configured room capacity: <strong>${totalCapacity}</strong>
-          &nbsp;·&nbsp; <span style="color:var(--danger);font-weight:700">
-            ${gap} guest${gap !== 1 ? 's' : ''} remain${gap === 1 ? 's' : ''} unaccommodated
-          </span>
-        </div>
-        <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">
-          Recommended: add another room
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${addRoomBtn}
-          ${addSingleBtn}
-          ${addFamilyBtn}
-          ${addTripleBtn}
-          <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--bg-surface);border:1px solid var(--border)"
-            onclick="window.TRVE.addLodgeItem()">
-            + Add Lodge Row
-          </button>
-        </div>
-      </div>`;
+
+    if (isSoftCapacity) {
+      // SOFT WARNING — capacity only appears short because young children count toward total
+      // but don't consume beds. Offer override option.
+      alertEl.innerHTML = `
+        <div style="border:1px solid var(--brand-gold,#f59e0b);border-radius:var(--radius-md);padding:12px 14px;margin-top:8px;background:rgba(245,158,11,.05)">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.4"/><path d="M7 4v3.5" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.6" stroke-linecap="round"/><circle cx="7" cy="10" r=".7" fill="var(--brand-gold,#f59e0b)"/></svg>
+            <span style="font-size:var(--text-xs);font-weight:700;color:var(--brand-gold-dark,#b45309)">Accommodation Warning — Child Sharing Scenario</span>
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+            Total guests (Basic Details): <strong>${totalGuests}</strong>
+            (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+            Configured room capacity: <strong>${totalCapacity}</strong>
+            &nbsp;·&nbsp; Young children (&lt;5): <strong>${youngChildCount}</strong> (cot only — no bed needed)
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--brand-gold-dark,#b45309);margin-bottom:8px;font-weight:600">
+            Warning: This room exceeds standard occupancy but may be allowed for families.
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:8px;font-style:italic">
+            This configuration is allowed based on lodge policy. Ensure pricing and rooming are correct.
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${addRoomBtn}
+            ${addFamilyBtn}
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--brand-gold,#f59e0b);color:#fff;border:none;font-weight:600"
+              onclick="window.TRVE._triggerCapacityOverride()">
+              Override and Proceed
+            </button>
+          </div>
+        </div>`;
+    } else {
+      // HARD ERROR — genuine capacity shortfall requiring an extra room
+      alertEl.innerHTML = `
+        <div style="border:1px solid var(--danger);border-radius:var(--radius-md);padding:12px 14px;margin-top:8px;background:rgba(220,38,38,.05)">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="var(--danger)" stroke-width="1.4"/><path d="M7 4v3.5" stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round"/><circle cx="7" cy="10" r=".7" fill="var(--danger)"/></svg>
+            <span style="font-size:var(--text-xs);font-weight:700;color:var(--danger)">Accommodation Incomplete</span>
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+            Total guests (Basic Details): <strong>${totalGuests}</strong>
+            (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:8px">
+            Configured room capacity: <strong>${totalCapacity}</strong>
+            &nbsp;·&nbsp; <span style="color:var(--danger);font-weight:700">
+              ${gap} guest${gap !== 1 ? 's' : ''} remain${gap === 1 ? 's' : ''} unaccommodated
+            </span>
+          </div>
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">
+            Recommended: add another room
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${addRoomBtn}
+            ${addSingleBtn}
+            ${addFamilyBtn}
+            ${addTripleBtn}
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE.addLodgeItem()">
+              + Add Lodge Row
+            </button>
+          </div>
+        </div>`;
+    }
   }
+
+  // Trigger capacity-level soft-warning override dialog (from mismatch alert button).
+  function _triggerCapacityOverride() {
+    const { adults: totalAdults, children: totalChildren } = _getBasicPax();
+    const youngChildCount = _getYoungChildCount();
+    const message = `Total guests (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''}) ` +
+      `appear to exceed configured room capacity. However, ${youngChildCount} young child${youngChildCount !== 1 ? 'ren' : ''} (under 5) ` +
+      `require cots only and may share a bed — this configuration may be allowed under lodge child-sharing policy.`;
+    const overrideKey = 'capacity-level';
+    _showOverrideConfirmDialog(message, overrideKey, (reason) => {
+      _logOverride(overrideKey, reason, []);
+      // Mark all rooms with children as overridden so subsequent drag-drops don't re-prompt
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, rowIdx) => {
+        const entries = _getRoomTypeEntries(row);
+        const processEntry = (rtIdx, roomCount) => {
+          for (let r = 0; r < roomCount; r++) {
+            const roomKey = _makeRoomKey(rowIdx, rtIdx, r);
+            const guests  = _getGuestsInRoom(rowIdx, rtIdx, r);
+            if (guests.some(g => g.type === 'child')) {
+              if (!state.roomOverrides) state.roomOverrides = {};
+              state.roomOverrides[roomKey] = { overridden: true, reason, timestamp: new Date().toISOString() };
+            }
+          }
+        };
+        if (entries.length === 0) {
+          processEntry(0, parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1);
+        } else {
+          entries.forEach((entry, rtIdx) => processEntry(rtIdx, parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1));
+        }
+      });
+      _renderGuestAssignmentUI();
+      _checkCapacityMismatch();
+      toast('info', 'Override applied', 'Child-sharing configuration accepted. Verify pricing and room assignments.');
+    });
+  }
+  window.TRVE._triggerCapacityOverride = _triggerCapacityOverride;
 
   // Add a room by incrementing rooms count on the first lodge row, then setting its type
   function _addRoomOfType(roomType) {
@@ -4760,7 +5604,8 @@
     const selectedType = presetType || (dropdownSel ? dropdownSel.value : '') || VEHICLE_TYPES[0].value;
     const vDef = VEHICLE_TYPES.find(v => v.value === selectedType) || VEHICLE_TYPES[0];
     const defaultRate = presetRate || vDef.rate;
-    const defaultDays = parseInt(dropdownDays?.value) || Math.max(1, (parseInt(document.getElementById('pricingDays')?.value) || 7) - 1);
+    const _pDays = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    const defaultDays = parseInt(dropdownDays?.value) || (_pDays > 0 ? Math.max(1, _pDays - 1) : 1);
 
     if (!selectedType) {
       toast('warning', 'No vehicle selected', 'Please select a vehicle type from the dropdown');
@@ -4838,15 +5683,29 @@
       });
       return;
     }
-    // Use actual room_type strings from DB — prevents single/double mismatch
-    // Deduplicate by room_type name (multiple seasonal entries per room_type)
-    const seen = new Set();
+    // Use actual room_type strings from DB — prevents single/double mismatch.
+    // Deduplicate by room_type name: for each distinct room_type, prefer the entry
+    // whose validity window covers today; fall back to the most recent entry.
+    // The API returns rows ordered: currently-valid first (valid_from DESC within that),
+    // so the first occurrence of each room_type is already the best rate to display.
+    const today = new Date().toISOString().slice(0, 10);
+    const bestRateMap = new Map(); // room_type → best rt entry
     lodge.room_types.forEach(rt => {
-      if (seen.has(rt.room_type)) return;
-      seen.add(rt.room_type);
+      if (!rt.room_type) return;
+      if (!bestRateMap.has(rt.room_type)) {
+        bestRateMap.set(rt.room_type, rt); // first = best (API orders valid rates first)
+      } else {
+        // Prefer currently-valid entry over any existing
+        const existing = bestRateMap.get(rt.room_type);
+        const existingCurrent = existing.valid_from <= today && existing.valid_to >= today;
+        const thisCurrent = rt.valid_from <= today && rt.valid_to >= today;
+        if (thisCurrent && !existingCurrent) bestRateMap.set(rt.room_type, rt);
+      }
+    });
+    bestRateMap.forEach((rt, roomTypeName) => {
       const opt = document.createElement('option');
-      opt.value = rt.room_type;  // EXACT DB value — no more LIKE mismatch
-      opt.textContent = `${rt.room_type} — $${rt.net_rate_usd}/night`;
+      opt.value = roomTypeName;  // EXACT DB value — no more LIKE mismatch
+      opt.textContent = `${roomTypeName} — $${rt.net_rate_usd}/night`;
       selectEl.appendChild(opt);
     });
     selectEl.selectedIndex = 0;
@@ -4876,36 +5735,53 @@
     }
   }
 
-  // MINOR-32: Pre-filled extra cost row
-  function addPresetExtraCost(description, amount) {
+  // Build an extra cost row element with type selector and per-day toggle.
+  // type: 'per_trip' | 'per_day' | 'per_vehicle'
+  function _buildExtraCostRow(description, amount, type) {
     const container = document.getElementById('extraCostsSection');
     const idx = container.children.length;
     const el = document.createElement('div');
     el.className = 'extra-cost-row';
+    el.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap';
+    const typeOpts = [
+      { v: 'per_trip',    label: 'Per trip'    },
+      { v: 'per_day',     label: 'Per day'     },
+      { v: 'per_vehicle', label: 'Per vehicle' },
+    ].map(o => `<option value="${o.v}"${(type||'per_trip')===o.v?' selected':''}>${o.label}</option>`).join('');
     el.innerHTML = `
-      <input type="text" class="form-control" name="extra_desc_${idx}" value="${escapeHtml(description)}" style="flex:1">
-      <input type="number" class="form-control" name="extra_amount_${idx}" min="0" value="${amount}" style="width:140px">
+      <input type="text" class="form-control" name="extra_desc_${idx}" value="${escapeHtml(description||'')}"
+        placeholder="Description" style="flex:1;min-width:120px">
+      <input type="number" class="form-control" name="extra_amount_${idx}" min="0"
+        value="${amount != null ? amount : ''}" placeholder="Amount (USD)"
+        style="width:120px">
+      <select class="form-control" name="extra_type_${idx}"
+        style="width:110px;font-size:var(--text-xs);height:var(--input-h,34px)">
+        ${typeOpts}
+      </select>
       <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.extra-cost-row').remove()" title="Remove">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     `;
     container.appendChild(el);
-    toast('info', 'Extra cost added', `${description} — $${amount}`);
+    return el;
   }
 
+  // MINOR-32: Pre-filled extra cost row
+  function addPresetExtraCost(description, amount, type) {
+    _buildExtraCostRow(description, amount, type || 'per_trip');
+    toast('info', 'Extra cost added', `${description} — $${amount}${type === 'per_day' ? '/day' : ''}`);
+  }
+
+  // Add car park entry fee row
+  function addCarParkFee() {
+    const days = parseInt(document.getElementById('pricingDays')?.value) || 1;
+    _buildExtraCostRow('Car Park Entry Fee', '', 'per_day');
+    toast('info', 'Car Park Fee added', `Enter daily rate — will be multiplied by trip days (${days}).`);
+  }
+  window.TRVE.addCarParkFee = addCarParkFee;
+
   function addExtraCost() {
-    const container = document.getElementById('extraCostsSection');
-    const idx = container.children.length;
-    const el = document.createElement('div');
-    el.className = 'extra-cost-row';
-    el.innerHTML = `
-      <input type="text" class="form-control" name="extra_desc_${idx}" placeholder="Description" style="flex:1">
-      <input type="number" class="form-control" name="extra_amount_${idx}" min="0" placeholder="Amount (USD)" style="width:140px">
-      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.extra-cost-row').remove()" title="Remove">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-      </button>
-    `;
-    container.appendChild(el);
+    _buildExtraCostRow('', null, 'per_trip');
     toast('info', 'Extra cost row added', 'Fill in the description and amount');
   }
 
@@ -5504,6 +6380,9 @@
     state.addedActivities = {};
     state.bufferApplied = false;
 
+    // Restore any persisted accommodation cost adjustment
+    _restoreAccomAdjustment();
+
     document.getElementById('btnAddLodge').addEventListener('click', () => addLodgeItem());
 
     // Keyboard shortcuts for accommodation undo/redo
@@ -5520,10 +6399,18 @@
     const daysInput = document.getElementById('pricingDays');
     if (daysInput) {
       daysInput.addEventListener('input', () => {
-        const d = parseInt(daysInput.value) || 7;
-        _syncLodgeNightsFromDays(d);
+        if (daysInput.readOnly) return; // locked when both dates present
+        const d = parseInt(daysInput.value) || 0;
+        if (d > 0) _syncLodgeNightsFromDays(d);
         _updateAccommodationDates();
-        _updateVehicleHint(); // also update vehicle days hint
+        _updateVehicleHint();
+        // Show nights hint
+        const nightsHint = document.getElementById('pricingDaysNightsHint');
+        if (nightsHint && d >= 1) {
+          const n = d - 1;
+          nightsHint.textContent = `${n} night${n !== 1 ? 's' : ''} of accommodation`;
+          nightsHint.style.display = '';
+        }
       });
     }
 
@@ -5869,12 +6756,25 @@
         permits.push({ type: cb.value, quantity: qty });
       });
 
-      // Build extra costs
+      // Build extra costs (supports per_trip / per_day / per_vehicle types)
+      const _tripDaysForExtra = parseInt(document.getElementById('pricingDays')?.value) || 1;
+      const _vehicleCountForExtra = (() => {
+        let n = 0;
+        document.querySelectorAll('#vehicleSection .vehicle-row').forEach(() => n++);
+        return Math.max(1, n);
+      })();
       const extra_costs = [];
       document.querySelectorAll('#extraCostsSection .extra-cost-row').forEach(row => {
-        const desc = row.querySelector('[name^="extra_desc_"]')?.value.trim();
+        const desc   = row.querySelector('[name^="extra_desc_"]')?.value.trim();
         const amount = parseFloat(row.querySelector('[name^="extra_amount_"]')?.value);
-        if (desc && !isNaN(amount)) extra_costs.push({ description: desc, amount });
+        const type   = row.querySelector('[name^="extra_type_"]')?.value || 'per_trip';
+        if (!desc || isNaN(amount)) return;
+        extra_costs.push({
+          description: desc,
+          amount,
+          per_day:     type === 'per_day',
+          per_vehicle: type === 'per_vehicle',
+        });
       });
 
       // Build staff rooms array
@@ -5891,13 +6791,32 @@
         staff_rooms.push({ role, occupant_name: occupantName, lodge, room_type: roomType, nights, meal_plan: mealPlan, rate_usd: rateUsd, pricing_option: pricingOption });
       });
 
+      // If an accommodation cost adjustment is active, inject it as an extra_cost entry
+      // so the backend pricing engine reflects the manual override in totals.
+      const _accomAdj = state.accommodation.adjustment;
+      if (_accomAdj && _accomAdj.type) {
+        const _base  = state.accommodation.base_cost;
+        const _final = state.accommodation.final_cost;
+        const _delta = _final - _base;
+        if (_delta !== 0) {
+          extra_costs.push({
+            description: `Accommodation cost adjustment (${_accomAdj.type}): ${escapeHtml(_accomAdj.reason)}`,
+            amount: _delta,
+            per_day: false,
+            per_vehicle: false,
+          });
+        } else if (_accomAdj.type === 'override') {
+          // Override that equals base — no delta needed, already correct
+        }
+      }
+
       const payload = {
         itinerary_id: document.getElementById('pricingItinerary').value || null,
         nationality_tier: document.getElementById('pricingNationality').value,
         adults,
         children,
         pax: adults + children,
-        duration_days: parseInt(document.getElementById('pricingDays').value) || 7,
+        duration_days: parseInt(document.getElementById('pricingDays').value) || null,
         travel_start_date: document.getElementById('pricingTravelStartDate').value || null,
         include_insurance: document.getElementById('pricingIncludeInsurance').checked,
         commission_type: document.getElementById('pricingCommissionType').value || null,

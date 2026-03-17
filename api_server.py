@@ -331,7 +331,11 @@ PERMIT_PRICES = {
 }
 
 LOW_SEASON_MONTHS = [4, 5, 11]
-FX_RATE = 3575  # UGX/USD 2026 average
+FX_RATE = 3575  # UGX/USD base constant – runtime value read from CONFIG["fx_rate"]
+
+# Default rate-effective date used when no value is stored in the config DB.
+# Admin can update this via PATCH /api/config without any code change.
+DEFAULT_RATE_EFFECTIVE_DATE = "2026-07-01"
 
 
 def get_permit_price_usd(permit_key, tier, travel_date_str=None):
@@ -339,15 +343,23 @@ def get_permit_price_usd(permit_key, tier, travel_date_str=None):
     if not p:
         return 0
     tier_key = tier or "FNR"
+    # Runtime FX rate from config (falls back to module-level constant)
+    fx = CONFIG.get("fx_rate", FX_RATE) or FX_RATE
 
-    # Post rate-increase date (configurable via CONFIG["rate_increase_date"])
+    # Post rate-increase date: read exclusively from config — no hardcoded date in logic.
+    # Key "rate_effective_date" is the canonical name; "rate_increase_date" is the legacy alias.
     if travel_date_str and "post_july_2026" in p:
         try:
             d = datetime.strptime(travel_date_str, "%Y-%m-%d").date()
-            rate_date = date.fromisoformat(CONFIG.get("rate_increase_date", "2026-07-01"))
+            rate_date_str = (
+                CONFIG.get("rate_effective_date")
+                or CONFIG.get("rate_increase_date")
+                or DEFAULT_RATE_EFFECTIVE_DATE
+            )
+            rate_date = date.fromisoformat(rate_date_str)
             if d >= rate_date and tier_key in p["post_july_2026"]:
                 val = p["post_july_2026"][tier_key]
-                return val if p.get("currency_eac") == "USD" or tier_key not in ("EAC", "Ugandan") else val / FX_RATE
+                return val if p.get("currency_eac") == "USD" or tier_key not in ("EAC", "Ugandan") else val / fx
         except ValueError:
             pass
 
@@ -357,13 +369,13 @@ def get_permit_price_usd(permit_key, tier, travel_date_str=None):
             d = datetime.strptime(travel_date_str, "%Y-%m-%d").date()
             if d.month in LOW_SEASON_MONTHS and tier_key in p["low_season"]:
                 val = p["low_season"][tier_key]
-                return val if p.get("currency_eac") == "USD" or tier_key not in ("EAC", "Ugandan") else val / FX_RATE
+                return val if p.get("currency_eac") == "USD" or tier_key not in ("EAC", "Ugandan") else val / fx
         except ValueError:
             pass
 
     val = p.get(tier_key, p.get("FNR", 0))
     if tier_key in ("EAC", "Ugandan") and p.get("currency_eac") == "UGX":
-        return val / FX_RATE
+        return val / fx
     return val
 
 
@@ -804,7 +816,11 @@ CONFIG = {
     "fx_buffer_pct": 3,          # 3% FX volatility buffer
     "fuel_buffer_pct": 10,       # 10% fuel price buffer
     "quotation_validity_days": 7,  # Quotations expire after 7 days
-    "rate_increase_date": "2026-07-01",  # UWA tariff increase effective date
+    # Canonical configurable rate-effective date.  Overrides any "post_july_2026"
+    # pricing tier in PERMIT_PRICES.  Update via PATCH /api/config without code change.
+    "rate_effective_date": DEFAULT_RATE_EFFECTIVE_DATE,
+    # Legacy alias kept for any external references; always mirrors rate_effective_date.
+    "rate_increase_date": DEFAULT_RATE_EFFECTIVE_DATE,
     "last_updated": datetime.now().isoformat(),
 }
 
@@ -1054,8 +1070,12 @@ def _seed_lodges(conn):
         ("lodge-mfc-paraa-1", "Paraa Safari Lodge", "Standard Double", "Uganda", "Murchison Falls NP — Paraa", 450, 355, "Full Board", "2025-01-01", "2025-12-31", ""),
         ("lodge-mfc-paraa-2", "Paraa Safari Lodge", "Standard Single", "Uganda", "Murchison Falls NP — Paraa", 540, 420, "Full Board", "2025-01-01", "2025-12-31", ""),
         ("lodge-mfc-pakuba-1", "Pakuba Safari Lodge", "Banda (Double)", "Uganda", "Murchison Falls NP — Pakuba", 320, 250, "Half Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-mfc-pakuba-2", "Pakuba Safari Lodge", "Banda (Single)", "Uganda", "Murchison Falls NP — Pakuba", 250, 195, "Half Board", "2025-01-01", "2025-12-31", "Single supplement"),
+        ("lodge-mfc-pakuba-3", "Pakuba Safari Lodge", "Family Banda", "Uganda", "Murchison Falls NP — Pakuba", 480, 375, "Half Board", "2025-01-01", "2025-12-31", "Up to 4 guests"),
         ("lodge-mfc-chobe-1", "Chobe Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP — Chobe", 380, 300, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-chobe-3", "Chobe Safari Lodge", "Tent (Single)", "Uganda", "Murchison Falls NP — Chobe", 460, 360, "Full Board", "2025-01-01", "2025-12-31", "Single supplement"),
         ("lodge-mfc-nile-1", "Nile Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP", 520, 405, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-nile-2", "Nile Safari Lodge", "Tent (Single)", "Uganda", "Murchison Falls NP", 625, 485, "Full Board", "2025-01-01", "2025-12-31", "Single supplement"),
         # ── LAKE MBURO NATIONAL PARK ────────────────────────────────
         ("lodge-mburo-mihingo-1", "Mihingo Lodge", "Tent (Double)", "Uganda", "Lake Mburo NP", 620, 485, "Full Board", "2025-01-01", "2025-12-31", "Premium, hillside"),
         ("lodge-mburo-mihingo-2", "Mihingo Lodge", "Tent (Single)", "Uganda", "Lake Mburo NP", 745, 580, "Full Board", "2025-01-01", "2025-12-31", ""),
@@ -1159,6 +1179,10 @@ def _seed_lodges(conn):
         # Ishasha Wilderness Camp 2026 (Exclusive Camps / Wild Frontiers)
         ("lodge-qenp-ishasha-3", "Ishasha Wilderness Camp", "Tent (Double)", "Uganda", "Queen Elizabeth NP — Ishasha", 740, 590, "Full Board", "2026-01-01", "2026-12-31", "Exclusive Camps 2026"),
         ("lodge-qenp-ishasha-4", "Ishasha Wilderness Camp", "Tent (Single)", "Uganda", "Queen Elizabeth NP — Ishasha", 890, 710, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Pakuba Safari Lodge 2026 rates (all three room types)
+        ("lodge-mfc-pakuba-4", "Pakuba Safari Lodge", "Banda (Double)", "Uganda", "Murchison Falls NP — Pakuba", 345, 270, "Half Board", "2026-01-01", "2026-12-31", "2026 rates"),
+        ("lodge-mfc-pakuba-5", "Pakuba Safari Lodge", "Banda (Single)", "Uganda", "Murchison Falls NP — Pakuba", 270, 210, "Half Board", "2026-01-01", "2026-12-31", "Single supplement 2026"),
+        ("lodge-mfc-pakuba-6", "Pakuba Safari Lodge", "Family Banda", "Uganda", "Murchison Falls NP — Pakuba", 520, 405, "Half Board", "2026-01-01", "2026-12-31", "Up to 4 guests 2026"),
     ]
     for l in lodges:
         conn.execute("""
@@ -1166,6 +1190,10 @@ def _seed_lodges(conn):
                 rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, notes)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """, l)
+    # Set correct max_occupancy for family/triple room types that hold more than 2 guests
+    conn.execute("UPDATE lodges SET max_occupancy=4 WHERE id='lodge-mfc-pakuba-3'")
+    conn.execute("UPDATE lodges SET max_occupancy=4 WHERE id='lodge-mfc-pakuba-6'")
+    conn.execute("UPDATE lodges SET max_occupancy=4 WHERE room_type LIKE '%Family%' AND max_occupancy=2")
 
 
 def seed_lodges(conn):
@@ -1194,6 +1222,49 @@ def seed_lodges(conn):
             "seed_data",
             lodge.get("notes", ""),
         ))
+
+
+# ---------------------------------------------------------------------------
+# Config persistence helpers (must be defined before init_db uses them)
+# ---------------------------------------------------------------------------
+
+# Keys from CONFIG that must be persisted to SQLite so they survive restarts.
+_CONFIG_PERSISTED_KEYS = [
+    "fx_rate",
+    "fx_buffer_pct",
+    "fuel_buffer_pct",
+    "service_fee_pct",
+    "vehicle_rate_per_day",
+    "insurance_rate_per_person_per_day",
+    "quotation_validity_days",
+    "rate_effective_date",
+    "rate_increase_date",   # legacy alias — always mirrors rate_effective_date
+    "commission_rates",
+    "coordinators",
+]
+
+
+def _seed_config_defaults(conn):
+    """Seed all CONFIG defaults into SQLite using INSERT OR IGNORE so that
+    admin-updated values are never overwritten.  Called once during init_db()
+    to ensure every config key is persisted from the very first server run."""
+    import logging
+    seeded = 0
+    try:
+        for key in _CONFIG_PERSISTED_KEYS:
+            if key not in CONFIG:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+                (key, json.dumps(CONFIG[key]))
+            )
+            seeded += 1
+        conn.commit()
+        if seeded:
+            logging.info("Seeded %d config default(s) into SQLite", seeded)
+    except Exception as e:
+        import logging as _log
+        _log.warning("Could not seed config defaults: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -1269,7 +1340,13 @@ def init_db():
     except Exception:
         pass
 
-    # Load persisted CONFIG values from DB (overrides in-memory defaults)
+    # Seed in-memory CONFIG defaults into SQLite (INSERT OR IGNORE — never overwrites
+    # values already set by an admin).  This makes all config values persistent by
+    # default from the very first run, so they survive server restarts.
+    _seed_config_defaults(conn)
+
+    # Load persisted CONFIG values from DB (overrides in-memory defaults).
+    # After seeding, SQLite is always the single source of truth.
     try:
         rows = conn.execute("SELECT key, value FROM config").fetchall()
         for row in rows:
@@ -1277,8 +1354,9 @@ def init_db():
                 CONFIG[row["key"]] = json.loads(row["value"])
             except (json.JSONDecodeError, TypeError):
                 CONFIG[row["key"]] = row["value"]
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.warning("Could not load config from SQLite: %s — using in-memory defaults", e)
 
     # Migrate: add working_itinerary column to enquiries
     try:
@@ -2469,8 +2547,14 @@ class ConfigUpdate(BaseModel):
     fx_buffer_pct: Optional[float] = None
     fuel_buffer_pct: Optional[float] = None
     vehicle_rate_per_day: Optional[float] = None
+    insurance_rate_per_person_per_day: Optional[float] = None
     service_fee_pct: Optional[float] = None
     quotation_validity_days: Optional[int] = None
+    # Canonical rate-effective date (ISO 8601, e.g. "2026-07-01").
+    # Controls which "post_july_2026" permit price tier applies.
+    rate_effective_date: Optional[str] = None
+    # Legacy alias — updating either key updates both in CONFIG.
+    rate_increase_date: Optional[str] = None
 
 
 class LodgeCreate(BaseModel):
@@ -2689,6 +2773,11 @@ def get_config():
 @app.patch("/api/config")
 def update_config(body: ConfigUpdate):
     updates = body.model_dump(exclude_none=True)
+    # Keep rate_effective_date and rate_increase_date in sync
+    if "rate_effective_date" in updates:
+        updates["rate_increase_date"] = updates["rate_effective_date"]
+    elif "rate_increase_date" in updates:
+        updates["rate_effective_date"] = updates["rate_increase_date"]
     CONFIG.update(updates)
     CONFIG["last_updated"] = datetime.now().isoformat()
     _persist_config(updates)
@@ -2698,16 +2787,20 @@ def update_config(body: ConfigUpdate):
 @app.post("/api/config/update")
 def update_config_post(body: ConfigUpdate):
     updates = body.model_dump(exclude_none=True)
+    # Keep rate_effective_date and rate_increase_date in sync
+    if "rate_effective_date" in updates:
+        updates["rate_increase_date"] = updates["rate_effective_date"]
+    elif "rate_increase_date" in updates:
+        updates["rate_effective_date"] = updates["rate_increase_date"]
     for k, v in updates.items():
-        if k in CONFIG:
-            CONFIG[k] = v
+        CONFIG[k] = v
     CONFIG["last_updated"] = datetime.now().isoformat()
-    _persist_config({k: v for k, v in updates.items() if k in CONFIG})
+    _persist_config(updates)
     return CONFIG
 
 
 def _persist_config(updates: dict):
-    """Persist config key-value pairs to the SQLite config table."""
+    """Persist config key-value pairs to the SQLite config table (INSERT OR REPLACE)."""
     if not updates:
         return
     try:
@@ -3161,8 +3254,16 @@ def list_itineraries(limit: int = Query(100, ge=1, le=500)):
 # --- Lodge Rates ---
 @app.get("/api/lodge-rates/lodges")
 def list_lodges():
+    today = datetime.now().strftime("%Y-%m-%d")
     with db_session() as conn:
-        rows = conn.execute("SELECT * FROM lodges ORDER BY lodge_name").fetchall()
+        # Order so that currently-valid rates (valid_from <= today <= valid_to) appear first
+        # for each lodge/room_type pair; within that, most recent valid_from wins.
+        rows = conn.execute(
+            "SELECT * FROM lodges ORDER BY lodge_name, "
+            "CASE WHEN valid_from <= ? AND valid_to >= ? THEN 0 ELSE 1 END, "
+            "valid_from DESC",
+            (today, today),
+        ).fetchall()
     lodge_map = {}
     for r in rows:
         l = dict(r)
@@ -3781,16 +3882,34 @@ def calculate_price(body: PricingRequest):
     extras_total = 0.0
     extra_lines = []
     if body.extra_costs:
+        # Count vehicles for per_vehicle multiplier
+        vehicle_count = max(1, len(body.vehicles or []))
         for ex in body.extra_costs:
             desc = ex.get("description", "Extra")
             amount = ex.get("amount", 0)
-            per_person_flag = ex.get("per_person", False)
-            line_total = amount * pax if per_person_flag else amount
+            per_person_flag  = ex.get("per_person", False)
+            per_day_flag     = ex.get("per_day", False)
+            per_vehicle_flag = ex.get("per_vehicle", False)
+            if per_day_flag:
+                line_total = amount * days
+                unit_label = f"${amount}/day × {days} days"
+            elif per_person_flag:
+                line_total = amount * pax
+                unit_label = f"${amount}/person × {pax} pax"
+            elif per_vehicle_flag:
+                line_total = amount * vehicle_count
+                unit_label = f"${amount}/vehicle × {vehicle_count} vehicles"
+            else:
+                line_total = amount
+                unit_label = "per trip"
             extras_total += line_total
             extra_lines.append({
                 "description": desc,
                 "amount": amount,
-                "per_person": per_person_flag,
+                "per_person":  per_person_flag,
+                "per_day":     per_day_flag,
+                "per_vehicle": per_vehicle_flag,
+                "unit_label":  unit_label,
                 "total": round(line_total, 2),
             })
 

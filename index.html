@@ -708,7 +708,9 @@
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="pricingDays">Duration (days)</label>
-                      <input class="form-control" type="number" id="pricingDays" min="1" value="7">
+                      <input class="form-control" type="number" id="pricingDays" min="1" value=""
+                        placeholder="e.g. 7" title="Auto-calculated when both travel dates are set.">
+                      <span class="form-hint" id="pricingDaysNightsHint" style="display:none"></span>
                     </div>
                     <!-- T2: Fuel Cost Estimate -->
                     <div class="form-group">
@@ -947,6 +949,11 @@
                     <!-- MINOR-32: Airport transfer preset -->
                     <button type="button" class="btn btn-ghost btn-sm" id="btnAddAirportTransfer" title="Entebbe airport return transfer (approx.)">
                       + Airport Transfer
+                    </button>
+                    <!-- Car Park Entry Fee preset -->
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="window.TRVE.addCarParkFee()" title="Add a daily car park/game drive entry fee">
+                      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="3" width="11" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 9V6.5h5V9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="3.5" cy="9.5" r=".8" fill="currentColor"/><circle cx="9.5" cy="9.5" r=".8" fill="currentColor"/></svg>
+                      + Car Park Fee
                     </button>
                   </div>
                 </div>

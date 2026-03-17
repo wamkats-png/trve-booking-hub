@@ -690,8 +690,9 @@ class TestEdgeCases:
         data = resp.json()
         # vehicle_total = 1 * 100 * 1.10 = 110, service_fee=0 → grand=110
         assert data["total_usd"] == pytest.approx(110.0, abs=0.5)
-        # Reset
+        # Reset — must include fx_rate so subsequent tests see the canonical value
         client.patch("/api/config", json={
+            "fx_rate": 3575.0,
             "vehicle_rate_per_day": 120.0,
             "fuel_buffer_pct": 10.0,
             "fx_buffer_pct": 3.0,
