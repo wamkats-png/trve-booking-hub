@@ -196,6 +196,14 @@
     accomFuture:  [],      // redo stack
     roomOverrides: {},     // {roomKey: {overridden:bool, reason:string, timestamp:string}} — soft-warning overrides
     overrideLog:  [],      // audit log [{roomKey, reason, timestamp, guestIds}]
+    accommodation: {
+      base_cost: 0,
+      adjustment: { type: null, value: 0, reason: '' },
+      final_cost: 0,
+      adjustmentLog: [],      // audit trail [{type, value, reason, user, timestamp, prevFinal, newFinal}]
+      adjustmentHistory: [],  // undo stack for adjustments
+      adjustmentFuture:  [],  // redo stack for adjustments
+    },
   };
 
   /* ============================================================
@@ -3146,24 +3154,48 @@
     const endVal = document.getElementById('pricingTravelEndDate')?.value;
     const days = parseInt(document.getElementById('pricingDays')?.value) || 0;
 
-    // Sync duration when both dates provided
+    // Sync duration when both dates provided.
+    // INCLUSIVE logic: 3 Apr → 6 Apr = 4 days (not 3).
+    // Formula: duration_days = (endDate - startDate in days) + 1
+    // Formula: nights        = duration_days - 1
     if (startVal && endVal) {
-      const diffMs = new Date(endVal) - new Date(startVal);
-      const diffDays = Math.round(diffMs / 86400000);
-      if (diffDays > 0) {
+      const diffMs  = new Date(endVal) - new Date(startVal);
+      const diffDays = Math.round(diffMs / 86400000) + 1; // inclusive
+      if (diffDays >= 1) {
         const daysEl = document.getElementById('pricingDays');
-        if (daysEl && parseInt(daysEl.value) !== diffDays) {
-          daysEl.value = diffDays;
-          _syncLodgeNightsFromDays(diffDays);
+        if (daysEl) {
+          if (parseInt(daysEl.value) !== diffDays) {
+            daysEl.value = diffDays;
+            _syncLodgeNightsFromDays(diffDays);
+          }
+          daysEl.readOnly = true; // lock when dates are provided
+          daysEl.title = 'Auto-calculated from travel dates (inclusive). Edit dates above to change.';
+          daysEl.style.background = 'var(--bg-subtle)';
         }
+        // Show nights hint below the duration field and in the date range hint
+        const nights = diffDays - 1;
+        const hintText = `${diffDays} day${diffDays !== 1 ? 's' : ''} · ${nights} night${nights !== 1 ? 's' : ''} (inclusive)`;
+        const hint = document.getElementById('pricingDateRangeHint');
+        if (hint) { hint.textContent = hintText; hint.style.display = ''; }
+        const daysHint = document.getElementById('pricingDaysNightsHint');
+        if (daysHint) { daysHint.textContent = `${nights} night${nights !== 1 ? 's' : ''} · auto-calculated from dates`; daysHint.style.display = ''; }
       }
-    } else if (startVal && days > 0) {
-      // Compute end date from start + days
-      const end = new Date(startVal);
-      end.setDate(end.getDate() + days);
-      const endInput = document.getElementById('pricingTravelEndDate');
-      if (endInput && !endInput.value) {
-        endInput.value = end.toISOString().slice(0, 10);
+    } else {
+      // Unlock pricingDays when dates are cleared
+      const daysEl = document.getElementById('pricingDays');
+      if (daysEl) { daysEl.readOnly = false; daysEl.style.background = ''; daysEl.title = ''; }
+      const hint = document.getElementById('pricingDateRangeHint');
+      if (hint) hint.style.display = 'none';
+      const daysHint = document.getElementById('pricingDaysNightsHint');
+      if (daysHint) daysHint.style.display = 'none';
+      if (startVal && days > 0) {
+        // Compute end date from start + days - 1 (inclusive)
+        const end = new Date(startVal);
+        end.setDate(end.getDate() + days - 1);
+        const endInput = document.getElementById('pricingTravelEndDate');
+        if (endInput && !endInput.value) {
+          endInput.value = end.toISOString().slice(0, 10);
+        }
       }
     }
 
@@ -4866,9 +4898,46 @@
     }
     panel.style.display = '';
 
+    // ── Store base cost and compute final (adjusted) cost ─────────────────────
+    state.accommodation.base_cost  = grandTotal;
+    state.accommodation.final_cost = computeAdjustedAccommodationCost(grandTotal, state.accommodation.adjustment);
+    const adj       = state.accommodation.adjustment;
+    const finalCost = state.accommodation.final_cost;
+    const hasAdj    = !!adj.type;
+    const diff      = finalCost - grandTotal;  // negative = discount, positive = addition
+
+    // ── Adjustment type labels ─────────────────────────────────────────────────
+    const adjTypeLabel = { override: 'Override', discount: 'Discount', manual_add: 'Manual Add' };
+
+    // ── Diff display: show signed delta ───────────────────────────────────────
+    const diffDisplay = diff === 0 ? '' : (diff > 0
+      ? `<span style="color:var(--danger,#ef4444);font-family:var(--font-mono)">+${fmtMoney(diff)}</span>`
+      : `<span style="color:var(--brand-green,#22c55e);font-family:var(--font-mono)">${fmtMoney(diff)}</span>`);
+
+    // ── Audit log HTML (last 5 entries) ───────────────────────────────────────
+    const logEntries = (state.accommodation.adjustmentLog || []).slice(-5).reverse();
+    const logHTML = logEntries.length === 0 ? '' : `
+      <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+        <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:4px">Adjustment History (last 5)</div>
+        ${logEntries.map(e => `
+          <div style="font-size:9px;color:var(--text-muted);margin-bottom:2px;display:flex;justify-content:space-between;gap:8px">
+            <span>${e.type === 'reset' ? '↩ Reset' : `${adjTypeLabel[e.type] || e.type}: ${fmtMoney(e.value)}`} — <em>${escapeHtml(e.reason)}</em></span>
+            <span style="white-space:nowrap;font-family:var(--font-mono)">${new Date(e.timestamp).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
+          </div>`).join('')}
+      </div>`;
+
+    // ── Inline error placeholder ───────────────────────────────────────────────
+    const adjUndoDisabled = state.accommodation.adjustmentHistory.length === 0 ? 'disabled' : '';
+    const adjRedoDisabled = state.accommodation.adjustmentFuture.length  === 0 ? 'disabled' : '';
+
     panel.innerHTML = `
       <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;margin-top:var(--space-3)">
-        <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:10px">Accommodation Cost Preview</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">Accommodation Cost Preview</div>
+          <button type="button" onclick="window.TRVE._toggleAccomEditPanel()" style="font-size:10px;padding:2px 8px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--text-secondary)">
+            ✏ Edit Cost
+          </button>
+        </div>
         ${rowsHTML}
         ${staffGuestTotal > 0 ? `
         <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:4px;color:var(--brand-gold-dark,#b45309)">
@@ -4885,14 +4954,280 @@
           <span>Staff rooms (company paid)</span>
           <span style="font-family:var(--font-mono)">${fmtMoney(staffCoTotal)}</span>
         </div>` : ''}
+
+        <!-- Calculated cost row -->
         <div style="display:flex;justify-content:space-between;font-size:var(--text-sm);font-weight:700;border-top:1px solid var(--border);padding-top:6px;margin-top:4px">
-          <span>Total accommodation (guest invoice)</span>
-          <span style="font-family:var(--font-mono);color:var(--brand-green)">${fmtMoney(grandTotal)}</span>
+          <span>Calculated cost (guest invoice)</span>
+          <span style="font-family:var(--font-mono);color:${hasAdj ? 'var(--text-muted)' : 'var(--brand-green)'};${hasAdj ? 'text-decoration:line-through' : ''}">${fmtMoney(grandTotal)}</span>
         </div>
+
+        <!-- Adjusted cost row (visible only when adjustment active) -->
+        ${hasAdj ? `
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-sm);font-weight:700;padding-top:3px;color:var(--brand-gold-dark,#b45309)">
+          <span style="display:flex;align-items:center;gap:6px">
+            <span style="background:var(--brand-gold,#f59e0b);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:.04em">${adjTypeLabel[adj.type] || adj.type}</span>
+            Adjusted cost
+          </span>
+          <span style="font-family:var(--font-mono);color:var(--brand-green)">${fmtMoney(finalCost)}</span>
+        </div>
+        <!-- Difference row -->
+        <div style="display:flex;justify-content:space-between;font-size:10px;padding-top:2px;color:var(--text-muted)">
+          <span>Difference from calculated</span>
+          <span>${diffDisplay}</span>
+        </div>
+        <!-- Reason row -->
+        <div style="font-size:9px;color:var(--text-muted);font-style:italic;margin-top:2px">Reason: ${escapeHtml(adj.reason)}</div>
+        ` : ''}
+
         ${staffOpTotal + staffCoTotal > 0 ? `
         <div style="font-size:9px;color:var(--text-muted);margin-top:4px">+${fmtMoney(staffOpTotal + staffCoTotal)} in operational staff costs (not invoiced to guest)</div>` : ''}
+
+        <!-- ── Edit Adjustment Panel ─────────────────────────────────────────── -->
+        <div id="accomAdjustPanel" style="display:none;margin-top:12px;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm)">
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-secondary);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+            <span>Edit Accommodation Cost</span>
+            <span style="display:flex;gap:4px">
+              <button type="button" onclick="window.TRVE._undoAccomAdjustment()" ${adjUndoDisabled} title="Undo" style="font-size:10px;padding:1px 6px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text-secondary)" ${adjUndoDisabled ? 'style="opacity:.45;cursor:not-allowed"' : ''}>↩ Undo</button>
+              <button type="button" onclick="window.TRVE._redoAccomAdjustment()" ${adjRedoDisabled} title="Redo" style="font-size:10px;padding:1px 6px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text-secondary)" ${adjRedoDisabled ? 'style="opacity:.45;cursor:not-allowed"' : ''}>↪ Redo</button>
+            </span>
+          </div>
+
+          <!-- Adjustment type -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px">Adjustment Type</label>
+              <select id="accomAdjType" style="width:100%;font-size:var(--text-xs);padding:4px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card)">
+                <option value="">— Select type —</option>
+                <option value="override"   ${adj.type === 'override'   ? 'selected' : ''}>Override (set final amount)</option>
+                <option value="discount"   ${adj.type === 'discount'   ? 'selected' : ''}>Discount (reduce by amount)</option>
+                <option value="manual_add" ${adj.type === 'manual_add' ? 'selected' : ''}>Manual Add (increase by amount)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px">Value (USD)</label>
+              <input id="accomAdjValue" type="number" min="0" step="0.01"
+                value="${adj.value || ''}"
+                placeholder="0.00"
+                style="width:100%;font-size:var(--text-xs);padding:4px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);font-family:var(--font-mono)">
+            </div>
+          </div>
+
+          <!-- Reason -->
+          <div style="margin-bottom:8px">
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:3px">Reason <span style="color:var(--danger,#ef4444)">*</span></label>
+            <input id="accomAdjReason" type="text" maxlength="200"
+              value="${escapeHtml(adj.reason || '')}"
+              placeholder="e.g. Negotiated group discount, early-bird rate, correction…"
+              style="width:100%;font-size:var(--text-xs);padding:4px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card)">
+          </div>
+
+          <!-- Inline validation message -->
+          <div id="accomAdjError" style="font-size:10px;color:var(--danger,#ef4444);margin-bottom:6px;display:none"></div>
+
+          <!-- Live preview of what the result will be -->
+          <div id="accomAdjPreview" style="font-size:10px;color:var(--text-muted);margin-bottom:8px;padding:4px 6px;background:var(--bg-subtle);border-radius:3px;font-family:var(--font-mono)">
+            Calculated: ${fmtMoney(grandTotal)} → Final: ${fmtMoney(finalCost)}
+          </div>
+
+          <!-- Actions -->
+          <div style="display:flex;gap:6px">
+            <button type="button" onclick="(function(){
+              const t=document.getElementById('accomAdjType')?.value;
+              const v=document.getElementById('accomAdjValue')?.value;
+              const r=document.getElementById('accomAdjReason')?.value;
+              const err=document.getElementById('accomAdjError');
+              const errMsg=window.TRVE._validateAccomAdj(t,v,r);
+              if(errMsg){if(err){err.textContent=errMsg;err.style.display='block';}return;}
+              if(err)err.style.display='none';
+              window.TRVE._applyAccomAdjustment(t,v,r);
+            })()"
+              style="flex:1;font-size:var(--text-xs);padding:5px 10px;background:var(--brand-green,#22c55e);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">
+              ✓ Apply Adjustment
+            </button>
+            ${hasAdj ? `
+            <button type="button" onclick="window.TRVE._resetAccomAdjustment()"
+              style="font-size:var(--text-xs);padding:5px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--danger,#ef4444)">
+              ✕ Reset to Calculated
+            </button>` : ''}
+          </div>
+
+          ${logHTML}
+        </div>
+        <!-- ── End Edit Panel ──────────────────────────────────────────────────── -->
       </div>`;
   }
+
+  // ── ACCOMMODATION COST ADJUSTMENT ENGINE ───────────────────────────────────
+
+  /**
+   * Pure computation: applies an adjustment to a base accommodation cost.
+   * Types: 'override' (set final = value), 'discount' (base − value), 'manual_add' (base + value)
+   * Guardrail: final cost is clamped to 0 minimum.
+   */
+  function computeAdjustedAccommodationCost(base, adjustment) {
+    if (!adjustment || !adjustment.type) return base;
+    const val = parseFloat(adjustment.value) || 0;
+    let final;
+    if (adjustment.type === 'override')    final = val;
+    else if (adjustment.type === 'discount')    final = base - val;
+    else if (adjustment.type === 'manual_add')  final = base + val;
+    else return base;
+    return final < 0 ? 0 : final;
+  }
+
+  /** Validate an adjustment form submission. Returns error string or null. */
+  function _validateAccomAdjustment(type, value, reason) {
+    if (!type) return 'Select an adjustment type.';
+    const val = parseFloat(value);
+    if (isNaN(val) || value === '') return 'Enter a numeric value.';
+    if (val < 0) return 'Value must be 0 or greater.';
+    if (!reason || !reason.trim()) return 'A reason is required.';
+    if (type === 'override' && val === 0) return 'Override to $0 — confirm this is intentional by entering a reason.';
+    return null;
+  }
+
+  /** Apply a new adjustment, write audit log entry, update state, re-render. */
+  function _applyAccomAdjustment(type, value, reason) {
+    const errMsg = _validateAccomAdjustment(type, value, reason);
+    if (errMsg) { toast('error', 'Invalid adjustment', errMsg); return; }
+
+    const accom = state.accommodation;
+    const prevAdj   = { ...accom.adjustment };
+    const prevFinal = accom.final_cost;
+
+    // Push to undo stack before mutating
+    accom.adjustmentHistory.push({ adjustment: prevAdj, final_cost: prevFinal });
+    if (accom.adjustmentHistory.length > 30) accom.adjustmentHistory.shift();
+    accom.adjustmentFuture = [];
+
+    accom.adjustment = { type, value: parseFloat(value), reason: reason.trim() };
+    accom.final_cost = computeAdjustedAccommodationCost(accom.base_cost, accom.adjustment);
+
+    // Audit log entry
+    accom.adjustmentLog.push({
+      type, value: parseFloat(value), reason: reason.trim(),
+      user: state.coordinator || 'Unknown',
+      timestamp: new Date().toISOString(),
+      prevFinal,
+      newFinal: accom.final_cost,
+    });
+
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+    toast('success', 'Adjustment applied', `Final cost: ${fmtMoney(accom.final_cost)}`);
+  }
+
+  /** Clear the current adjustment, restore base cost. */
+  function _resetAccomAdjustment() {
+    const accom = state.accommodation;
+    if (!accom.adjustment.type) return;
+
+    const prevAdj   = { ...accom.adjustment };
+    const prevFinal = accom.final_cost;
+
+    accom.adjustmentHistory.push({ adjustment: prevAdj, final_cost: prevFinal });
+    if (accom.adjustmentHistory.length > 30) accom.adjustmentHistory.shift();
+    accom.adjustmentFuture = [];
+
+    accom.adjustment = { type: null, value: 0, reason: '' };
+    accom.final_cost = accom.base_cost;
+
+    accom.adjustmentLog.push({
+      type: 'reset', value: 0, reason: 'Adjustment cleared',
+      user: state.coordinator || 'Unknown',
+      timestamp: new Date().toISOString(),
+      prevFinal,
+      newFinal: accom.final_cost,
+    });
+
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+    toast('info', 'Adjustment removed', 'Cost reset to calculated value.');
+  }
+
+  /** Undo last adjustment change. */
+  function _undoAccomAdjustment() {
+    const accom = state.accommodation;
+    if (accom.adjustmentHistory.length === 0) return;
+    accom.adjustmentFuture.push({ adjustment: { ...accom.adjustment }, final_cost: accom.final_cost });
+    const prev = accom.adjustmentHistory.pop();
+    accom.adjustment = { ...prev.adjustment };
+    accom.final_cost = computeAdjustedAccommodationCost(accom.base_cost, accom.adjustment);
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+  }
+
+  /** Redo last undone adjustment. */
+  function _redoAccomAdjustment() {
+    const accom = state.accommodation;
+    if (accom.adjustmentFuture.length === 0) return;
+    accom.adjustmentHistory.push({ adjustment: { ...accom.adjustment }, final_cost: accom.final_cost });
+    const next = accom.adjustmentFuture.pop();
+    accom.adjustment = { ...next.adjustment };
+    accom.final_cost = computeAdjustedAccommodationCost(accom.base_cost, accom.adjustment);
+    _persistAccomAdjustment();
+    _renderAccommPricingSummary();
+  }
+
+  /** Persist adjustment to localStorage. */
+  function _persistAccomAdjustment() {
+    try {
+      const data = {
+        adjustment: state.accommodation.adjustment,
+        adjustmentLog: state.accommodation.adjustmentLog,
+      };
+      localStorage.setItem('trve_accom_adjustment', JSON.stringify(data));
+    } catch (_) { /* storage unavailable — silent */ }
+  }
+
+  /** Restore adjustment from localStorage on page load. */
+  function _restoreAccomAdjustment() {
+    try {
+      const raw = localStorage.getItem('trve_accom_adjustment');
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data && data.adjustment) {
+        state.accommodation.adjustment = data.adjustment;
+        state.accommodation.adjustmentLog = data.adjustmentLog || [];
+      }
+    } catch (_) { /* corrupt storage — ignore */ }
+  }
+
+  window.TRVE._applyAccomAdjustment  = _applyAccomAdjustment;
+  window.TRVE._resetAccomAdjustment  = _resetAccomAdjustment;
+  window.TRVE._undoAccomAdjustment   = _undoAccomAdjustment;
+  window.TRVE._redoAccomAdjustment   = _redoAccomAdjustment;
+  window.TRVE._validateAccomAdj      = _validateAccomAdjustment;
+  window.TRVE._toggleAccomEditPanel  = function() {
+    const panel = document.getElementById('accomAdjustPanel');
+    if (!panel) return;
+    const isHidden = panel.style.display === 'none' || panel.style.display === '';
+    panel.style.display = isHidden ? 'block' : 'none';
+    if (!isHidden) return;
+    // Wire live preview on inputs when opening
+    const typeEl  = document.getElementById('accomAdjType');
+    const valueEl = document.getElementById('accomAdjValue');
+    const prevEl  = document.getElementById('accomAdjPreview');
+    function _updateLivePreview() {
+      if (!prevEl) return;
+      const t = typeEl?.value;
+      const v = parseFloat(valueEl?.value);
+      const base = state.accommodation.base_cost;
+      if (!t || isNaN(v)) {
+        prevEl.textContent = `Calculated: ${fmtMoney(base)} → Final: (select type & value)`;
+        return;
+      }
+      const simFinal = computeAdjustedAccommodationCost(base, { type: t, value: v });
+      const simDiff  = simFinal - base;
+      const diffStr  = simDiff === 0 ? '' : ` (${simDiff > 0 ? '+' : ''}${fmtMoney(simDiff)})`;
+      prevEl.textContent = `Calculated: ${fmtMoney(base)} → Final: ${fmtMoney(simFinal)}${diffStr}`;
+    }
+    if (typeEl)  typeEl.addEventListener('change', _updateLivePreview);
+    if (valueEl) valueEl.addEventListener('input',  _updateLivePreview);
+    _updateLivePreview();
+  };
+
+  // ── END ADJUSTMENT ENGINE ───────────────────────────────────────────────────
 
   function _toggleGuestRoom(guestIdx, roomIdx, checked) {
     if (state.guestRecords[guestIdx]) {
@@ -5366,36 +5701,53 @@
     }
   }
 
-  // MINOR-32: Pre-filled extra cost row
-  function addPresetExtraCost(description, amount) {
+  // Build an extra cost row element with type selector and per-day toggle.
+  // type: 'per_trip' | 'per_day' | 'per_vehicle'
+  function _buildExtraCostRow(description, amount, type) {
     const container = document.getElementById('extraCostsSection');
     const idx = container.children.length;
     const el = document.createElement('div');
     el.className = 'extra-cost-row';
+    el.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap';
+    const typeOpts = [
+      { v: 'per_trip',    label: 'Per trip'    },
+      { v: 'per_day',     label: 'Per day'     },
+      { v: 'per_vehicle', label: 'Per vehicle' },
+    ].map(o => `<option value="${o.v}"${(type||'per_trip')===o.v?' selected':''}>${o.label}</option>`).join('');
     el.innerHTML = `
-      <input type="text" class="form-control" name="extra_desc_${idx}" value="${escapeHtml(description)}" style="flex:1">
-      <input type="number" class="form-control" name="extra_amount_${idx}" min="0" value="${amount}" style="width:140px">
+      <input type="text" class="form-control" name="extra_desc_${idx}" value="${escapeHtml(description||'')}"
+        placeholder="Description" style="flex:1;min-width:120px">
+      <input type="number" class="form-control" name="extra_amount_${idx}" min="0"
+        value="${amount != null ? amount : ''}" placeholder="Amount (USD)"
+        style="width:120px">
+      <select class="form-control" name="extra_type_${idx}"
+        style="width:110px;font-size:var(--text-xs);height:var(--input-h,34px)">
+        ${typeOpts}
+      </select>
       <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.extra-cost-row').remove()" title="Remove">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     `;
     container.appendChild(el);
-    toast('info', 'Extra cost added', `${description} — $${amount}`);
+    return el;
   }
 
+  // MINOR-32: Pre-filled extra cost row
+  function addPresetExtraCost(description, amount, type) {
+    _buildExtraCostRow(description, amount, type || 'per_trip');
+    toast('info', 'Extra cost added', `${description} — $${amount}${type === 'per_day' ? '/day' : ''}`);
+  }
+
+  // Add car park entry fee row
+  function addCarParkFee() {
+    const days = parseInt(document.getElementById('pricingDays')?.value) || 1;
+    _buildExtraCostRow('Car Park Entry Fee', '', 'per_day');
+    toast('info', 'Car Park Fee added', `Enter daily rate — will be multiplied by trip days (${days}).`);
+  }
+  window.TRVE.addCarParkFee = addCarParkFee;
+
   function addExtraCost() {
-    const container = document.getElementById('extraCostsSection');
-    const idx = container.children.length;
-    const el = document.createElement('div');
-    el.className = 'extra-cost-row';
-    el.innerHTML = `
-      <input type="text" class="form-control" name="extra_desc_${idx}" placeholder="Description" style="flex:1">
-      <input type="number" class="form-control" name="extra_amount_${idx}" min="0" placeholder="Amount (USD)" style="width:140px">
-      <button type="button" class="btn btn-ghost btn-icon" onclick="this.closest('.extra-cost-row').remove()" title="Remove">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-      </button>
-    `;
-    container.appendChild(el);
+    _buildExtraCostRow('', null, 'per_trip');
     toast('info', 'Extra cost row added', 'Fill in the description and amount');
   }
 
@@ -5994,6 +6346,9 @@
     state.addedActivities = {};
     state.bufferApplied = false;
 
+    // Restore any persisted accommodation cost adjustment
+    _restoreAccomAdjustment();
+
     document.getElementById('btnAddLodge').addEventListener('click', () => addLodgeItem());
 
     // Keyboard shortcuts for accommodation undo/redo
@@ -6010,10 +6365,18 @@
     const daysInput = document.getElementById('pricingDays');
     if (daysInput) {
       daysInput.addEventListener('input', () => {
+        if (daysInput.readOnly) return; // locked when both dates present
         const d = parseInt(daysInput.value) || 7;
         _syncLodgeNightsFromDays(d);
         _updateAccommodationDates();
-        _updateVehicleHint(); // also update vehicle days hint
+        _updateVehicleHint();
+        // Show nights hint
+        const nightsHint = document.getElementById('pricingDaysNightsHint');
+        if (nightsHint && d >= 1) {
+          const n = d - 1;
+          nightsHint.textContent = `${n} night${n !== 1 ? 's' : ''} of accommodation`;
+          nightsHint.style.display = '';
+        }
       });
     }
 
@@ -6359,12 +6722,25 @@
         permits.push({ type: cb.value, quantity: qty });
       });
 
-      // Build extra costs
+      // Build extra costs (supports per_trip / per_day / per_vehicle types)
+      const _tripDaysForExtra = parseInt(document.getElementById('pricingDays')?.value) || 1;
+      const _vehicleCountForExtra = (() => {
+        let n = 0;
+        document.querySelectorAll('#vehicleSection .vehicle-row').forEach(() => n++);
+        return Math.max(1, n);
+      })();
       const extra_costs = [];
       document.querySelectorAll('#extraCostsSection .extra-cost-row').forEach(row => {
-        const desc = row.querySelector('[name^="extra_desc_"]')?.value.trim();
+        const desc   = row.querySelector('[name^="extra_desc_"]')?.value.trim();
         const amount = parseFloat(row.querySelector('[name^="extra_amount_"]')?.value);
-        if (desc && !isNaN(amount)) extra_costs.push({ description: desc, amount });
+        const type   = row.querySelector('[name^="extra_type_"]')?.value || 'per_trip';
+        if (!desc || isNaN(amount)) return;
+        extra_costs.push({
+          description: desc,
+          amount,
+          per_day:     type === 'per_day',
+          per_vehicle: type === 'per_vehicle',
+        });
       });
 
       // Build staff rooms array
@@ -6380,6 +6756,25 @@
         const pricingOption = card.querySelector('[name^="sr_pricing_"]:checked')?.value || 'operating';
         staff_rooms.push({ role, occupant_name: occupantName, lodge, room_type: roomType, nights, meal_plan: mealPlan, rate_usd: rateUsd, pricing_option: pricingOption });
       });
+
+      // If an accommodation cost adjustment is active, inject it as an extra_cost entry
+      // so the backend pricing engine reflects the manual override in totals.
+      const _accomAdj = state.accommodation.adjustment;
+      if (_accomAdj && _accomAdj.type) {
+        const _base  = state.accommodation.base_cost;
+        const _final = state.accommodation.final_cost;
+        const _delta = _final - _base;
+        if (_delta !== 0) {
+          extra_costs.push({
+            description: `Accommodation cost adjustment (${_accomAdj.type}): ${escapeHtml(_accomAdj.reason)}`,
+            amount: _delta,
+            per_day: false,
+            per_vehicle: false,
+          });
+        } else if (_accomAdj.type === 'override') {
+          // Override that equals base — no delta needed, already correct
+        }
+      }
 
       const payload = {
         itinerary_id: document.getElementById('pricingItinerary').value || null,
