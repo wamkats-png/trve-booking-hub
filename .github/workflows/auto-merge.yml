@@ -38,3 +38,9 @@ jobs:
           git merge --no-ff claude/confirm-working-4yYw8 \
             -m "ci: auto-merge claude/confirm-working-4yYw8 → main [skip ci]"
           git push origin main
+
+      - name: Sync master to main
+        run: |
+          git checkout master
+          git reset --hard main
+          git push origin master --force
