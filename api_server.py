@@ -329,11 +329,22 @@ PERMIT_PRICES = {
         "unit": "day", "currency_eac": "UGX",
     },
     "vehicle_entry": {
-        "label": "Vehicle Entry",
-        "FNR": 40, "FR": 30, "ROA": 25,
-        "EAC": 20000, "Ugandan": 20000,
+        "label": "Vehicle Entry — 4WD/Tour (Standard Parks)",
+        # Uganda-registered tour 4WD: UGX 30,000/day regardless of guest nationality (UWA tariff 2024-2026)
+        "FNR": 30000, "FR": 30000, "ROA": 30000,
+        "EAC": 30000, "Ugandan": 30000,
         "unit": "day", "currency_eac": "UGX",
-        "per_vehicle": True,   # charged per vehicle, not per person
+        "base_currency": "UGX",  # all tiers priced in UGX — convert to USD at runtime
+        "per_vehicle": True,
+    },
+    "vehicle_entry_murchison": {
+        "label": "Vehicle Entry — 4WD/Tour (Murchison Falls)",
+        # Standard UGX 30,000 + UGX 10,000 MFNP surcharge = UGX 40,000/day (UWA tariff 2024-2026)
+        "FNR": 40000, "FR": 40000, "ROA": 40000,
+        "EAC": 40000, "Ugandan": 40000,
+        "unit": "day", "currency_eac": "UGX",
+        "base_currency": "UGX",
+        "per_vehicle": True,
     },
 }
 
@@ -381,6 +392,9 @@ def get_permit_price_usd(permit_key, tier, travel_date_str=None):
             pass
 
     val = p.get(tier_key, p.get("FNR", 0))
+    # base_currency="UGX" means every tier is priced in UGX (e.g. vehicle entry on Uganda-registered vehicles)
+    if p.get("base_currency") == "UGX":
+        return val / fx
     if tier_key in ("EAC", "Ugandan") and p.get("currency_eac") == "UGX":
         return val / fx
     return val
