@@ -6666,14 +6666,18 @@
         }
       });
       if (valTotal > 0 && hasRooms && valCapacity < valTotal) {
-        const shortfall = valTotal - valCapacity;
-        toast('warning', 'Accommodation incomplete',
-          `${shortfall} guest${shortfall !== 1 ? 's are' : ' is'} unaccommodated. Add more rooms before calculating.`);
-        _checkCapacityMismatch();
-        btn.classList.remove('loading');
-        btn.disabled = false;
-        btn.innerHTML = originalBtnText;
-        return;
+        // Allow proceeding if a capacity-level override was already confirmed by the user
+        const hasCapacityOverride = (state.overrideLog || []).some(e => e.roomKey === 'capacity-level');
+        if (!hasCapacityOverride) {
+          const shortfall = valTotal - valCapacity;
+          toast('warning', 'Accommodation incomplete',
+            `${shortfall} guest${shortfall !== 1 ? 's are' : ' is'} unaccommodated. Add more rooms before calculating.`);
+          _checkCapacityMismatch();
+          btn.classList.remove('loading');
+          btn.disabled = false;
+          btn.innerHTML = originalBtnText;
+          return;
+        }
       }
       if (hasOvercrowded) {
         toast('warning', 'Room overcrowded',
@@ -6933,22 +6937,35 @@
     const lineItems = result.line_items || [];
     const fxRate = result.fx_rate || 3575; // 2026 avg per Exchange-Rates.org
     const fxTimestamp = result.fx_timestamp || null;
+    const serviceFeeLabel = result.service_fee_label || 'TRVE Service Fee';
+    const serviceFeePct = result.service_fee_pct != null ? result.service_fee_pct
+      : (state.apiConfig && state.apiConfig.service_fee_pct ? state.apiConfig.service_fee_pct : null);
+    const totalPax = (result.adults || payload.adults || result.pax || 1)
+      + (result.children || payload.children || 0);
 
-    // Format each line item row, handling both USD-only and UGX+USD items
-    function renderLineItemRow(item) {
+    // Format each editable line item row — USD amount is an <input> for manual override
+    function renderLineItemRow(item, idx) {
       const usdAmount = item.total_usd != null ? item.total_usd : null;
       const ugxAmount = item.total_ugx != null ? item.total_ugx : null;
-      // UGX-only items (e.g. fuel) show '—' in USD column and actual UGX value
-      const usdDisplay = usdAmount != null ? fmtMoney(usdAmount) : '—';
+      const isFuelLine = item.total_usd == null && item.total_ugx != null;
       const ugxDisplay = ugxAmount != null
         ? fmtMoney(ugxAmount, 'UGX')
         : (usdAmount != null ? fmtMoney(usdAmount * fxRate, 'UGX') : '—');
-      const isFuelLine = item.total_usd == null && item.total_ugx != null;
+      // UGX-only rows (fuel) keep a static display in USD column
+      const usdCell = isFuelLine
+        ? `<span class="price-item-ugx-only">—</span>`
+        : `<input type="number" class="price-item-input" data-idx="${idx}"
+             value="${usdAmount != null ? usdAmount : ''}"
+             min="0" step="0.01"
+             style="width:90px;text-align:right;font-family:var(--font-mono);font-size:var(--text-sm);
+                    background:transparent;border:1px dashed var(--border);border-radius:3px;
+                    padding:2px 4px;color:inherit"
+             title="Click to edit this line item amount">`;
       return `
         <tr${isFuelLine ? ' style="background:rgba(234,179,8,0.06)"' : ''}>
           <td>${escapeHtml(item.item || '—')}${item.note ? ` <span style="font-size:var(--text-xs);color:var(--text-muted)">(${escapeHtml(item.note)})</span>` : ''}</td>
-          <td class="amount-col">${usdDisplay}</td>
-          <td class="amount-col" style="color:${isFuelLine ? 'var(--brand-gold)' : 'var(--text-muted)'};font-size:var(--text-xs)">${ugxDisplay}</td>
+          <td class="amount-col">${usdCell}</td>
+          <td class="amount-col price-item-ugx-cell" data-idx="${idx}" style="color:${isFuelLine ? 'var(--brand-gold)' : 'var(--text-muted)'};font-size:var(--text-xs)">${ugxDisplay}</td>
         </tr>
       `;
     }
@@ -6964,11 +6981,11 @@
         </div>
         <div style="height:1px;background:rgba(255,255,255,0.15);margin-bottom:var(--space-4)"></div>
         <div class="price-summary-title">Grand Total (Group)</div>
-        <div class="price-summary-value">${fmtMoney(result.total_usd)}</div>
-        <div class="price-summary-sub">${fmtMoney(result.total_ugx, 'UGX')} equivalent</div>
+        <div class="price-summary-value" id="priceSummaryTotal">${fmtMoney(result.total_usd)}</div>
+        <div class="price-summary-sub" id="priceSummaryTotalUgx">${fmtMoney(result.total_ugx, 'UGX')} equivalent</div>
         <div style="height:1px;background:rgba(255,255,255,0.15);margin:var(--space-4) 0"></div>
         <div class="price-summary-title">Per Person</div>
-        <div style="font-family:var(--font-mono);font-size:var(--text-xl);font-weight:700;color:#FFFFFF">${fmtMoney(result.per_person_usd)}</div>
+        <div style="font-family:var(--font-mono);font-size:var(--text-xl);font-weight:700;color:#FFFFFF" id="priceSummaryPerPerson">${fmtMoney(result.per_person_usd)}</div>
         <div class="price-summary-sub">FX Rate: 1 USD = UGX ${fmtNum(fxRate)}${fxTimestamp ? ` <span style="opacity:0.6;font-size:var(--text-xs)">(${fxTimestamp})</span>` : ' <span style="opacity:0.6;font-size:var(--text-xs)">(fallback)</span>'}</div>
       </div>
 
@@ -6976,6 +6993,10 @@
       <div class="card mb-5">
         <div class="card-header" style="padding:var(--space-4) var(--space-5)">
           <span class="card-title" style="font-size:var(--text-base)">Price Breakdown</span>
+          <span style="font-size:var(--text-xs);color:var(--text-muted);margin-left:8px">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="vertical-align:middle;margin-right:3px"><path d="M1 10l2-2 6-6-2-2L1 6v4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+            Click USD amounts to edit
+          </span>
         </div>
         <div style="overflow-x:auto">
           <table class="price-results-table">
@@ -6986,24 +7007,24 @@
                 <th style="text-align:right">UGX Equiv.</th>
               </tr>
             </thead>
-            <tbody>
-              ${lineItems.map(item => renderLineItemRow(item)).join('')}
+            <tbody id="priceLineItemsBody">
+              ${lineItems.map((item, idx) => renderLineItemRow(item, idx)).join('')}
               <tr class="price-subtotal-row">
                 <td><strong>Subtotal</strong></td>
-                <td class="amount-col"><strong>${fmtMoney(result.subtotal_usd)}</strong></td>
-                <td class="amount-col" style="color:var(--text-muted);font-size:var(--text-xs)">${fmtMoney((result.subtotal_usd || 0) * fxRate, 'UGX')}</td>
+                <td class="amount-col"><strong id="priceSubtotalUsd">${fmtMoney(result.subtotal_usd)}</strong></td>
+                <td class="amount-col" id="priceSubtotalUgx" style="color:var(--text-muted);font-size:var(--text-xs)">${fmtMoney((result.subtotal_usd || 0) * fxRate, 'UGX')}</td>
               </tr>
               <tr class="price-markup-row">
-                <td>${escapeHtml(result.service_fee_label || 'TRVE Service Fee')} (${result.service_fee_pct != null ? result.service_fee_pct + '%' : (state.apiConfig && state.apiConfig.service_fee_pct ? state.apiConfig.service_fee_pct + '%' : '—')})
+                <td>${escapeHtml(serviceFeeLabel)} (${serviceFeePct != null ? serviceFeePct + '%' : '—'})
                   <span style="display:inline-block;margin-left:4px;cursor:help" title="Management & coordination fee applied by The Rift Valley Explorer. Rate is configurable per commission type.">&#9432;</span>
                 </td>
-                <td class="amount-col">${fmtMoney(result.tmsf_usd || result.service_fee_usd)}</td>
-                <td class="amount-col" style="font-size:var(--text-xs)">${fmtMoney(((result.tmsf_usd || result.service_fee_usd) || 0) * fxRate, 'UGX')}</td>
+                <td class="amount-col" id="priceServiceFeeUsd">${fmtMoney(result.tmsf_usd || result.service_fee_usd)}</td>
+                <td class="amount-col" id="priceServiceFeeUgx" style="font-size:var(--text-xs)">${fmtMoney(((result.tmsf_usd || result.service_fee_usd) || 0) * fxRate, 'UGX')}</td>
               </tr>
               <tr class="price-total-row">
                 <td><strong>Grand Total</strong></td>
-                <td class="amount-col"><strong>${fmtMoney(result.total_usd)}</strong></td>
-                <td class="amount-col">${fmtMoney(result.total_ugx, 'UGX')}</td>
+                <td class="amount-col"><strong id="priceTotalUsd">${fmtMoney(result.total_usd)}</strong></td>
+                <td class="amount-col" id="priceTotalUgx">${fmtMoney(result.total_ugx, 'UGX')}</td>
               </tr>
             </tbody>
           </table>
@@ -7107,6 +7128,61 @@
         </button>
       </div>
     `;
+
+    // Wire up live editing: when a line item USD amount changes, recalculate totals
+    panel.querySelectorAll('.price-item-input').forEach(input => {
+      input.addEventListener('input', () => {
+        // Collect current USD values from all editable line item inputs
+        let newSubtotal = 0;
+        panel.querySelectorAll('.price-item-input').forEach((inp, i) => {
+          const val = parseFloat(inp.value);
+          if (!isNaN(val)) {
+            newSubtotal += val;
+            // Update the result line_items array so PDF uses edited values
+            if (result.line_items[i]) result.line_items[i].total_usd = val;
+            // Update UGX equivalent cell
+            const ugxCell = panel.querySelector(`.price-item-ugx-cell[data-idx="${i}"]`);
+            if (ugxCell) ugxCell.textContent = fmtMoney(val * fxRate, 'UGX');
+          }
+        });
+
+        const newServiceFee = serviceFeePct != null ? newSubtotal * serviceFeePct / 100
+          : (result.tmsf_usd || result.service_fee_usd || 0); // fallback: keep original if pct unknown
+        const newTotal = newSubtotal + newServiceFee;
+        const newTotalUgx = newTotal * fxRate;
+        const newPerPerson = totalPax > 0 ? newTotal / totalPax : newTotal;
+
+        // Update summary card
+        const elSummaryTotal    = document.getElementById('priceSummaryTotal');
+        const elSummaryTotalUgx = document.getElementById('priceSummaryTotalUgx');
+        const elSummaryPerPerson = document.getElementById('priceSummaryPerPerson');
+        if (elSummaryTotal)    elSummaryTotal.textContent    = fmtMoney(newTotal);
+        if (elSummaryTotalUgx) elSummaryTotalUgx.textContent = fmtMoney(newTotalUgx, 'UGX') + ' equivalent';
+        if (elSummaryPerPerson) elSummaryPerPerson.textContent = fmtMoney(newPerPerson);
+
+        // Update breakdown table totals
+        const elSubUsd  = document.getElementById('priceSubtotalUsd');
+        const elSubUgx  = document.getElementById('priceSubtotalUgx');
+        const elFeeUsd  = document.getElementById('priceServiceFeeUsd');
+        const elFeeUgx  = document.getElementById('priceServiceFeeUgx');
+        const elTotUsd  = document.getElementById('priceTotalUsd');
+        const elTotUgx  = document.getElementById('priceTotalUgx');
+        if (elSubUsd)  elSubUsd.innerHTML  = `<strong>${fmtMoney(newSubtotal)}</strong>`;
+        if (elSubUgx)  elSubUgx.textContent = fmtMoney(newSubtotal * fxRate, 'UGX');
+        if (elFeeUsd)  elFeeUsd.textContent  = fmtMoney(newServiceFee);
+        if (elFeeUgx)  elFeeUgx.textContent  = fmtMoney(newServiceFee * fxRate, 'UGX');
+        if (elTotUsd)  elTotUsd.innerHTML   = `<strong>${fmtMoney(newTotal)}</strong>`;
+        if (elTotUgx)  elTotUgx.textContent  = fmtMoney(newTotalUgx, 'UGX');
+
+        // Keep result object in sync for PDF generation
+        result.subtotal_usd   = newSubtotal;
+        result.tmsf_usd       = newServiceFee;
+        result.service_fee_usd = newServiceFee;
+        result.total_usd      = newTotal;
+        result.total_ugx      = newTotalUgx;
+        result.per_person_usd = newPerPerson;
+      });
+    });
 
     // Wire up the quotation button
     document.getElementById('btnGenerateQuotation').addEventListener('click', () => {
