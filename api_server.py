@@ -328,6 +328,13 @@ PERMIT_PRICES = {
         "EAC": 15000, "Ugandan": 15000,
         "unit": "day", "currency_eac": "UGX",
     },
+    "vehicle_entry": {
+        "label": "Vehicle Entry",
+        "FNR": 40, "FR": 30, "ROA": 25,
+        "EAC": 20000, "Ugandan": 20000,
+        "unit": "day", "currency_eac": "UGX",
+        "per_vehicle": True,   # charged per vehicle, not per person
+    },
 }
 
 LOW_SEASON_MONTHS = [4, 5, 11]
@@ -3853,7 +3860,7 @@ def calculate_price(body: PricingRequest):
                 "fuel_buffer_pct": v_buf, "total": round(v_total, 2)
             })
 
-    # 3. Permits — per person, nationality-tiered
+    # 3. Permits — per person (or per vehicle for vehicle_entry), nationality-tiered
     permit_total = 0.0
     permit_lines = []
     if body.permits:
@@ -3861,13 +3868,17 @@ def calculate_price(body: PricingRequest):
             pkey = pm.get("permit_key") or pm.get("type", "")
             qty = pm.get("quantity", 1)
             price = get_permit_price_usd(pkey, tier, travel_date)
-            line_total = price * qty * pax
+            per_vehicle = PERMIT_PRICES.get(pkey, {}).get("per_vehicle", False)
+            if per_vehicle:
+                line_total = price * qty          # qty = days; not multiplied by pax
+            else:
+                line_total = price * qty * pax
             permit_label = PERMIT_PRICES.get(pkey, {}).get("label", pkey)
             permit_lines.append({
                 "description": f"{permit_label} [{tier}]",
                 "qty": qty,
                 "price_per_unit": round(price, 2),
-                "pax": pax,
+                "pax": None if per_vehicle else pax,
                 "total": round(line_total, 2),
             })
             permit_total += line_total

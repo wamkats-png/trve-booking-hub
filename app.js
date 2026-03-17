@@ -272,6 +272,13 @@
       FNR: { usd: 35 }, FR: { usd: 25 }, ROA: { usd: 20 },
       EAC: { ugx: 15000 }, Ugandan: { ugx: 15000 },
       unit: 'day'
+    },
+    vehicle_entry: {
+      label: 'Vehicle Entry',
+      FNR: { usd: 40 }, FR: { usd: 30 }, ROA: { usd: 25 },
+      EAC: { ugx: 20000 }, Ugandan: { ugx: 20000 },
+      unit: 'day',
+      per_vehicle: true  // per vehicle per day, not per person
     }
   };
 
