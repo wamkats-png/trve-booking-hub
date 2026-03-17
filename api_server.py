@@ -3862,16 +3862,34 @@ def calculate_price(body: PricingRequest):
     extras_total = 0.0
     extra_lines = []
     if body.extra_costs:
+        # Count vehicles for per_vehicle multiplier
+        vehicle_count = max(1, len(body.vehicles or []))
         for ex in body.extra_costs:
             desc = ex.get("description", "Extra")
             amount = ex.get("amount", 0)
-            per_person_flag = ex.get("per_person", False)
-            line_total = amount * pax if per_person_flag else amount
+            per_person_flag  = ex.get("per_person", False)
+            per_day_flag     = ex.get("per_day", False)
+            per_vehicle_flag = ex.get("per_vehicle", False)
+            if per_day_flag:
+                line_total = amount * days
+                unit_label = f"${amount}/day × {days} days"
+            elif per_person_flag:
+                line_total = amount * pax
+                unit_label = f"${amount}/person × {pax} pax"
+            elif per_vehicle_flag:
+                line_total = amount * vehicle_count
+                unit_label = f"${amount}/vehicle × {vehicle_count} vehicles"
+            else:
+                line_total = amount
+                unit_label = "per trip"
             extras_total += line_total
             extra_lines.append({
                 "description": desc,
                 "amount": amount,
-                "per_person": per_person_flag,
+                "per_person":  per_person_flag,
+                "per_day":     per_day_flag,
+                "per_vehicle": per_vehicle_flag,
+                "unit_label":  unit_label,
                 "total": round(line_total, 2),
             })
 
