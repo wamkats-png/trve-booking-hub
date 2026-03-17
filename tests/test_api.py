@@ -98,7 +98,7 @@ class TestEnquiries:
         assert isinstance(data["items"], list)
 
     def test_create_enquiry_minimal(self, client):
-        resp = client.post("/api/enquiries", json={"client_name": "Jane Doe"})
+        resp = client.post("/api/enquiries", json={"client_name": "Jane Doe", "nationality_tier": "FNR"})
         assert resp.status_code == 201
         data = resp.json()
         assert "booking_ref" in data
@@ -358,12 +358,12 @@ class TestCalculatePrice:
         client.patch("/api/config", json={"fuel_buffer_pct": 0.0, "vehicle_rate_per_day": 120.0})
         vehicle = [{"type": "4x4 Safari Vehicle", "rate": 120, "days": 6, "fuel_buffer_pct": 0}]
         resp_no_buf = client.post("/api/calculate-price", json={
-            "pax": 2, "duration_days": 7, "vehicles": vehicle,
+            "nationality_tier": "FNR", "pax": 2, "duration_days": 7, "vehicles": vehicle,
         })
 
         vehicle_buf = [{"type": "4x4 Safari Vehicle", "rate": 120, "days": 6, "fuel_buffer_pct": 10}]
         resp_with_buf = client.post("/api/calculate-price", json={
-            "pax": 2, "duration_days": 7, "vehicles": vehicle_buf,
+            "nationality_tier": "FNR", "pax": 2, "duration_days": 7, "vehicles": vehicle_buf,
         })
 
         # With 10% fuel buffer, vehicle cost should be higher
@@ -372,11 +372,11 @@ class TestCalculatePrice:
     def test_calculate_fx_buffer_in_response(self, client):
         """Verify fx_rate in response reflects the buffer."""
         client.patch("/api/config", json={"fx_rate": 3575.0, "fx_buffer_pct": 0.0})
-        resp_no_buf = client.post("/api/calculate-price", json={"pax": 2, "duration_days": 7})
+        resp_no_buf = client.post("/api/calculate-price", json={"nationality_tier": "FNR", "pax": 2, "duration_days": 7})
         fx_no_buf = resp_no_buf.json()["fx_rate"]
 
         client.patch("/api/config", json={"fx_buffer_pct": 3.0})
-        resp_with_buf = client.post("/api/calculate-price", json={"pax": 2, "duration_days": 7})
+        resp_with_buf = client.post("/api/calculate-price", json={"nationality_tier": "FNR", "pax": 2, "duration_days": 7})
         fx_with_buf = resp_with_buf.json()["fx_rate"]
 
         assert fx_with_buf > fx_no_buf
@@ -386,7 +386,7 @@ class TestCalculatePrice:
     def test_calculate_buffer_fields_in_response(self, client):
         """Confirm buffer pct fields are returned."""
         client.patch("/api/config", json={"fuel_buffer_pct": 10.0, "fx_buffer_pct": 3.0})
-        resp = client.post("/api/calculate-price", json={"pax": 2, "duration_days": 7})
+        resp = client.post("/api/calculate-price", json={"nationality_tier": "FNR", "pax": 2, "duration_days": 7})
         data = resp.json()
         assert "fuel_buffer_pct" in data
         assert "fx_buffer_pct" in data
@@ -425,6 +425,7 @@ class TestCalculatePrice:
 
     def test_calculate_with_insurance(self, client):
         resp = client.post("/api/calculate-price", json={
+            "nationality_tier": "FNR",
             "pax": 2,
             "duration_days": 7,
             "include_insurance": True,
@@ -436,6 +437,7 @@ class TestCalculatePrice:
 
     def test_calculate_with_extra_costs(self, client):
         resp = client.post("/api/calculate-price", json={
+            "nationality_tier": "FNR",
             "pax": 2,
             "duration_days": 7,
             "extra_costs": [
@@ -452,14 +454,14 @@ class TestCalculatePrice:
         assert rhino["total_usd"] == 80.0  # 40 x 2 pax
 
     def test_calculate_per_person_usd(self, client):
-        resp = client.post("/api/calculate-price", json={"pax": 4, "duration_days": 7})
+        resp = client.post("/api/calculate-price", json={"nationality_tier": "FNR", "pax": 4, "duration_days": 7})
         data = resp.json()
         assert abs(data["per_person_usd"] - data["total_usd"] / 4) < 0.01
 
     def test_calculate_fuel_buffer_note_in_line_items(self, client):
         """When an explicit vehicle with fuel buffer > 0 is added, the line item should note it."""
         resp = client.post("/api/calculate-price", json={
-            "pax": 2, "duration_days": 7,
+            "nationality_tier": "FNR", "pax": 2, "duration_days": 7,
             "vehicles": [{"type": "4x4 Safari Vehicle", "rate": 120, "days": 6, "fuel_buffer_pct": 10.0}],
         })
         data = resp.json()
@@ -614,13 +616,14 @@ class TestEdgeCases:
 
     def test_calculate_price_zero_pax_defaults_to_two(self, client):
         """pax=0 or omitted should not cause division by zero."""
-        resp = client.post("/api/calculate-price", json={"duration_days": 7})
+        resp = client.post("/api/calculate-price", json={"nationality_tier": "FNR", "duration_days": 7})
         assert resp.status_code == 200
         assert resp.json()["per_person_usd"] >= 0  # no auto-vehicle; 0 is valid with no content
 
     def test_calculate_price_invalid_permit_key(self, client):
         """Unknown permit keys should produce $0 contribution gracefully."""
         resp = client.post("/api/calculate-price", json={
+            "nationality_tier": "FNR",
             "pax": 2,
             "duration_days": 7,
             "permits": [{"permit_key": "nonexistent_permit", "quantity": 1}],
@@ -678,6 +681,7 @@ class TestEdgeCases:
             "service_fee_pct": 0.0,
         })
         resp = client.post("/api/calculate-price", json={
+            "nationality_tier": "FNR",
             "pax": 1,
             "duration_days": 2,
             # Explicit vehicle: 1 day @ $100 with 10% fuel buffer = $110
@@ -747,16 +751,32 @@ class TestBankTransferCalculator:
         })
         assert resp.status_code == 422
 
+    def test_nationality_tier_required_on_pricing(self, client):
+        """calculate-price must reject requests with missing or empty nationality_tier."""
+        resp_missing = client.post("/api/calculate-price", json={"pax": 2, "duration_days": 7})
+        assert resp_missing.status_code == 422
+
+        resp_empty = client.post("/api/calculate-price", json={"nationality_tier": "", "pax": 2, "duration_days": 7})
+        assert resp_empty.status_code == 422
+
+    def test_nationality_tier_required_on_enquiry(self, client):
+        """Creating an enquiry without nationality_tier must return 422."""
+        resp = client.post("/api/enquiries", json={"client_name": "No Tier Client"})
+        assert resp.status_code == 422
+
+        resp_empty = client.post("/api/enquiries", json={"client_name": "No Tier Client", "nationality_tier": ""})
+        assert resp_empty.status_code == 422
+
     def test_nights_derivation(self, client):
         """calculate-price must derive nights = days - 1 in response."""
-        resp = client.post("/api/calculate-price", json={"pax": 2, "duration_days": 5})
+        resp = client.post("/api/calculate-price", json={"nationality_tier": "FNR", "pax": 2, "duration_days": 5})
         assert resp.status_code == 200
         assert resp.json()["nights"] == 4
 
     def test_hydrate_pricing_in_response(self, client):
         """When guests list provided, response includes guest_breakdown."""
         resp = client.post("/api/calculate-price", json={
-            "pax": 2, "duration_days": 4,
+            "nationality_tier": "FNR", "pax": 2, "duration_days": 4,
             "guests": [
                 {"guest_id": "Mr. Smith", "room_type": "Double", "rate_per_night": 200, "meal_plan": "HB"},
                 {"guest_id": "Ms. Jones", "room_type": "Single", "rate_per_night": 150, "meal_plan": "BB"},

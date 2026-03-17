@@ -29,7 +29,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -2247,7 +2247,18 @@ class EnquiryCreate(BaseModel):
     email: Optional[str] = ""
     phone: Optional[str] = ""
     country: Optional[str] = ""
-    nationality_tier: Optional[str] = "FNR"
+    nationality_tier: str
+
+    @field_validator('nationality_tier')
+    @classmethod
+    def nationality_tier_must_be_set(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError(
+                'nationality_tier is required. UWA permit rates differ by up to 9× '
+                'across tiers (e.g. gorilla tracking: FNR $800 vs EAC $83). '
+                'Select FNR, FR, ROA, EAC, or Ugandan.'
+            )
+        return v
     channel: Optional[str] = "direct"
     agent_name: Optional[str] = ""
     tour_type: Optional[str] = ""
@@ -2285,7 +2296,18 @@ class EnquiryUpdate(BaseModel):
 
 class PricingRequest(BaseModel):
     itinerary_id: Optional[str] = None
-    nationality_tier: str = "FNR"
+    nationality_tier: str
+
+    @field_validator('nationality_tier')
+    @classmethod
+    def nationality_tier_must_be_set(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError(
+                'nationality_tier is required. UWA permit rates differ by up to 9× '
+                'across tiers (e.g. gorilla tracking: FNR $800 vs EAC $83). '
+                'Select FNR, FR, ROA, EAC, or Ugandan.'
+            )
+        return v
     pax: int = 2            # kept for backward compat; overridden by adults+children if provided
     adults: int = 2
     children: int = 0
@@ -2826,7 +2848,7 @@ def create_enquiry(body: EnquiryCreate):
         """, (
             booking_ref, booking_ref, body.channel or "direct", body.client_name,
             body.email or "", body.phone or "", body.country or "",
-            body.nationality_tier or "FNR", now_str, body.tour_type or "",
+            body.nationality_tier, now_str, body.tour_type or "",
             body.pax or 2, "", dest_str, body.travel_start_date or "",
             body.travel_end_date or "", body.duration_days, "New_Inquiry", "",
             body.budget_range or "", interests_str, body.special_requests or "",
@@ -3383,7 +3405,7 @@ def calculate_price(body: PricingRequest):
     children = max(0, body.children)
     pax = adults + children          # total headcount (used for insurance/permits)
     days = body.duration_days or 7
-    tier = body.nationality_tier or "FNR"
+    tier = body.nationality_tier
     travel_date = body.travel_start_date
 
     # Auto-derive trip nights — formula: nights = days − 1

@@ -900,6 +900,14 @@
       }
       if (paxErr) paxErr.classList.add('hidden');
 
+      const tierEl = document.getElementById('nationalityTier');
+      if (!tierEl.value) {
+        tierEl.focus();
+        toast('warning', 'Nationality tier required',
+          'Select the guest nationality tier. UWA permit rates differ by up to 9× across tiers (e.g. gorilla tracking: FNR $800 vs EAC $83).');
+        return;
+      }
+
       const submitBtn = document.getElementById('enquirySubmit');
       submitBtn.classList.add('loading');
       submitBtn.disabled = true;
