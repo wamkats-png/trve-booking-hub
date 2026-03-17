@@ -1655,3 +1655,93 @@ tr:hover td { background: var(--bg-subtle); }
 .badge-quot-sent   { background: #dbeafe; color: #1d4ed8; }
 .badge-quot-accepted { background: #d1fae5; color: #065f46; }
 .badge-quot-expired  { background: #fee2e2; color: #991b1b; }
+
+/* ── Structured Itinerary Day Editor ──────────────────────── */
+.itn-day-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.itn-day-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  transition: box-shadow 0.15s;
+}
+
+.itn-day-block:hover {
+  box-shadow: 0 1px 6px rgba(0,0,0,0.07);
+}
+
+.itn-day-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2, #f8f9fa);
+  border-bottom: 1px solid var(--border);
+}
+
+.itn-day-num {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--brand-green);
+  white-space: nowrap;
+  min-width: 40px;
+}
+
+.itn-day-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.itn-day-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.itn-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.itn-activities-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.itn-activity-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.itn-activity-item .form-control {
+  flex: 1;
+  font-size: var(--text-sm);
+  padding: 4px 8px;
+}
+
+.itn-day-block .form-control[readonly] {
+  background: transparent;
+  border-color: transparent;
+  padding-left: 0;
+  cursor: default;
+}
+
+.itn-day-block .form-control[readonly]:focus {
+  outline: none;
+  border-color: transparent;
+  box-shadow: none;
+}

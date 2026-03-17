@@ -237,6 +237,17 @@ CREATE TABLE IF NOT EXISTS config (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS itinerary_versions (
+    id TEXT PRIMARY KEY,
+    enquiry_id TEXT NOT NULL,
+    booking_ref TEXT DEFAULT '',
+    version_number INTEGER DEFAULT 1,
+    content TEXT DEFAULT '',
+    saved_by TEXT DEFAULT '',
+    saved_at TEXT DEFAULT (datetime('now')),
+    label TEXT DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_enquiries_booking_ref ON enquiries(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_enquiries_status ON enquiries(status);
 CREATE INDEX IF NOT EXISTS idx_lodges_name ON lodges(lodge_name);
@@ -245,6 +256,7 @@ CREATE INDEX IF NOT EXISTS idx_quotations_booking_ref ON quotations(booking_ref)
 CREATE INDEX IF NOT EXISTS idx_invoices_booking_ref ON invoices(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_payments_booking_ref ON payments(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_vouchers_booking_ref ON vouchers(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_itn_versions_enquiry ON itinerary_versions(enquiry_id);
 """
 
 # ---------------------------------------------------------------------------
@@ -1274,6 +1286,39 @@ def init_db():
         conn.commit()
     except Exception:
         pass  # Column already exists
+
+    # Migrate: add curated_itinerary_id column to enquiries
+    try:
+        conn.execute("ALTER TABLE enquiries ADD COLUMN curated_itinerary_id TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
+
+    # Migrate: add fx_rate_at_quote column to enquiries
+    try:
+        conn.execute("ALTER TABLE enquiries ADD COLUMN fx_rate_at_quote REAL")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
+
+    # Ensure itinerary_versions table exists (safe for older DBs)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS itinerary_versions (
+            id TEXT PRIMARY KEY,
+            enquiry_id TEXT NOT NULL,
+            booking_ref TEXT DEFAULT '',
+            version_number INTEGER DEFAULT 1,
+            content TEXT DEFAULT '',
+            saved_by TEXT DEFAULT '',
+            saved_at TEXT DEFAULT (datetime('now')),
+            label TEXT DEFAULT ''
+        )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_itn_versions_enquiry ON itinerary_versions(enquiry_id)"
+        )
+        conn.commit()
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
@@ -2896,6 +2941,31 @@ def update_enquiry(enquiry_id: str, body: EnquiryUpdate):
         if not updates:
             return dict(row)
 
+        existing = dict(row)
+        actual_id = existing["id"]
+
+        # Auto-save itinerary version when working_itinerary changes
+        if "working_itinerary" in updates:
+            old_content = existing.get("working_itinerary") or ""
+            new_content = updates["working_itinerary"] or ""
+            if new_content and new_content.strip() != old_content.strip():
+                version_count = conn.execute(
+                    "SELECT COUNT(*) FROM itinerary_versions WHERE enquiry_id = ?", (actual_id,)
+                ).fetchone()[0]
+                conn.execute(
+                    """INSERT INTO itinerary_versions (id, enquiry_id, booking_ref, version_number, content, saved_at, label)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(uuid.uuid4()),
+                        actual_id,
+                        existing.get("booking_ref", ""),
+                        version_count + 1,
+                        new_content,
+                        datetime.now().isoformat(),
+                        f"Version {version_count + 1}"
+                    )
+                )
+
         set_clauses = []
         values = []
         for key, value in updates.items():
@@ -2914,7 +2984,6 @@ def update_enquiry(enquiry_id: str, body: EnquiryUpdate):
         set_clauses.append("synced = ?")
         values.append(0)
 
-        actual_id = dict(row)["id"]
         values.append(actual_id)
         conn.execute(
             f"UPDATE enquiries SET {', '.join(set_clauses)} WHERE id = ?",
@@ -2923,6 +2992,152 @@ def update_enquiry(enquiry_id: str, body: EnquiryUpdate):
         updated = dict(conn.execute("SELECT * FROM enquiries WHERE id = ?", (actual_id,)).fetchone())
         updated["synced"] = bool(updated["synced"])
     return updated
+
+
+# --- Itinerary Version History ---
+
+@app.get("/api/enquiries/{enquiry_id}/itinerary/versions")
+def list_itinerary_versions(enquiry_id: str):
+    """Return the version history for a booking's working itinerary."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT id, booking_ref FROM enquiries WHERE id = ? OR booking_ref = ?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        actual_id = dict(row)["id"]
+        rows = conn.execute(
+            """SELECT id, version_number, label, saved_at, saved_by,
+                      substr(content, 1, 120) AS preview
+               FROM itinerary_versions WHERE enquiry_id = ?
+               ORDER BY version_number DESC""",
+            (actual_id,)
+        ).fetchall()
+    return {"versions": [dict(r) for r in rows]}
+
+
+@app.post("/api/enquiries/{enquiry_id}/itinerary/versions/{version_id}/restore")
+def restore_itinerary_version(enquiry_id: str, version_id: str):
+    """Restore a previous itinerary version as the current working_itinerary."""
+    with db_session() as conn:
+        eq_row = conn.execute(
+            "SELECT id, booking_ref FROM enquiries WHERE id = ? OR booking_ref = ?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not eq_row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        actual_id = dict(eq_row)["id"]
+
+        ver_row = conn.execute(
+            "SELECT content, version_number FROM itinerary_versions WHERE id = ? AND enquiry_id = ?",
+            (version_id, actual_id)
+        ).fetchone()
+        if not ver_row:
+            raise HTTPException(status_code=404, detail="Version not found")
+
+        content = dict(ver_row)["content"]
+        # Save current as a new version before restoring
+        version_count = conn.execute(
+            "SELECT COUNT(*) FROM itinerary_versions WHERE enquiry_id = ?", (actual_id,)
+        ).fetchone()[0]
+        current = conn.execute(
+            "SELECT working_itinerary FROM enquiries WHERE id = ?", (actual_id,)
+        ).fetchone()
+        if current and (current["working_itinerary"] or "").strip():
+            conn.execute(
+                """INSERT INTO itinerary_versions (id, enquiry_id, booking_ref, version_number, content, saved_at, label)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid.uuid4()), actual_id, dict(eq_row)["booking_ref"],
+                    version_count + 1, current["working_itinerary"],
+                    datetime.now().isoformat(), f"Auto-saved before restore"
+                )
+            )
+        conn.execute(
+            "UPDATE enquiries SET working_itinerary = ?, last_updated = ?, synced = 0 WHERE id = ?",
+            (content, datetime.now().strftime("%d-%b-%Y"), actual_id)
+        )
+    return {"ok": True, "content": content}
+
+
+@app.post("/api/enquiries/{enquiry_id}/create-invoice")
+def create_invoice_from_enquiry(enquiry_id: str, body: dict = {}):
+    """Create an invoice directly from the working itinerary / latest quotation for a booking."""
+    with db_session() as conn:
+        eq_row = conn.execute(
+            "SELECT * FROM enquiries WHERE id = ? OR booking_ref = ?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not eq_row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        enquiry = dict(eq_row)
+        actual_id = enquiry["id"]
+        booking_ref = enquiry["booking_ref"]
+
+        # Try to get line items from the latest quotation
+        qrow = conn.execute(
+            "SELECT pricing_data FROM quotations WHERE booking_ref = ? ORDER BY created_at DESC LIMIT 1",
+            (booking_ref,)
+        ).fetchone()
+
+    line_items = []
+    if qrow:
+        try:
+            pd_data = json.loads(dict(qrow)["pricing_data"]) if isinstance(dict(qrow)["pricing_data"], str) else dict(qrow)["pricing_data"]
+            line_items = pd_data.get("line_items") or []
+            if not line_items:
+                for section, key in [("accommodation", "lines"), ("vehicles", "lines"), ("permits", "lines"), ("activities", "lines")]:
+                    for ln in pd_data.get(section, {}).get(key, []):
+                        desc = ln.get("description", ln.get("name", ""))
+                        total = ln.get("total", 0)
+                        if desc and total:
+                            line_items.append({"item": desc, "total_usd": float(total)})
+                sf = pd_data.get("service_fee", {})
+                if sf.get("total", 0):
+                    line_items.append({"item": sf.get("label", "Service Fee"), "total_usd": float(sf["total"])})
+        except Exception:
+            pass
+
+    # Fallback: single line item from quoted amount
+    if not line_items and enquiry.get("quoted_usd"):
+        try:
+            quoted = float(enquiry["quoted_usd"])
+            line_items = [{"item": f"Safari Package — {enquiry.get('destinations_requested','')}", "total_usd": quoted}]
+        except Exception:
+            pass
+
+    subtotal = sum(float(i.get("total_usd", i.get("amount", 0)) or 0) for i in line_items)
+    tax_pct = float(body.get("tax_pct", 0))
+    tax_amount = round(subtotal * tax_pct / 100, 2)
+    total_usd = round(subtotal + tax_amount, 2)
+    due_date = body.get("due_date", "")
+    notes = body.get("notes", "")
+
+    inv_id = str(uuid.uuid4())
+    with db_session() as conn:
+        inv_number = _next_invoice_number(conn)
+        conn.execute(
+            """INSERT INTO invoices (id, invoice_number, booking_ref, client_name, client_email,
+                line_items, subtotal, tax_pct, tax_amount, total_usd, status, due_date, notes, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                inv_id, inv_number, booking_ref,
+                enquiry.get("client_name", ""), enquiry.get("email", ""),
+                json.dumps(line_items), round(subtotal, 2), tax_pct, tax_amount, total_usd,
+                "draft", due_date, notes, datetime.now().isoformat()
+            )
+        )
+    return {
+        "id": inv_id,
+        "invoice_number": inv_number,
+        "booking_ref": booking_ref,
+        "client_name": enquiry.get("client_name", ""),
+        "total_usd": total_usd,
+        "status": "draft",
+        "created_at": datetime.now().isoformat(),
+        "line_items_count": len(line_items),
+    }
 
 
 # --- Itineraries ---
