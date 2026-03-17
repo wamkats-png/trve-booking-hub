@@ -4179,12 +4179,13 @@
 
     // --- Mixed path: hotel-aware two-phase distribution ---
 
-    // Phase 1: distribute adults evenly across rooms (max 2 per room).
+    // Phase 1: distribute adults evenly across rooms.
+    // No per-room cap — if rooms are overcrowded the UI warning handles it.
+    // Never silently drop a guest.
     const adultDist = _computeDistributionCached(adults, rooms.length);
     let ai = 0;
     rooms.forEach((room, r) => {
-      const cap = Math.min(adultDist[r], 2);
-      for (let i = 0; i < cap && ai < adultGs.length; i++, ai++) {
+      for (let i = 0; i < adultDist[r] && ai < adultGs.length; i++, ai++) {
         state.roomAssignments[adultGs[ai].id] = room.key;
       }
     });
@@ -4224,6 +4225,13 @@
           ci++;
         }
       }
+    }
+
+    // Conservation assertion — every guest must be assigned; log loudly if not.
+    const assignedCount = (state.guestPool || []).filter(g => state.roomAssignments[g.id]).length;
+    if (assignedCount !== totalGuests) {
+      console.error(`[AutoAssign] Guest count mismatch: ${assignedCount} assigned of ${totalGuests}. Missing IDs:`,
+        (state.guestPool || []).filter(g => !state.roomAssignments[g.id]).map(g => g.id));
     }
 
     _renderGuestAssignmentUI();
