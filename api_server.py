@@ -231,6 +231,12 @@ CREATE TABLE IF NOT EXISTS vouchers (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_enquiries_booking_ref ON enquiries(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_enquiries_status ON enquiries(status);
 CREATE INDEX IF NOT EXISTS idx_lodges_name ON lodges(lodge_name);
@@ -322,11 +328,12 @@ def get_permit_price_usd(permit_key, tier, travel_date_str=None):
         return 0
     tier_key = tier or "FNR"
 
-    # Post July 2026
+    # Post rate-increase date (configurable via CONFIG["rate_increase_date"])
     if travel_date_str and "post_july_2026" in p:
         try:
             d = datetime.strptime(travel_date_str, "%Y-%m-%d").date()
-            if d >= date(2026, 7, 1) and tier_key in p["post_july_2026"]:
+            rate_date = date.fromisoformat(CONFIG.get("rate_increase_date", "2026-07-01"))
+            if d >= rate_date and tier_key in p["post_july_2026"]:
                 val = p["post_july_2026"][tier_key]
                 return val if p.get("currency_eac") == "USD" or tier_key not in ("EAC", "Ugandan") else val / FX_RATE
         except ValueError:
@@ -785,6 +792,7 @@ CONFIG = {
     "fx_buffer_pct": 3,          # 3% FX volatility buffer
     "fuel_buffer_pct": 10,       # 10% fuel price buffer
     "quotation_validity_days": 7,  # Quotations expire after 7 days
+    "rate_increase_date": "2026-07-01",  # UWA tariff increase effective date
     "last_updated": datetime.now().isoformat(),
 }
 
@@ -1237,6 +1245,35 @@ def init_db():
     # Seed detailed partner lodge data (INSERT OR IGNORE — always safe to call,
     # adds new lodges without overwriting existing ones)
     _seed_lodges(conn)
+
+    # Ensure config table exists (safe for older DBs)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        )""")
+        conn.commit()
+    except Exception:
+        pass
+
+    # Load persisted CONFIG values from DB (overrides in-memory defaults)
+    try:
+        rows = conn.execute("SELECT key, value FROM config").fetchall()
+        for row in rows:
+            try:
+                CONFIG[row["key"]] = json.loads(row["value"])
+            except (json.JSONDecodeError, TypeError):
+                CONFIG[row["key"]] = row["value"]
+    except Exception:
+        pass
+
+    # Migrate: add working_itinerary column to enquiries
+    try:
+        conn.execute("ALTER TABLE enquiries ADD COLUMN working_itinerary TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
 
     conn.commit()
     conn.close()
@@ -2243,6 +2280,7 @@ class EnquiryUpdate(BaseModel):
     special_requests: Optional[str] = None
     quoted_usd: Optional[str] = None
     notes: Optional[str] = None
+    working_itinerary: Optional[str] = None
 
 
 class PricingRequest(BaseModel):
@@ -2586,6 +2624,7 @@ def update_config(body: ConfigUpdate):
     updates = body.model_dump(exclude_none=True)
     CONFIG.update(updates)
     CONFIG["last_updated"] = datetime.now().isoformat()
+    _persist_config(updates)
     return CONFIG
 
 
@@ -2596,7 +2635,137 @@ def update_config_post(body: ConfigUpdate):
         if k in CONFIG:
             CONFIG[k] = v
     CONFIG["last_updated"] = datetime.now().isoformat()
+    _persist_config({k: v for k, v in updates.items() if k in CONFIG})
     return CONFIG
+
+
+def _persist_config(updates: dict):
+    """Persist config key-value pairs to the SQLite config table."""
+    if not updates:
+        return
+    try:
+        with db_session() as conn:
+            for k, v in updates.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+                    (k, json.dumps(v))
+                )
+    except Exception:
+        pass  # Silent fail — in-memory update still took effect
+
+
+@app.get("/api/reports/summary")
+def get_reports_summary():
+    """Analytics summary: KPIs, pipeline breakdown, revenue, recent payments."""
+    today = datetime.now().date()
+    this_month = today.strftime("%Y-%m")
+
+    with db_session() as conn:
+        # --- Totals ---
+        total_bookings = conn.execute("SELECT COUNT(*) FROM enquiries").fetchone()[0]
+        bookings_this_month = conn.execute(
+            "SELECT COUNT(*) FROM enquiries WHERE substr(created_at,1,7) = ?", (this_month,)
+        ).fetchone()[0]
+
+        # --- By status ---
+        status_rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM enquiries GROUP BY status ORDER BY cnt DESC"
+        ).fetchall()
+        by_status = {r["status"]: r["cnt"] for r in status_rows}
+
+        confirmed_statuses = ("Confirmed", "In_Progress", "Completed")
+        confirmed_bookings = sum(by_status.get(s, 0) for s in confirmed_statuses)
+
+        # --- Revenue metrics (revenue_usd stored as TEXT) ---
+        rev_rows = conn.execute(
+            "SELECT revenue_usd, balance_usd FROM enquiries WHERE revenue_usd != '' AND revenue_usd IS NOT NULL"
+        ).fetchall()
+        total_revenue = 0.0
+        total_balance = 0.0
+        for r in rev_rows:
+            try:
+                total_revenue += float(r["revenue_usd"] or 0)
+            except (ValueError, TypeError):
+                pass
+            try:
+                total_balance += float(r["balance_usd"] or 0)
+            except (ValueError, TypeError):
+                pass
+
+        avg_deal = total_revenue / confirmed_bookings if confirmed_bookings > 0 else 0
+        conversion_rate = (confirmed_bookings / total_bookings * 100) if total_bookings > 0 else 0
+
+        # --- Pipeline value (Active_Quote + Unconfirmed) ---
+        pipe_rows = conn.execute(
+            "SELECT quoted_usd FROM enquiries WHERE status IN ('Active_Quote','Unconfirmed') AND quoted_usd != '' AND quoted_usd IS NOT NULL"
+        ).fetchall()
+        pipeline_value = 0.0
+        for r in pipe_rows:
+            try:
+                pipeline_value += float(r["quoted_usd"] or 0)
+            except (ValueError, TypeError):
+                pass
+
+        # --- By coordinator ---
+        coord_rows = conn.execute(
+            "SELECT coordinator, COUNT(*) as cnt FROM enquiries WHERE coordinator != '' GROUP BY coordinator ORDER BY cnt DESC"
+        ).fetchall()
+        by_coordinator = {r["coordinator"]: r["cnt"] for r in coord_rows}
+
+        # --- By channel ---
+        channel_rows = conn.execute(
+            "SELECT channel, COUNT(*) as cnt FROM enquiries WHERE channel != '' GROUP BY channel ORDER BY cnt DESC"
+        ).fetchall()
+        by_channel = {r["channel"]: r["cnt"] for r in channel_rows}
+
+        # --- Monthly payments (last 6 months) ---
+        monthly_rows = conn.execute("""
+            SELECT substr(payment_date,1,7) as month,
+                   SUM(amount_usd) as revenue,
+                   COUNT(*) as count
+            FROM payments
+            WHERE payment_date >= date('now','-6 months')
+            GROUP BY month
+            ORDER BY month ASC
+        """).fetchall()
+        monthly_revenue = [
+            {"month": r["month"], "revenue": round(r["revenue"] or 0, 2), "count": r["count"]}
+            for r in monthly_rows
+        ]
+
+        # --- Total payments received ---
+        total_paid_row = conn.execute("SELECT COALESCE(SUM(amount_usd),0) FROM payments").fetchone()
+        total_paid = round(total_paid_row[0] or 0, 2)
+
+        # --- Recent payments ---
+        pay_rows = conn.execute("""
+            SELECT p.booking_ref, e.client_name, p.amount_usd, p.payment_date, p.method
+            FROM payments p
+            LEFT JOIN enquiries e ON p.booking_ref = e.booking_ref
+            ORDER BY p.created_at DESC
+            LIMIT 10
+        """).fetchall()
+        recent_payments = [dict(r) for r in pay_rows]
+
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "summary": {
+            "total_bookings": total_bookings,
+            "bookings_this_month": bookings_this_month,
+            "confirmed_bookings": confirmed_bookings,
+            "total_revenue_usd": round(total_revenue, 2),
+            "total_paid_usd": total_paid,
+            "outstanding_balance_usd": round(total_balance, 2),
+            "pipeline_value_usd": round(pipeline_value, 2),
+            "avg_deal_usd": round(avg_deal, 2),
+            "conversion_rate_pct": round(conversion_rate, 1),
+        },
+        "by_status": by_status,
+        "by_coordinator": by_coordinator,
+        "by_channel": by_channel,
+        "monthly_revenue": monthly_revenue,
+        "recent_payments": recent_payments,
+    }
 
 
 @app.get("/api/email/status")

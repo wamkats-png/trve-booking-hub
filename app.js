@@ -516,6 +516,7 @@
     pricing:    'Pricing Calculator',
     quotations: 'Quotations',
     invoices:   'Invoices & Vouchers',
+    reports:    'Reports & Analytics',
     sync:       'Sheets Sync'
   };
 
@@ -551,13 +552,14 @@
     if (viewId === 'tools') initToolsView();
     if (viewId === 'quotations') loadQuotations();
     if (viewId === 'invoices') loadInvoicesView();
+    if (viewId === 'reports') loadReportsView();
     if (viewId === 'sync') renderSyncView();
     if (viewId === 'lodges') { loadLodgesView(); }
   }
 
   // Expose for inline onclick use
   window.TRVE = {
-    navigate, loadPipeline, saveFxRateAtQuote, addActivityCost, addVehicleItem,
+    navigate, loadPipeline, loadReportsView, saveFxRateAtQuote, addActivityCost, addVehicleItem,
     _updateGuestName, _updateLodgeRowDates, _toggleGuestRoom, _syncLodgeGuestAssignments,
     _renderGuestAssignmentUI: () => _renderGuestAssignmentUI?.(),
     _syncGuestPool: () => _syncGuestPool?.(),
@@ -641,7 +643,8 @@
       'curation': '3',
       'pricing': '4',
       'quotations': '5',
-      'sync': '6'
+      'sync': '6',
+      'reports': '7'
     };
     document.querySelectorAll('.nav-item[data-view]').forEach(item => {
       const view = item.dataset.view;
@@ -655,10 +658,10 @@
       }
     });
 
-    // Keyboard navigation (1-6 keys when not in input)
+    // Keyboard navigation (1-7 keys when not in input)
     document.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-      const keyMap = { '1': 'enquiry', '2': 'pipeline', '3': 'curation', '4': 'pricing', '5': 'quotations', '6': 'sync' };
+      const keyMap = { '1': 'enquiry', '2': 'pipeline', '3': 'curation', '4': 'pricing', '5': 'quotations', '6': 'sync', '7': 'reports' };
       if (keyMap[e.key]) {
         e.preventDefault();
         navigate(keyMap[e.key]);
@@ -1396,6 +1399,29 @@
         <div class="detail-field-value" style="white-space:pre-wrap">${escapeHtml(enquiry.special_requests)}</div>
       </div>` : ''}
 
+      <!-- Working Itinerary -->
+      <div class="detail-field mb-4">
+        <div class="detail-field-label" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Working Itinerary</span>
+          <button type="button" class="btn btn-ghost btn-sm" id="btnEditWorkingItin"
+            style="font-size:10px;padding:2px 8px;margin-left:8px"
+            onclick="document.getElementById('workingItinEditor').style.display='';document.getElementById('workingItinDisplay').style.display='none';this.style.display='none'">
+            Edit
+          </button>
+        </div>
+        <div id="workingItinDisplay" style="white-space:pre-wrap;font-size:var(--text-sm);color:var(--text-secondary);margin-top:4px;min-height:20px">
+          ${enquiry.working_itinerary ? escapeHtml(enquiry.working_itinerary) : '<span style="color:var(--text-muted);font-style:italic">No working itinerary saved. Click Edit to add day-by-day plan.</span>'}
+        </div>
+        <div id="workingItinEditor" style="display:none;margin-top:6px">
+          <textarea id="workingItinText" class="form-control" rows="8" placeholder="Day 1: Arrive Entebbe…&#10;Day 2: Transfer to Bwindi…"
+            style="font-size:var(--text-sm);width:100%;resize:vertical">${escapeHtml(enquiry.working_itinerary || '')}</textarea>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button type="button" class="btn btn-primary btn-sm" id="btnSaveWorkingItin">Save</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btnCancelWorkingItin">Cancel</button>
+          </div>
+        </div>
+      </div>
+
       <div class="divider"></div>
 
       ${(enquiry.quoted_usd || enquiry.revenue_usd || enquiry.balance_usd || enquiry.payment_status) ? `
@@ -1677,6 +1703,38 @@
           if (warnEl) warnEl.style.display = 'none';
           if (okEl) okEl.style.display = 'block';
         }
+      });
+    }
+
+    // Working itinerary save/cancel
+    const btnSaveWI = document.getElementById('btnSaveWorkingItin');
+    const btnCancelWI = document.getElementById('btnCancelWorkingItin');
+    if (btnSaveWI) {
+      btnSaveWI.addEventListener('click', async () => {
+        const text = document.getElementById('workingItinText').value;
+        try {
+          await apiFetch(`/api/enquiries/${enquiry.id}`, {
+            method: 'PATCH',
+            body: { working_itinerary: text },
+          });
+          document.getElementById('workingItinDisplay').innerHTML = text
+            ? escapeHtml(text).replace(/\n/g, '<br>')
+            : '<span style="color:var(--text-muted);font-style:italic">No working itinerary saved. Click Edit to add day-by-day plan.</span>';
+          document.getElementById('workingItinDisplay').style.display = '';
+          document.getElementById('workingItinEditor').style.display = 'none';
+          document.getElementById('btnEditWorkingItin').style.display = '';
+          enquiry.working_itinerary = text;
+          toast('success', 'Working itinerary saved');
+        } catch (err) {
+          toast('error', 'Save failed', err.message);
+        }
+      });
+    }
+    if (btnCancelWI) {
+      btnCancelWI.addEventListener('click', () => {
+        document.getElementById('workingItinEditor').style.display = 'none';
+        document.getElementById('workingItinDisplay').style.display = '';
+        document.getElementById('btnEditWorkingItin').style.display = '';
       });
     }
 
@@ -6980,6 +7038,184 @@
     `;
   }
 
+
+  /* ============================================================
+     REPORTS & ANALYTICS VIEW
+     ============================================================ */
+  async function loadReportsView() {
+    const container = document.getElementById('reportsContent');
+    if (!container) return;
+    container.innerHTML = '<div class="card" style="padding:var(--space-6);text-align:center;color:var(--text-muted)">Loading reports…</div>';
+
+    let data;
+    try {
+      data = await apiFetch('/api/reports/summary');
+    } catch (err) {
+      container.innerHTML = `<div class="card" style="padding:var(--space-6);text-align:center;color:var(--danger)">Failed to load reports: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+
+    const s = data.summary || {};
+    const fmtUsd = (v) => v != null ? `$${Number(v).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})}` : '—';
+    const fmtPct = (v) => v != null ? `${v}%` : '—';
+
+    // KPI cards
+    const kpiCards = [
+      { label: 'Total Bookings', value: s.total_bookings ?? '—', sub: `${s.bookings_this_month ?? 0} this month`, color: 'var(--teal-600)' },
+      { label: 'Confirmed', value: s.confirmed_bookings ?? '—', sub: `${fmtPct(s.conversion_rate_pct)} conversion`, color: 'var(--success)' },
+      { label: 'Total Revenue', value: fmtUsd(s.total_revenue_usd), sub: `${fmtUsd(s.total_paid_usd)} received`, color: 'var(--brand-gold)' },
+      { label: 'Outstanding Balance', value: fmtUsd(s.outstanding_balance_usd), sub: 'across all bookings', color: s.outstanding_balance_usd > 0 ? 'var(--danger)' : 'var(--success)' },
+      { label: 'Pipeline Value', value: fmtUsd(s.pipeline_value_usd), sub: 'Active + Unconfirmed quotes', color: 'var(--info)' },
+      { label: 'Avg Deal Size', value: fmtUsd(s.avg_deal_usd), sub: 'confirmed bookings only', color: 'var(--teal-600)' },
+    ];
+
+    const kpiHtml = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:var(--space-4);margin-bottom:var(--space-5)">
+        ${kpiCards.map(k => `
+          <div class="card" style="padding:var(--space-4)">
+            <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:var(--text-muted);margin-bottom:var(--space-2)">${escapeHtml(k.label)}</div>
+            <div style="font-size:var(--text-2xl);font-weight:700;color:${k.color};font-family:var(--font-mono);line-height:1.1;margin-bottom:var(--space-1)">${escapeHtml(String(k.value))}</div>
+            <div style="font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(k.sub)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    // By status table
+    const statusOrder = ['New_Inquiry','Active_Quote','Unconfirmed','Confirmed','In_Progress','Completed','Cancelled'];
+    const statusLabelMap = {
+      New_Inquiry: 'New Inquiry', Active_Quote: 'Active Quote', Confirmed: 'Confirmed',
+      In_Progress: 'In Progress', Completed: 'Completed', Cancelled: 'Cancelled', Unconfirmed: 'Unconfirmed'
+    };
+    const byStatus = data.by_status || {};
+    const totalForBar = Math.max(1, Object.values(byStatus).reduce((a, b) => a + b, 0));
+    const statusRows = statusOrder
+      .filter(s => byStatus[s])
+      .concat(Object.keys(byStatus).filter(s => !statusOrder.includes(s)))
+      .map(k => {
+        const cnt = byStatus[k] || 0;
+        const pct = Math.round((cnt / totalForBar) * 100);
+        return `<tr>
+          <td style="padding:var(--space-2) var(--space-3)">${escapeHtml(statusLabelMap[k] || k)}</td>
+          <td style="padding:var(--space-2) var(--space-3);font-family:var(--font-mono);text-align:right">${cnt}</td>
+          <td style="padding:var(--space-2) var(--space-3);min-width:120px">
+            <div style="background:var(--bg-surface);border-radius:4px;overflow:hidden;height:10px">
+              <div style="height:10px;border-radius:4px;background:var(--teal-600);width:${pct}%"></div>
+            </div>
+          </td>
+          <td style="padding:var(--space-2) var(--space-3);font-size:var(--text-xs);color:var(--text-muted);text-align:right">${pct}%</td>
+        </tr>`;
+      }).join('');
+
+    // By coordinator
+    const byCoord = data.by_coordinator || {};
+    const coordRows = Object.entries(byCoord).map(([k, v]) => `
+      <tr>
+        <td style="padding:var(--space-2) var(--space-3)">${escapeHtml(k)}</td>
+        <td style="padding:var(--space-2) var(--space-3);font-family:var(--font-mono);text-align:right">${v}</td>
+      </tr>`).join('') || '<tr><td colspan="2" style="padding:var(--space-3);text-align:center;color:var(--text-muted)">No data</td></tr>';
+
+    // By channel
+    const byChan = data.by_channel || {};
+    const chanRows = Object.entries(byChan).map(([k, v]) => `
+      <tr>
+        <td style="padding:var(--space-2) var(--space-3)">${escapeHtml(k)}</td>
+        <td style="padding:var(--space-2) var(--space-3);font-family:var(--font-mono);text-align:right">${v}</td>
+      </tr>`).join('') || '<tr><td colspan="2" style="padding:var(--space-3);text-align:center;color:var(--text-muted)">No data</td></tr>';
+
+    // Monthly revenue chart
+    const monthly = data.monthly_revenue || [];
+    const maxRev = Math.max(1, ...monthly.map(m => m.revenue || 0));
+    const monthlyChart = monthly.length ? `
+      <div style="display:flex;align-items:flex-end;gap:8px;height:80px;padding:0 var(--space-2)">
+        ${monthly.map(m => {
+          const h = Math.max(4, Math.round((m.revenue / maxRev) * 72));
+          const label = m.month ? m.month.slice(5) : '—';
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+            <div style="font-size:9px;color:var(--brand-gold);font-family:var(--font-mono)">$${Math.round((m.revenue||0)/1000)}k</div>
+            <div title="${escapeHtml(m.month)}: $${(m.revenue||0).toLocaleString()}" style="width:100%;background:var(--teal-600);border-radius:3px 3px 0 0;height:${h}px;opacity:0.85"></div>
+            <div style="font-size:9px;color:var(--text-muted)">${escapeHtml(label)}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    ` : '<div style="text-align:center;color:var(--text-muted);font-size:var(--text-sm);padding:var(--space-4)">No payment data in the last 6 months</div>';
+
+    // Recent payments
+    const recentPay = data.recent_payments || [];
+    const payRows = recentPay.length ? recentPay.map(p => `
+      <tr>
+        <td style="padding:var(--space-2) var(--space-3);font-family:var(--font-mono);font-size:var(--text-xs)">${escapeHtml(p.booking_ref || '—')}</td>
+        <td style="padding:var(--space-2) var(--space-3)">${escapeHtml(p.client_name || '—')}</td>
+        <td style="padding:var(--space-2) var(--space-3);font-family:var(--font-mono);text-align:right;color:var(--success)">${fmtUsd(p.amount_usd)}</td>
+        <td style="padding:var(--space-2) var(--space-3);font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(p.payment_date || '—')}</td>
+        <td style="padding:var(--space-2) var(--space-3);font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(p.method || '—')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" style="padding:var(--space-4);text-align:center;color:var(--text-muted)">No payments recorded yet</td></tr>';
+
+    container.innerHTML = `
+      ${kpiHtml}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4);margin-bottom:var(--space-4)">
+
+        <!-- By Status -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">Bookings by Status</span></div>
+          <div class="card-body" style="padding:0">
+            <table style="width:100%;border-collapse:collapse">
+              <tbody>${statusRows || '<tr><td colspan="4" style="padding:var(--space-3);text-align:center;color:var(--text-muted)">No data</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- By Coordinator + By Channel -->
+        <div style="display:flex;flex-direction:column;gap:var(--space-4)">
+          <div class="card">
+            <div class="card-header"><span class="card-title">By Coordinator</span></div>
+            <div class="card-body" style="padding:0">
+              <table style="width:100%;border-collapse:collapse"><tbody>${coordRows}</tbody></table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">By Channel</span></div>
+            <div class="card-body" style="padding:0">
+              <table style="width:100%;border-collapse:collapse"><tbody>${chanRows}</tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Monthly Revenue -->
+      <div class="card mb-4">
+        <div class="card-header">
+          <span class="card-title">Monthly Revenue (last 6 months)</span>
+          <span class="text-xs text-muted" style="margin-left:auto">Based on recorded payments</span>
+        </div>
+        <div class="card-body">${monthlyChart}</div>
+      </div>
+
+      <!-- Recent Payments -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">Recent Payments</span></div>
+        <div class="card-body" style="padding:0">
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border)">
+                <th style="padding:var(--space-2) var(--space-3);text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:600">Ref</th>
+                <th style="padding:var(--space-2) var(--space-3);text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:600">Client</th>
+                <th style="padding:var(--space-2) var(--space-3);text-align:right;font-size:var(--text-xs);color:var(--text-muted);font-weight:600">Amount</th>
+                <th style="padding:var(--space-2) var(--space-3);text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:600">Date</th>
+                <th style="padding:var(--space-2) var(--space-3);text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:600">Method</th>
+              </tr>
+            </thead>
+            <tbody>${payRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="font-size:var(--text-xs);color:var(--text-muted);text-align:right;margin-top:var(--space-3)">
+        Generated ${new Date(data.generated_at).toLocaleString()}
+      </div>
+    `;
+  }
 
 })();
 
