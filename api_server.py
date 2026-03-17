@@ -371,6 +371,41 @@ CREATE INDEX IF NOT EXISTS idx_shared_itineraries_token ON shared_itineraries(to
 CREATE INDEX IF NOT EXISTS idx_shared_itineraries_booking ON shared_itineraries(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_guest_info_booking ON guest_info(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_guest_form_tokens_booking ON guest_form_tokens(booking_ref);
+
+-- Phase 3: Task & Follow-Up Management
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    booking_ref TEXT NOT NULL,
+    title TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    assigned_to TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done')),
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_booking_ref ON tasks(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+
+-- Phase 3: Fleet Management
+CREATE TABLE IF NOT EXISTS vehicles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    seats INTEGER NOT NULL,
+    plate TEXT UNIQUE,
+    notes TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','on_trip','maintenance')),
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS drivers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    phone TEXT DEFAULT '',
+    license TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 # ---------------------------------------------------------------------------
@@ -1445,6 +1480,47 @@ def init_db():
             conn.commit()
         except Exception:
             pass
+
+    # Phase 3 migrations — add vehicle_id and driver_id to enquiries
+    for _col, _ctype, _cdefault in [
+        ("vehicle_id", "TEXT", "NULL"),
+        ("driver_id", "TEXT", "NULL"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE enquiries ADD COLUMN {_col} {_ctype} DEFAULT {_cdefault}")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists — safe to ignore
+
+    # Phase 3 seed: vehicles (INSERT OR IGNORE — plate is UNIQUE key)
+    _phase3_vehicle_seeds = [
+        ('Landcruiser 001', '4WD', 7, 'UAA 123B'),
+        ('Landcruiser 002', '4WD', 7, 'UAA 456C'),
+        ('Safari Van 001', 'Minivan', 12, 'UAB 789D'),
+    ]
+    for _vname, _vtype, _vseats, _vplate in _phase3_vehicle_seeds:
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO vehicles (id, name, type, seats, plate, notes, status) VALUES (?,?,?,?,?,'','available')",
+                (str(uuid.uuid4()), _vname, _vtype, _vseats, _vplate)
+            )
+        except Exception:
+            pass
+
+    # Phase 3 seed: drivers (only if table is empty)
+    try:
+        if conn.execute("SELECT COUNT(*) FROM drivers").fetchone()[0] == 0:
+            for _dname, _dphone, _dlicense in [
+                ('John Okello', '+256701000001', 'DL-UG-001'),
+                ('Peter Mugisha', '+256701000002', 'DL-UG-002'),
+            ]:
+                conn.execute(
+                    "INSERT INTO drivers (id, name, phone, license) VALUES (?,?,?,?)",
+                    (str(uuid.uuid4()), _dname, _dphone, _dlicense)
+                )
+    except Exception:
+        pass
+    conn.commit()
 
     # Ensure Phase 2 tables exist in older DBs (executescript above handles new installs)
     for _ddl in [
@@ -2595,6 +2671,39 @@ class EnquiryUpdate(BaseModel):
     quoted_usd: Optional[str] = None
     notes: Optional[str] = None
     working_itinerary: Optional[str] = None
+    # Phase 3: driver & vehicle assignment
+    vehicle_id: Optional[str] = None
+    driver_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Task & Fleet Pydantic models
+# ---------------------------------------------------------------------------
+class TaskCreate(BaseModel):
+    booking_ref: str
+    title: str
+    due_date: str
+    assigned_to: Optional[str] = None
+
+    @field_validator('due_date')
+    @classmethod
+    def due_date_must_be_valid(cls, v: str) -> str:
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("due_date must be in YYYY-MM-DD format")
+        return v
+
+
+class TaskUpdate(BaseModel):
+    status: str
+
+    @field_validator('status')
+    @classmethod
+    def status_must_be_valid(cls, v: str) -> str:
+        if v not in ('open', 'done'):
+            raise ValueError("status must be 'open' or 'done'")
+        return v
 
 
 class PricingRequest(BaseModel):
@@ -3286,7 +3395,39 @@ def update_enquiry(enquiry_id: str, body: EnquiryUpdate):
         )
         updated = dict(conn.execute("SELECT * FROM enquiries WHERE id = ?", (actual_id,)).fetchone())
         updated["synced"] = bool(updated["synced"])
+
+    # Phase 3: Auto-create tasks when status changes to Confirmed (non-blocking)
+    if updates.get("status") == "Confirmed" and existing.get("status") != "Confirmed":
+        _auto_create_confirmed_tasks(updated.get("booking_ref", ""))
+
     return updated
+
+
+def _auto_create_confirmed_tasks(booking_ref: str):
+    """Create the 3 standard tasks for a newly-confirmed booking (idempotent)."""
+    if not booking_ref:
+        return
+    due_date = (datetime.now() + __import__('datetime').timedelta(days=1)).strftime("%Y-%m-%d")
+    auto_titles = [
+        "Send vouchers to lodges",
+        "Collect guest information",
+        "Send payment reminder if balance unpaid",
+    ]
+    try:
+        with db_session() as conn:
+            existing_titles = {
+                row[0] for row in conn.execute(
+                    "SELECT title FROM tasks WHERE booking_ref = ?", (booking_ref,)
+                ).fetchall()
+            }
+            for title in auto_titles:
+                if title not in existing_titles:
+                    conn.execute(
+                        "INSERT INTO tasks (id, booking_ref, title, due_date, assigned_to, status) VALUES (?,?,?,?,'','open')",
+                        (str(uuid.uuid4()), booking_ref, title, due_date)
+                    )
+    except Exception as e:
+        logging.warning("Auto-task creation failed for %s: %s", booking_ref, e)
 
 
 # --- Itinerary Version History ---
@@ -6216,6 +6357,588 @@ def get_guest_info(enquiry_id: str):
 # ===========================================================================
 # Static file serving
 # ===========================================================================
+
+# ===========================================================================
+# PHASE 3 — TASK MANAGEMENT ENDPOINTS
+# ===========================================================================
+
+@app.post("/api/tasks")
+def create_task(body: TaskCreate):
+    """3.1.2 — Create a new task for a booking."""
+    if not body.booking_ref or not body.title:
+        raise HTTPException(status_code=400, detail="booking_ref and title are required")
+    task_id = str(uuid.uuid4())
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, booking_ref, title, due_date, assigned_to, status) VALUES (?,?,?,?,?,?)",
+            (task_id, body.booking_ref, body.title, body.due_date, body.assigned_to or '', 'open')
+        )
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return dict(row)
+
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: str, body: TaskUpdate):
+    """3.1.2 — Update task status (open/done)."""
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (body.status, task_id))
+        updated = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return dict(updated)
+
+
+@app.get("/api/tasks")
+def list_tasks(booking_ref: Optional[str] = None, status: Optional[str] = None, due_date: Optional[str] = None):
+    """3.1.2 — List tasks with optional filters. due_date='today' filters to current date."""
+    clauses, params = [], []
+    if booking_ref:
+        clauses.append("booking_ref = ?")
+        params.append(booking_ref)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if due_date:
+        if due_date == "today":
+            clauses.append("due_date = date('now')")
+        else:
+            clauses.append("due_date = ?")
+            params.append(due_date)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with db_session() as conn:
+        rows = conn.execute(f"SELECT * FROM tasks {where} ORDER BY due_date ASC", params).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ===========================================================================
+# PHASE 3 — DRIVER & VEHICLE ENDPOINTS
+# ===========================================================================
+
+@app.get("/api/drivers")
+def list_drivers():
+    """3.3.3 — List all drivers."""
+    with db_session() as conn:
+        rows = conn.execute("SELECT * FROM drivers ORDER BY name ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/vehicles")
+def list_vehicles():
+    """3.3.3 — List all vehicles."""
+    with db_session() as conn:
+        rows = conn.execute("SELECT * FROM vehicles ORDER BY name ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
+# ===========================================================================
+# PHASE 3 — MANIFEST ENDPOINTS
+# ===========================================================================
+
+def _build_manifest(enquiry: dict, conn) -> dict:
+    """Build the structured manifest dict from an enquiry row + vouchers."""
+    booking_ref = enquiry["booking_ref"]
+    pax = enquiry.get("pax") or 0
+
+    # Emergency contact from guest_info (first guest found)
+    gi = conn.execute(
+        "SELECT emergency_contact_name, emergency_contact_phone FROM guest_info WHERE booking_ref = ? LIMIT 1",
+        (booking_ref,)
+    ).fetchone()
+    emergency_contact = None
+    if gi:
+        gi = dict(gi)
+        parts = [gi.get("emergency_contact_name", ""), gi.get("emergency_contact_phone", "")]
+        emergency_contact = " / ".join(p for p in parts if p) or None
+
+    # Driver info
+    driver_id = enquiry.get("driver_id")
+    vehicle_id = enquiry.get("vehicle_id")
+    driver_name = None
+    vehicle_name = None
+    vehicle_plate = None
+    if driver_id:
+        dr = conn.execute("SELECT name, phone FROM drivers WHERE id = ?", (driver_id,)).fetchone()
+        if dr:
+            dr = dict(dr)
+            driver_name = dr["name"]
+    if vehicle_id:
+        vh = conn.execute("SELECT name, plate FROM vehicles WHERE id = ?", (vehicle_id,)).fetchone()
+        if vh:
+            vh = dict(vh)
+            vehicle_name = vh["name"]
+            vehicle_plate = vh["plate"]
+
+    # Lodge stays from vouchers (Accommodation type only)
+    vrows = conn.execute(
+        """SELECT supplier_name, service_dates, room_type, meal_plan
+           FROM vouchers
+           WHERE booking_ref = ? AND service_type = 'Accommodation'
+           ORDER BY service_dates ASC""",
+        (booking_ref,)
+    ).fetchall()
+
+    lodges = []
+    arrival_date = None
+    departure_date = None
+    for vr in vrows:
+        vr = dict(vr)
+        dates_str = vr.get("service_dates", "")
+        check_in = check_out = ""
+        nights = 0
+        if " to " in dates_str:
+            parts = dates_str.split(" to ", 1)
+            check_in = parts[0].strip()[:10]
+            check_out = parts[1].strip()[:10]
+            try:
+                ci = datetime.strptime(check_in, "%Y-%m-%d")
+                co = datetime.strptime(check_out, "%Y-%m-%d")
+                nights = (co - ci).days
+            except Exception:
+                nights = 0
+        else:
+            check_in = dates_str.strip()[:10]
+
+        if check_in and (not arrival_date or check_in < arrival_date):
+            arrival_date = check_in
+        if check_out and (not departure_date or check_out > departure_date):
+            departure_date = check_out
+
+        lodges.append({
+            "lodge_name": vr["supplier_name"],
+            "check_in": check_in,
+            "check_out": check_out,
+            "nights": nights,
+            "meal_plan": vr.get("meal_plan", ""),
+            "room_types": vr.get("room_type", ""),
+        })
+
+    # Fall back to enquiry travel dates if no vouchers
+    if not arrival_date:
+        arrival_date = (enquiry.get("travel_start_date") or "")[:10]
+    if not departure_date:
+        departure_date = (enquiry.get("travel_end_date") or "")[:10]
+
+    return {
+        "booking_ref": booking_ref,
+        "client_name": enquiry.get("client_name", ""),
+        "pax": {"adults": pax, "children": 0, "total": pax},
+        "arrival_date": arrival_date,
+        "departure_date": departure_date,
+        "emergency_contact": emergency_contact,
+        "special_requests": enquiry.get("special_requests") or None,
+        "driver_id": driver_id,
+        "driver_name": driver_name,
+        "vehicle_id": vehicle_id,
+        "vehicle_name": vehicle_name,
+        "vehicle_plate": vehicle_plate,
+        "lodges": lodges,
+    }
+
+
+@app.get("/api/enquiries/{enquiry_id}/manifest")
+def get_manifest(enquiry_id: str):
+    """3.2.1 — Structured manifest for a single booking."""
+    if not enquiry_id:
+        raise HTTPException(status_code=400, detail="enquiry_id is required")
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM enquiries WHERE id = ? OR booking_ref = ?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        return _build_manifest(dict(row), conn)
+
+
+@app.get("/api/manifests")
+def list_manifests(date_from: Optional[str] = None, date_to: Optional[str] = None):
+    """3.2.2 — All bookings with lodge stays overlapping a date range."""
+    if not date_from or not date_to:
+        raise HTTPException(status_code=400, detail="date_from and date_to are required")
+    # Validate dates
+    try:
+        datetime.strptime(date_from, "%Y-%m-%d")
+        datetime.strptime(date_to, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dates must be in YYYY-MM-DD format")
+
+    with db_session() as conn:
+        # Find bookings with accommodation vouchers overlapping the date range
+        rows = conn.execute(
+            """SELECT DISTINCT e.id, e.booking_ref, e.client_name, e.pax,
+                      e.travel_start_date, e.travel_end_date, e.driver_id, e.vehicle_id,
+                      e.special_requests, e.status
+               FROM enquiries e
+               JOIN vouchers v ON v.booking_ref = e.booking_ref
+               WHERE v.service_type = 'Accommodation'
+                 AND (
+                   substr(v.service_dates, 1, 10) <= ? AND
+                   COALESCE(substr(v.service_dates, instr(v.service_dates,' to ')+4, 10), substr(v.service_dates,1,10)) >= ?
+                 )
+               ORDER BY e.travel_start_date ASC""",
+            (date_to, date_from)
+        ).fetchall()
+
+        results = []
+        for row in rows:
+            row = dict(row)
+            eid = row["id"]
+            # Get lodge names for this booking
+            vlodges = conn.execute(
+                "SELECT DISTINCT supplier_name FROM vouchers WHERE booking_ref = ? AND service_type = 'Accommodation'",
+                (row["booking_ref"],)
+            ).fetchall()
+            lodge_names = [dict(vl)["supplier_name"] for vl in vlodges]
+
+            # Driver name
+            driver_name = None
+            if row.get("driver_id"):
+                dr = conn.execute("SELECT name FROM drivers WHERE id = ?", (row["driver_id"],)).fetchone()
+                if dr:
+                    driver_name = dict(dr)["name"]
+
+            results.append({
+                "id": eid,
+                "booking_ref": row["booking_ref"],
+                "client_name": row["client_name"],
+                "pax": row["pax"] or 0,
+                "arrival_date": (row.get("travel_start_date") or "")[:10],
+                "departure_date": (row.get("travel_end_date") or "")[:10],
+                "lodge_names": lodge_names,
+                "driver_id": row.get("driver_id"),
+                "driver_name": driver_name,
+                "vehicle_id": row.get("vehicle_id"),
+                "status": row.get("status", ""),
+            })
+
+    return results
+
+
+# ===========================================================================
+# PHASE 3 — FLEET AVAILABILITY ENDPOINT
+# ===========================================================================
+
+@app.get("/api/fleet/availability")
+def fleet_availability(week_start: Optional[str] = None):
+    """3.3.4 — Vehicle availability calendar data for a given week (Mon–Sun)."""
+    if not week_start:
+        # Default to current Monday
+        today = datetime.now().date()
+        week_start = (today - __import__('datetime').timedelta(days=today.weekday())).strftime("%Y-%m-%d")
+    try:
+        ws = datetime.strptime(week_start, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="week_start must be YYYY-MM-DD")
+
+    import datetime as dt_module
+    days = [ws + dt_module.timedelta(days=i) for i in range(7)]
+    day_strs = [d.strftime("%Y-%m-%d") for d in days]
+
+    with db_session() as conn:
+        vehicles = [dict(r) for r in conn.execute("SELECT * FROM vehicles ORDER BY name ASC").fetchall()]
+
+        # All bookings with a vehicle assigned that have accommodation vouchers
+        assignments = conn.execute(
+            """SELECT e.id, e.booking_ref, e.client_name, e.vehicle_id,
+                      v.service_dates
+               FROM enquiries e
+               JOIN vouchers v ON v.booking_ref = e.booking_ref
+               WHERE e.vehicle_id IS NOT NULL AND e.vehicle_id != ''
+                 AND v.service_type = 'Accommodation'"""
+        ).fetchall()
+
+        # Build: {vehicle_id: {day_str: [booking_info, ...]}}
+        cal = {vh["id"]: {d: [] for d in day_strs} for vh in vehicles}
+
+        for asgn in assignments:
+            asgn = dict(asgn)
+            vid = asgn["vehicle_id"]
+            if vid not in cal:
+                continue
+            dates_str = asgn.get("service_dates", "")
+            try:
+                if " to " in dates_str:
+                    parts = dates_str.split(" to ", 1)
+                    ci = datetime.strptime(parts[0].strip()[:10], "%Y-%m-%d").date()
+                    co = datetime.strptime(parts[1].strip()[:10], "%Y-%m-%d").date()
+                else:
+                    ci = co = datetime.strptime(dates_str.strip()[:10], "%Y-%m-%d").date()
+            except Exception:
+                continue
+
+            for d in days:
+                if ci <= d < co:  # on_trip for days ci to co-1
+                    dstr = d.strftime("%Y-%m-%d")
+                    cal[vid][dstr].append({
+                        "booking_ref": asgn["booking_ref"],
+                        "client_name": asgn["client_name"],
+                        "enquiry_id": asgn["id"],
+                    })
+
+    result_vehicles = []
+    for vh in vehicles:
+        vid = vh["id"]
+        days_out = []
+        for dstr in day_strs:
+            bookings = cal.get(vid, {}).get(dstr, [])
+            cell_status = "available"
+            if vh["status"] == "maintenance":
+                cell_status = "maintenance"
+            elif len(bookings) >= 2:
+                cell_status = "conflict"
+            elif len(bookings) == 1:
+                cell_status = "on_trip"
+            days_out.append({
+                "date": dstr,
+                "status": cell_status,
+                "bookings": bookings,
+            })
+        result_vehicles.append({
+            "id": vid,
+            "name": vh["name"],
+            "type": vh["type"],
+            "plate": vh.get("plate", ""),
+            "vehicle_status": vh["status"],
+            "days": days_out,
+        })
+
+    return {"week_start": week_start, "days": day_strs, "vehicles": result_vehicles}
+
+
+# ===========================================================================
+# PHASE 3 — PDF ENDPOINTS
+# ===========================================================================
+
+def _generate_manifest_pdf(manifest: dict) -> bytes:
+    """3.2.4 — Generate a branded manifest PDF using the existing _MiniPDF class."""
+    pdf = _MiniPDF()
+    pdf._left_m = 14.0; pdf._right_m = 14.0; pdf._top_m = 14.0
+    pdf.add_page()
+
+    today_str = datetime.now().strftime("%d %b %Y")
+
+    # Header bar
+    pdf.set_fill_color(13, 94, 79)
+    pdf.rect(0, 0, 210, 22, 'F')
+    pdf.set_y(5)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 8, 'TRIP MANIFEST', align='C', ln=True)
+    pdf.set_font('Helvetica', '', 7)
+    pdf.cell(0, 4, f'Ref: {_sanitize_pdf_text(manifest["booking_ref"])}   Generated: {today_str}', align='C', ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(28)
+
+    # Section 1 — Client
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(200, 150, 62)
+    pdf.cell(0, 6, '  SECTION 1 — CLIENT', border=0, ln=True, fill=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.ln(2)
+    pax = manifest.get("pax", {})
+    pdf.cell(0, 5, f'Client: {_sanitize_pdf_text(manifest.get("client_name", ""))}', ln=True)
+    pdf.cell(0, 5, f'PAX: {pax.get("total", 0)} total', ln=True)
+    ec = manifest.get("emergency_contact") or "—"
+    pdf.cell(0, 5, f'Emergency Contact: {_sanitize_pdf_text(ec)}', ln=True)
+    sr = manifest.get("special_requests") or "None"
+    pdf.multi_cell(0, 5, f'Special Requests: {_sanitize_pdf_text(sr)}')
+    pdf.ln(4)
+
+    # Section 2 — Itinerary
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(200, 150, 62)
+    pdf.cell(0, 6, '  SECTION 2 — ITINERARY', border=0, ln=True, fill=True)
+    pdf.ln(2)
+    # Table header
+    col_w = [52, 24, 24, 14, 30, 42]
+    headers = ['Lodge', 'Check-in', 'Check-out', 'Nts', 'Meal Plan', 'Room Types']
+    pdf.set_font('Helvetica', 'B', 7)
+    for i, h in enumerate(headers):
+        pdf.cell(col_w[i], 5, h, border=1)
+    pdf.ln()
+    pdf.set_font('Helvetica', '', 7)
+    for lodge in manifest.get("lodges", []):
+        pdf.cell(col_w[0], 5, _sanitize_pdf_text(lodge.get("lodge_name", "")), border=1)
+        pdf.cell(col_w[1], 5, lodge.get("check_in", ""), border=1)
+        pdf.cell(col_w[2], 5, lodge.get("check_out", ""), border=1)
+        pdf.cell(col_w[3], 5, str(lodge.get("nights", "")), border=1)
+        pdf.cell(col_w[4], 5, _sanitize_pdf_text(lodge.get("meal_plan", "")), border=1)
+        pdf.cell(col_w[5], 5, _sanitize_pdf_text(lodge.get("room_types", "")), border=1)
+        pdf.ln()
+    pdf.ln(4)
+
+    # Section 3 — Logistics
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(200, 150, 62)
+    pdf.cell(0, 6, '  SECTION 3 — LOGISTICS', border=0, ln=True, fill=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.ln(2)
+    drv = manifest.get("driver_name") or "TBA"
+    veh = manifest.get("vehicle_name") or "TBA"
+    plate = manifest.get("vehicle_plate") or ""
+    pdf.cell(0, 5, f'Driver: {_sanitize_pdf_text(drv)}', ln=True)
+    pdf.cell(0, 5, f'Vehicle: {_sanitize_pdf_text(veh)}{"  |  Plate: " + plate if plate else ""}', ln=True)
+    pdf.ln(4)
+
+    # Footer
+    pdf.set_y(-16)
+    pdf.set_font('Helvetica', 'I', 7)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 4, f'Generated by TRVE Operations System  |  {today_str}', align='C', ln=True)
+
+    return pdf.output()
+
+
+@app.get("/api/enquiries/{enquiry_id}/manifest/pdf")
+def download_manifest_pdf(enquiry_id: str):
+    """3.2.4 — Download manifest PDF for a booking."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM enquiries WHERE id = ? OR booking_ref = ?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        manifest = _build_manifest(dict(row), conn)
+
+    pdf_bytes = _generate_manifest_pdf(manifest)
+    today_str = datetime.now().strftime("%Y%m%d")
+    filename = f"manifest_{manifest['booking_ref']}_{today_str}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+def _generate_driver_briefing_pdf(manifest: dict, tasks: list) -> bytes:
+    """3.3.5 — Generate a driver briefing PDF."""
+    pdf = _MiniPDF()
+    pdf._left_m = 14.0; pdf._right_m = 14.0; pdf._top_m = 14.0
+    pdf.add_page()
+
+    today_str = datetime.now().strftime("%d %b %Y")
+
+    # Header bar
+    pdf.set_fill_color(13, 94, 79)
+    pdf.rect(0, 0, 210, 22, 'F')
+    pdf.set_y(5)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 8, 'DRIVER BRIEFING', align='C', ln=True)
+    pdf.set_font('Helvetica', '', 7)
+    pdf.cell(0, 4, f'Booking Ref: {_sanitize_pdf_text(manifest["booking_ref"])}   Date: {today_str}', align='C', ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(28)
+
+    # Section 1 — Assignment
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(200, 150, 62)
+    pdf.cell(0, 6, '  SECTION 1 — ASSIGNMENT', border=0, ln=True, fill=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.ln(2)
+    drv = manifest.get("driver_name") or "TBA"
+    drv_phone = manifest.get("driver_phone") or "—"
+    veh = manifest.get("vehicle_name") or "TBA"
+    plate = manifest.get("vehicle_plate") or "TBA"
+    pdf.cell(0, 5, f'Driver: {_sanitize_pdf_text(drv)}   |   Phone: {_sanitize_pdf_text(drv_phone)}', ln=True)
+    pdf.cell(0, 5, f'Vehicle: {_sanitize_pdf_text(veh)}   |   Plate: {_sanitize_pdf_text(plate)}', ln=True)
+    pdf.ln(4)
+
+    # Section 2 — Client
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(200, 150, 62)
+    pdf.cell(0, 6, '  SECTION 2 — CLIENT', border=0, ln=True, fill=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.ln(2)
+    pax = manifest.get("pax", {})
+    ec = manifest.get("emergency_contact") or "None provided"
+    sr = manifest.get("special_requests") or "None"
+    pdf.cell(0, 5, f'Client: {_sanitize_pdf_text(manifest.get("client_name", ""))}', ln=True)
+    pdf.cell(0, 5, f'PAX: {pax.get("total", 0)} total', ln=True)
+    pdf.cell(0, 5, f'Emergency Contact: {_sanitize_pdf_text(ec)}', ln=True)
+    pdf.multi_cell(0, 5, f'Special Requests: {_sanitize_pdf_text(sr)}')
+    pdf.ln(4)
+
+    # Section 3 — Itinerary
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(200, 150, 62)
+    pdf.cell(0, 6, '  SECTION 3 — ITINERARY', border=0, ln=True, fill=True)
+    pdf.ln(2)
+    col_w = [14, 24, 54, 44, 50]
+    headers = ['Day', 'Date', 'Lodge', 'Check-in / Check-out', 'Notes']
+    pdf.set_font('Helvetica', 'B', 7)
+    for i, h in enumerate(headers):
+        pdf.cell(col_w[i], 5, h, border=1)
+    pdf.ln()
+    pdf.set_font('Helvetica', '', 7)
+    for idx, lodge in enumerate(manifest.get("lodges", []), 1):
+        pdf.cell(col_w[0], 5, f'Day {idx}', border=1)
+        pdf.cell(col_w[1], 5, lodge.get("check_in", ""), border=1)
+        pdf.cell(col_w[2], 5, _sanitize_pdf_text(lodge.get("lodge_name", "")), border=1)
+        dates_cell = f'{lodge.get("check_in","")} - {lodge.get("check_out","")}'
+        pdf.cell(col_w[3], 5, dates_cell, border=1)
+        pdf.cell(col_w[4], 5, _sanitize_pdf_text(lodge.get("meal_plan", "")), border=1)
+        pdf.ln()
+    pdf.ln(4)
+
+    # Section 4 — Open Tasks
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(200, 150, 62)
+    pdf.cell(0, 6, '  SECTION 4 — OPEN TASKS', border=0, ln=True, fill=True)
+    pdf.set_font('Helvetica', '', 9)
+    pdf.ln(2)
+    if tasks:
+        for t in tasks:
+            pdf.cell(0, 5, f'- {_sanitize_pdf_text(t.get("title", ""))}  (due {t.get("due_date", "")})', ln=True)
+    else:
+        pdf.cell(0, 5, 'No outstanding tasks.', ln=True)
+    pdf.ln(4)
+
+    # Footer
+    pdf.set_y(-16)
+    pdf.set_font('Helvetica', 'I', 7)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(0, 4, 'TRVE Operations — Confidential Driver Copy', align='C', ln=True)
+
+    return pdf.output()
+
+
+@app.get("/api/enquiries/{enquiry_id}/driver-briefing/pdf")
+def download_driver_briefing_pdf(enquiry_id: str):
+    """3.3.5 — Download driver briefing PDF."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM enquiries WHERE id = ? OR booking_ref = ?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        manifest = _build_manifest(dict(row), conn)
+
+        # Fetch driver phone if driver assigned
+        if manifest.get("driver_id"):
+            dr = conn.execute("SELECT phone FROM drivers WHERE id = ?", (manifest["driver_id"],)).fetchone()
+            if dr:
+                manifest["driver_phone"] = dict(dr)["phone"]
+
+        # Open tasks
+        tasks_rows = conn.execute(
+            "SELECT title, due_date FROM tasks WHERE booking_ref = ? AND status = 'open' ORDER BY due_date ASC",
+            (manifest["booking_ref"],)
+        ).fetchall()
+        tasks = [dict(t) for t in tasks_rows]
+
+    pdf_bytes = _generate_driver_briefing_pdf(manifest, tasks)
+    today_str = datetime.now().strftime("%Y%m%d")
+    filename = f"driver_briefing_{manifest['booking_ref']}_{today_str}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
 
 STATIC_DIR = BASE_DIR
 

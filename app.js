@@ -547,7 +547,10 @@
     quotations: 'Quotations',
     invoices:   'Invoices & Vouchers',
     reports:    'Reports & Analytics',
-    sync:       'Sheets Sync'
+    sync:       'Sheets Sync',
+    tasks:      'Tasks',
+    manifests:  'Manifests',
+    fleet:      'Fleet',
   };
 
   function navigate(viewId) {
@@ -585,6 +588,10 @@
     if (viewId === 'reports') loadReportsView();
     if (viewId === 'sync') renderSyncView();
     if (viewId === 'lodges') { loadLodgesView(); }
+    // Phase 3 views
+    if (viewId === 'tasks') loadTasksView();
+    if (viewId === 'manifests') initManifestsView();
+    if (viewId === 'fleet') initFleetView();
   }
 
   // Expose for inline onclick use
@@ -1659,6 +1666,40 @@
         </button>
       </div>
 
+      <!-- Phase 3: Driver & Vehicle Assignment -->
+      <div class="divider"></div>
+      <div style="margin-bottom:var(--space-4)">
+        <div style="font-size:var(--text-sm);font-weight:700;color:var(--text-primary);margin-bottom:var(--space-2);display:flex;align-items:center;gap:6px">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="5" width="11" height="6" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M3 5V3.5a3.5 3.5 0 017 0V5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="4" cy="11" r="1" fill="currentColor"/><circle cx="9" cy="11" r="1" fill="currentColor"/></svg>
+          Driver &amp; Vehicle
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px">
+          <div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:10px">Driver</label>
+            <select class="form-control" id="detailDriverSelect" style="font-size:12px;height:34px" data-enquiry-id="${escapeHtml(enquiry.id)}" data-current="${escapeHtml(enquiry.driver_id || '')}">
+              <option value="">— Unassigned —</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:10px">Vehicle</label>
+            <select class="form-control" id="detailVehicleSelect" style="font-size:12px;height:34px" data-enquiry-id="${escapeHtml(enquiry.id)}" data-current="${escapeHtml(enquiry.vehicle_id || '')}">
+              <option value="">— Unassigned —</option>
+            </select>
+          </div>
+        </div>
+        <span id="driverVehicleSavedMsg" style="font-size:10px;color:var(--success);display:none">Saved</span>
+      </div>
+
+      <!-- Phase 3: Task List -->
+      <div class="divider"></div>
+      <div style="margin-bottom:var(--space-4)">
+        <div style="font-size:var(--text-sm);font-weight:700;color:var(--text-primary);margin-bottom:var(--space-2);display:flex;align-items:center;gap:6px">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="1" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M4 6.5l2 2 3-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Tasks
+        </div>
+        <div id="taskListPanel" data-booking-ref="${escapeHtml(enquiry.booking_ref || '')}" style="font-size:var(--text-xs);color:var(--text-muted)">Loading&hellip;</div>
+      </div>
+
       <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-4);display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap">
         <span>Created: ${fmtDate(enquiry.inquiry_date)} &middot; Last updated: ${fmtDate(enquiry.last_updated)}</span>
         ${enquiry.sheets_synced != null ? `
@@ -1690,6 +1731,14 @@
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="3" width="11" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M1 5.5h11M4 3V2M9 3V2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
         Vouchers
       </button>` : ''}
+      <button class="btn btn-secondary btn-sm" id="detailManifestPdfBtn" data-enquiry-id="${escapeHtml(enquiry.id)}" title="Download trip manifest PDF">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 1H3a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V4.5L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7 1v3.5H11M4 7h5M4 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        Manifest
+      </button>
+      <button class="btn btn-secondary btn-sm" id="detailDriverBriefingBtn" data-enquiry-id="${escapeHtml(enquiry.id)}" title="Download driver briefing PDF">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="4" width="11" height="7" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M3 4V3a4 4 0 016 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        Driver Brief
+      </button>
       <button class="btn btn-ghost" id="detailCancelBtn">Cancel</button>
     `;
 
@@ -1709,6 +1758,31 @@
     }
     // Phase 2: Load guest info panel
     _loadGuestInfoPanel(enquiry.id);
+
+    // Phase 3: Load driver/vehicle dropdowns
+    _loadDriverVehicleDropdowns(enquiry);
+
+    // Phase 3: Load task list
+    const taskPanel = document.getElementById('taskListPanel');
+    if (taskPanel) _loadTaskListPanel(enquiry.booking_ref || enquiry.id);
+
+    // Phase 3: Manifest PDF button
+    const manifestPdfBtn = document.getElementById('detailManifestPdfBtn');
+    if (manifestPdfBtn) {
+      manifestPdfBtn.addEventListener('click', () => {
+        const eid = manifestPdfBtn.dataset.enquiryId;
+        window.open(`/api/enquiries/${encodeURIComponent(eid)}/manifest/pdf`, '_blank');
+      });
+    }
+
+    // Phase 3: Driver briefing PDF button
+    const driverBriefingBtn = document.getElementById('detailDriverBriefingBtn');
+    if (driverBriefingBtn) {
+      driverBriefingBtn.addEventListener('click', () => {
+        const eid = driverBriefingBtn.dataset.enquiryId;
+        window.open(`/api/enquiries/${encodeURIComponent(eid)}/driver-briefing/pdf`, '_blank');
+      });
+    }
 
     // Phase 2: Generate share link
     const generateShareBtn = document.getElementById('generateShareBtn');
@@ -8583,6 +8657,10 @@
 
     // Start on pipeline
     navigate('pipeline');
+
+    // Phase 3: load task badge + due today widget
+    _refreshTasksBadge();
+    _loadDueTodayWidget();
   }
 
   // Boot
@@ -9699,6 +9777,399 @@
     const item = e.target.closest('.nav-item[data-view="clients"]');
     if (item) setTimeout(loadClientsView, 100);
   });
+
+  // ============================================================
+  // PHASE 3.1 — TASKS: sidebar badge, due today, task panel
+  // ============================================================
+
+  async function _refreshTasksBadge() {
+    try {
+      const tasks = await apiFetch('/api/tasks?status=open');
+      const badge = document.getElementById('tasksBadge');
+      if (!badge) return;
+      const count = tasks.length;
+      if (count === 0) {
+        badge.style.display = 'none';
+      } else {
+        badge.textContent = count;
+        badge.style.display = '';
+      }
+    } catch (e) { /* non-critical */ }
+  }
+
+  async function _loadDueTodayWidget() {
+    try {
+      const tasks = await apiFetch('/api/tasks?status=open&due_date=today');
+      const widget = document.getElementById('dueTodayWidget');
+      const chips = document.getElementById('dueTodayChips');
+      if (!widget || !chips) return;
+      if (!tasks || tasks.length === 0) { widget.style.display = 'none'; return; }
+      widget.style.display = '';
+      chips.innerHTML = tasks.map(t => `
+        <span class="badge" style="cursor:pointer;background:var(--bg-surface);border:1px solid var(--border);color:var(--text-primary);padding:4px 10px;font-size:11px;border-radius:20px;white-space:nowrap"
+          data-booking-ref="${escapeHtml(t.booking_ref)}"
+          onclick="window.TRVE._openByRef('${escapeHtml(t.booking_ref)}')">
+          ${escapeHtml(t.title)} &middot; ${escapeHtml(t.booking_ref)}
+        </span>`).join('');
+    } catch (e) { /* non-critical */ }
+  }
+
+  async function _loadTaskListPanel(bookingRef) {
+    const panel = document.getElementById('taskListPanel');
+    if (!panel) return;
+    panel.innerHTML = '<span style="color:var(--text-muted)">Loading…</span>';
+    try {
+      const tasks = await apiFetch(`/api/tasks?booking_ref=${encodeURIComponent(bookingRef)}`);
+      _renderTaskList(panel, bookingRef, tasks);
+    } catch (e) {
+      panel.innerHTML = '<span style="color:var(--danger)">Failed to load tasks.</span>';
+    }
+  }
+
+  function _renderTaskList(panel, bookingRef, tasks) {
+    const fmtTaskDate = d => {
+      if (!d) return '';
+      try {
+        const [y, m, day] = d.split('-');
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return `${parseInt(day)} ${months[parseInt(m)-1]} ${y}`;
+      } catch { return d; }
+    };
+
+    const listHtml = tasks.length === 0
+      ? '<div style="color:var(--text-muted);font-style:italic;margin-bottom:8px">No tasks yet for this booking.</div>'
+      : tasks.map(t => `
+        <div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <input type="checkbox" ${t.status === 'done' ? 'checked' : ''}
+            style="margin-top:2px;cursor:pointer"
+            data-task-id="${escapeHtml(t.id)}"
+            onchange="window.TRVE._toggleTask(this)">
+          <div style="flex:1;min-width:0">
+            <div style="${t.status === 'done' ? 'text-decoration:line-through;color:var(--text-muted)' : ''};font-size:12px">
+              ${escapeHtml(t.title)}
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:1px">
+              ${fmtTaskDate(t.due_date)}${t.assigned_to ? ' · ' + escapeHtml(t.assigned_to) : ' · Unassigned'}
+            </div>
+          </div>
+        </div>`).join('');
+
+    panel.innerHTML = `
+      ${listHtml}
+      <form id="addTaskForm" style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;gap:6px">
+          <input class="form-control" type="text" id="newTaskTitle" placeholder="Task title" style="flex:1;font-size:12px;height:30px">
+          <input class="form-control" type="date" id="newTaskDue" style="width:130px;font-size:12px;height:30px">
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm" style="align-self:flex-start">Add task</button>
+      </form>`;
+
+    document.getElementById('addTaskForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const title = document.getElementById('newTaskTitle').value.trim();
+      const due = document.getElementById('newTaskDue').value;
+      if (!title || !due) { toast('warning', 'Title and due date required'); return; }
+      try {
+        const created = await apiFetch('/api/tasks', {
+          method: 'POST',
+          body: JSON.stringify({ booking_ref: bookingRef, title, due_date: due }),
+        });
+        // Refresh panel
+        const allTasks = await apiFetch(`/api/tasks?booking_ref=${encodeURIComponent(bookingRef)}`);
+        _renderTaskList(panel, bookingRef, allTasks);
+        _refreshTasksBadge();
+      } catch (e) {
+        toast('error', 'Failed to add task', e.message || '');
+      }
+    });
+  }
+
+  window.TRVE._toggleTask = async function(checkbox) {
+    const taskId = checkbox.dataset.taskId;
+    const newStatus = checkbox.checked ? 'done' : 'open';
+    try {
+      await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: newStatus }),
+      });
+      // Re-render the task list
+      const panel = document.getElementById('taskListPanel');
+      if (panel) {
+        const bookingRef = panel.dataset.bookingRef;
+        const tasks = await apiFetch(`/api/tasks?booking_ref=${encodeURIComponent(bookingRef)}`);
+        _renderTaskList(panel, bookingRef, tasks);
+      }
+      _refreshTasksBadge();
+    } catch (e) {
+      checkbox.checked = !checkbox.checked; // revert
+      toast('error', 'Failed to update task');
+    }
+  };
+
+  window.TRVE._openByRef = function(bookingRef) {
+    const enquiry = (state.enquiries || []).find(e => e.booking_ref === bookingRef || e.id === bookingRef);
+    if (enquiry) openEnquiryDetail(enquiry.id);
+  };
+
+  async function loadTasksView() {
+    const body = document.getElementById('tasksViewBody');
+    if (!body) return;
+    body.innerHTML = '<div style="color:var(--text-muted)">Loading…</div>';
+    try {
+      const tasks = await apiFetch('/api/tasks');
+      if (tasks.length === 0) {
+        body.innerHTML = '<div style="color:var(--text-muted);font-style:italic;padding:16px 0">No tasks found.</div>';
+        return;
+      }
+      const fmtD = d => { try { const [y,m,day]=d.split('-'); return `${parseInt(day)} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(m)-1]} ${y}`; } catch{return d;} };
+      body.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:var(--bg-surface);text-align:left">
+          <th style="padding:8px;border-bottom:2px solid var(--border)">Status</th>
+          <th style="padding:8px;border-bottom:2px solid var(--border)">Title</th>
+          <th style="padding:8px;border-bottom:2px solid var(--border)">Booking</th>
+          <th style="padding:8px;border-bottom:2px solid var(--border)">Due</th>
+          <th style="padding:8px;border-bottom:2px solid var(--border)">Assigned</th>
+        </tr></thead>
+        <tbody>${tasks.map(t => `
+          <tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:6px 8px">
+              <input type="checkbox" ${t.status==='done'?'checked':''} data-task-id="${escapeHtml(t.id)}" onchange="window.TRVE._toggleTaskGlobal(this)">
+            </td>
+            <td style="padding:6px 8px;${t.status==='done'?'text-decoration:line-through;color:var(--text-muted)':''}">${escapeHtml(t.title)}</td>
+            <td style="padding:6px 8px"><a href="#" onclick="window.TRVE._openByRef('${escapeHtml(t.booking_ref)}');return false" style="color:var(--brand-green)">${escapeHtml(t.booking_ref)}</a></td>
+            <td style="padding:6px 8px;white-space:nowrap">${fmtD(t.due_date)}</td>
+            <td style="padding:6px 8px">${escapeHtml(t.assigned_to || 'Unassigned')}</td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch (e) {
+      body.innerHTML = '<div style="color:var(--danger)">Failed to load tasks.</div>';
+    }
+  }
+
+  window.TRVE._toggleTaskGlobal = async function(checkbox) {
+    const taskId = checkbox.dataset.taskId;
+    const newStatus = checkbox.checked ? 'done' : 'open';
+    try {
+      await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: newStatus }),
+      });
+      _refreshTasksBadge();
+      loadTasksView();
+    } catch (e) {
+      checkbox.checked = !checkbox.checked;
+      toast('error', 'Failed to update task');
+    }
+  };
+
+  // ============================================================
+  // PHASE 3.3 — DRIVER & VEHICLE ASSIGNMENT UI
+  // ============================================================
+
+  async function _loadDriverVehicleDropdowns(enquiry) {
+    const driverSel = document.getElementById('detailDriverSelect');
+    const vehicleSel = document.getElementById('detailVehicleSelect');
+    if (!driverSel || !vehicleSel) return;
+
+    try {
+      const [drivers, vehicles] = await Promise.all([
+        apiFetch('/api/drivers'),
+        apiFetch('/api/vehicles'),
+      ]);
+
+      const currentDriver = enquiry.driver_id || '';
+      driverSel.innerHTML = '<option value="">— Unassigned —</option>' +
+        drivers.map(d => `<option value="${escapeHtml(d.id)}" ${d.id === currentDriver ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('');
+
+      const currentVehicle = enquiry.vehicle_id || '';
+      vehicleSel.innerHTML = '<option value="">— Unassigned —</option>' +
+        vehicles.map(v => {
+          const label = `${v.name}${v.plate ? ' (' + v.plate + ')' : ''}${v.status !== 'available' ? ' [' + v.status + ']' : ''}`;
+          return `<option value="${escapeHtml(v.id)}" ${v.id === currentVehicle ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+        }).join('');
+
+      const saveMsg = document.getElementById('driverVehicleSavedMsg');
+      const showSaved = () => {
+        if (!saveMsg) return;
+        saveMsg.style.display = '';
+        setTimeout(() => { saveMsg.style.display = 'none'; }, 2000);
+      };
+
+      driverSel.addEventListener('change', async () => {
+        try {
+          await apiFetch(`/api/enquiries/${encodeURIComponent(enquiry.id)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ driver_id: driverSel.value || null }),
+          });
+          showSaved();
+        } catch (e) { toast('error', 'Failed to save driver'); }
+      });
+
+      vehicleSel.addEventListener('change', async () => {
+        try {
+          await apiFetch(`/api/enquiries/${encodeURIComponent(enquiry.id)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ vehicle_id: vehicleSel.value || null }),
+          });
+          showSaved();
+        } catch (e) { toast('error', 'Failed to save vehicle'); }
+      });
+    } catch (e) {
+      if (driverSel) driverSel.innerHTML = '<option>Error loading</option>';
+      if (vehicleSel) vehicleSel.innerHTML = '<option>Error loading</option>';
+    }
+  }
+
+  // ============================================================
+  // PHASE 3.2 — MANIFESTS VIEW
+  // ============================================================
+
+  function initManifestsView() {
+    const wrap = document.getElementById('manifestsTableWrap');
+    const fromEl = document.getElementById('manifestDateFrom');
+    const toEl = document.getElementById('manifestDateTo');
+    const searchBtn = document.getElementById('manifestSearchBtn');
+    if (!wrap || !fromEl || !toEl || !searchBtn) return;
+
+    // Default range: today → today + 14 days
+    const today = new Date();
+    const fmtInput = d => d.toISOString().slice(0, 10);
+    fromEl.value = fmtInput(today);
+    const future = new Date(today); future.setDate(future.getDate() + 14);
+    toEl.value = fmtInput(future);
+
+    const doSearch = async () => {
+      wrap.innerHTML = '<div style="color:var(--text-muted)">Loading…</div>';
+      try {
+        const rows = await apiFetch(`/api/manifests?date_from=${encodeURIComponent(fromEl.value)}&date_to=${encodeURIComponent(toEl.value)}`);
+        if (!rows || rows.length === 0) {
+          wrap.innerHTML = '<div style="color:var(--text-muted);font-style:italic;padding:16px 0">No bookings found in this date range.</div>';
+          return;
+        }
+        wrap.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--bg-surface)">
+            ${['Booking Ref','Client Name','PAX','Arrival','Departure','Lodges','Driver','Download'].map(h=>`<th style="padding:8px;border-bottom:2px solid var(--border);text-align:left">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows.map(r => `
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 8px"><a href="#" onclick="window.TRVE._openByRef('${escapeHtml(r.booking_ref)}');return false" style="color:var(--brand-green);font-family:monospace">${escapeHtml(r.booking_ref)}</a></td>
+              <td style="padding:6px 8px">${escapeHtml(r.client_name)}</td>
+              <td style="padding:6px 8px">${r.pax || '—'}</td>
+              <td style="padding:6px 8px;white-space:nowrap">${r.arrival_date || '—'}</td>
+              <td style="padding:6px 8px;white-space:nowrap">${r.departure_date || '—'}</td>
+              <td style="padding:6px 8px">${(r.lodge_names || []).join(' → ') || '—'}</td>
+              <td style="padding:6px 8px">${escapeHtml(r.driver_name || '—')}</td>
+              <td style="padding:6px 8px">
+                <a href="/api/enquiries/${encodeURIComponent(r.id)}/manifest/pdf" target="_blank"
+                   class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px">PDF</a>
+              </td>
+            </tr>`).join('')}
+          </tbody></table>`;
+      } catch (e) {
+        wrap.innerHTML = `<div style="color:var(--danger)">Error: ${escapeHtml(e.message || 'Failed to load manifests')}</div>`;
+      }
+    };
+
+    searchBtn.addEventListener('click', doSearch);
+    doSearch(); // load on page open
+  }
+
+  // ============================================================
+  // PHASE 3.3 — FLEET CALENDAR VIEW
+  // ============================================================
+
+  let _fleetWeekStart = null;
+
+  function _getThisMonday() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return d;
+  }
+
+  function _fmtIso(d) {
+    return d.toISOString().slice(0, 10);
+  }
+
+  function _addDays(d, n) {
+    const r = new Date(d);
+    r.setDate(r.getDate() + n);
+    return r;
+  }
+
+  async function initFleetView() {
+    if (!_fleetWeekStart) _fleetWeekStart = _getThisMonday();
+
+    const prevBtn = document.getElementById('fleetPrevWeek');
+    const nextBtn = document.getElementById('fleetNextWeek');
+    if (prevBtn && !prevBtn._bound) {
+      prevBtn._bound = true;
+      prevBtn.addEventListener('click', () => { _fleetWeekStart = _addDays(_fleetWeekStart, -7); renderFleetCalendar(); });
+    }
+    if (nextBtn && !nextBtn._bound) {
+      nextBtn._bound = true;
+      nextBtn.addEventListener('click', () => { _fleetWeekStart = _addDays(_fleetWeekStart, 7); renderFleetCalendar(); });
+    }
+
+    await renderFleetCalendar();
+  }
+
+  async function renderFleetCalendar() {
+    const wrap = document.getElementById('fleetCalendarWrap');
+    const label = document.getElementById('fleetWeekLabel');
+    if (!wrap) return;
+
+    const ws = _fleetWeekStart || _getThisMonday();
+    const we = _addDays(ws, 6);
+    if (label) label.textContent = `${ws.toLocaleDateString('en-GB', {day:'numeric',month:'short'})} – ${we.toLocaleDateString('en-GB', {day:'numeric',month:'short',year:'numeric'})}`;
+
+    wrap.innerHTML = '<div style="color:var(--text-muted)">Loading…</div>';
+    try {
+      const data = await apiFetch(`/api/fleet/availability?week_start=${_fmtIso(ws)}`);
+      const days = data.days || [];
+      const vehicles = data.vehicles || [];
+
+      const dayHeaders = days.map(d => {
+        const dt = new Date(d);
+        return `<th style="padding:6px 4px;min-width:90px;border:1px solid var(--border);text-align:center;font-size:11px">${dt.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})}</th>`;
+      }).join('');
+
+      const rows = vehicles.map(vh => {
+        const isMaint = vh.vehicle_status === 'maintenance';
+        const cells = vh.days.map(day => {
+          let bg = '#e8f5e9', lbl = '', tip = '', color = '';
+          if (isMaint || day.status === 'maintenance') { bg = '#e0e0e0'; lbl = 'Maintenance'; color = '#757575'; }
+          else if (day.status === 'conflict') { bg = '#ffebee'; lbl = 'CONFLICT'; color = '#c62828'; }
+          else if (day.status === 'on_trip') {
+            bg = '#fff8e1'; lbl = day.bookings[0]?.booking_ref || 'On trip'; color = '#f57f17';
+            tip = `title="${escapeHtml(day.bookings[0]?.client_name || '')} · ${escapeHtml(day.bookings[0]?.booking_ref || '')}"`;
+          }
+          return `<td ${tip} style="padding:4px;border:1px solid var(--border);background:${bg};text-align:center;font-size:10px;color:${color};font-weight:${day.status!=='available'?'600':'400'}">${escapeHtml(lbl)}&nbsp;</td>`;
+        }).join('');
+
+        return `<tr>
+          <td style="padding:6px 8px;border:1px solid var(--border);white-space:nowrap;font-size:12px;font-weight:600">${escapeHtml(vh.name)}<br><span style="font-size:10px;color:var(--text-muted);font-weight:400">${escapeHtml(vh.plate||'')}</span></td>
+          ${cells}
+        </tr>`;
+      }).join('');
+
+      wrap.innerHTML = `<table style="border-collapse:collapse;width:100%;min-width:700px">
+        <thead><tr>
+          <th style="padding:6px 8px;border:1px solid var(--border);text-align:left;font-size:12px">Vehicle</th>
+          ${dayHeaders}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:10px;display:flex;gap:16px;font-size:11px;color:var(--text-muted)">
+        <span><span style="display:inline-block;width:12px;height:12px;background:#e8f5e9;border:1px solid #ccc;vertical-align:-2px"></span> Available</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:#fff8e1;border:1px solid #ccc;vertical-align:-2px"></span> On trip</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:#ffebee;border:1px solid #ccc;vertical-align:-2px"></span> Conflict</span>
+        <span><span style="display:inline-block;width:12px;height:12px;background:#e0e0e0;border:1px solid #ccc;vertical-align:-2px"></span> Maintenance</span>
+      </div>`;
+    } catch (e) {
+      wrap.innerHTML = `<div style="color:var(--danger)">Error loading fleet data: ${escapeHtml(e.message || '')}</div>`;
+    }
+  }
 
 })();
 
