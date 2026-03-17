@@ -5510,14 +5510,16 @@
       hasAnyRow = true;
     });
 
-    // Also check for manually unassigned guests
+    // Use actual assigned guest count rather than configured maxOccupancy-based capacity.
+    // This ensures override rooms (more guests than maxOcc) are counted correctly.
     const unassignedCount = _getUnassignedGuests().length;
-    if (!hasAnyRow || (totalCapacity >= totalGuests && unassignedCount === 0)) {
+    const totalAssigned = totalGuests - unassignedCount;
+    if (!hasAnyRow || unassignedCount === 0) {
       alertEl.style.display = 'none';
       return;
     }
 
-    const gap = Math.max(totalGuests - totalCapacity, unassignedCount);
+    const gap = unassignedCount;
 
     // Determine if this is a soft-warning scenario (gap is entirely due to young children)
     // Young children (<5) need cots but do not take up beds — so effective occupancy is lower.
@@ -5569,7 +5571,7 @@
             (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
           </div>
           <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
-            Configured room capacity: <strong>${totalCapacity}</strong>
+            Assigned guests: <strong>${totalAssigned}</strong>
             &nbsp;·&nbsp; Young children (&lt;5): <strong>${youngChildCount}</strong> (cot only — no bed needed)
           </div>
           <div style="font-size:var(--text-xs);color:var(--brand-gold-dark,#b45309);margin-bottom:8px;font-weight:600">
@@ -5600,7 +5602,7 @@
             (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
           </div>
           <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:8px">
-            Configured room capacity: <strong>${totalCapacity}</strong>
+            Assigned guests: <strong>${totalAssigned}</strong> of <strong>${totalGuests}</strong>
             &nbsp;·&nbsp; <span style="color:var(--danger);font-weight:700">
               ${gap} guest${gap !== 1 ? 's' : ''} remain${gap === 1 ? 's' : ''} unaccommodated
             </span>
