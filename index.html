@@ -354,7 +354,8 @@
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="nationalityTier">Nationality Tier <span class="required">*</span></label>
-                    <select class="form-control" id="nationalityTier" name="nationality_tier">
+                    <select class="form-control" id="nationalityTier" name="nationality_tier" required>
+                      <option value="">— Select nationality tier —</option>
                       <option value="FNR">FNR — Foreign Non-Resident</option>
                       <option value="FR">FR — Foreign Resident</option>
                       <option value="ROA">ROA — Rest of Africa</option>
@@ -684,8 +685,9 @@
                       </select>
                     </div>
                     <div class="form-group">
-                      <label class="form-label" for="pricingNationality">Nationality Tier</label>
-                      <select class="form-control" id="pricingNationality">
+                      <label class="form-label" for="pricingNationality">Nationality Tier <span class="required">*</span></label>
+                      <select class="form-control" id="pricingNationality" required>
+                        <option value="">— Select nationality tier —</option>
                         <option value="FNR">FNR — Foreign Non-Resident</option>
                         <option value="FR">FR — Foreign Resident</option>
                         <option value="ROA">ROA — Rest of Africa</option>
