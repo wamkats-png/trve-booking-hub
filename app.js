@@ -1277,6 +1277,11 @@
     const payPct = quoted > 0 ? Math.min(100, Math.round((received / quoted) * 100)) : 0;
     const payBarColor = received >= quoted - 0.01 && quoted > 0 ? 'var(--success)' : received > 0 ? 'var(--brand-gold)' : 'var(--danger)';
 
+    // Phase 2 indicators
+    const isReturning = e.client_id && parseInt(e.client_booking_count || 0) > 1;
+    const guestComplete = e.guest_info_complete === 1 || e.guest_info_complete === true;
+    const isConfirmedForGuest = ['Confirmed','In_Progress','Completed'].includes(e.status);
+
     return `
       <div class="kanban-card" data-enquiry-id="${escapeHtml(e.id)}" role="button" tabindex="0">
         <div class="kanban-card-ref">${escapeHtml(e.booking_ref || '—')}</div>
@@ -1284,7 +1289,16 @@
         <div class="kanban-card-meta">
           <span class="badge ${channelClass}">${escapeHtml(e.channel || 'direct')}</span>
           ${e.coordinator ? `<span class="badge badge-teal">${escapeHtml(e.coordinator)}</span>` : ''}
+          ${isReturning ? `<span class="badge badge-returning" title="Returning client">&#9733; Returning</span>` : ''}
         </div>
+        ${isConfirmedForGuest ? `<div style="display:flex;align-items:center;gap:4px;margin-top:4px">
+          <span class="guest-info-dot ${guestComplete ? 'complete' : 'missing'}"
+                title="${guestComplete ? 'Guest info submitted' : 'Guest info not yet submitted'}">
+          </span>
+          <span style="font-size:9px;color:${guestComplete ? 'var(--success)' : 'var(--danger)'}">
+            ${guestComplete ? 'Guests ✓' : 'Guests needed'}
+          </span>
+        </div>` : ''}
         ${showPayBar && quoted > 0 ? `
         <div class="kanban-pay-bar" title="${payPct}% paid — ${fmtMoney(received)} of ${fmtMoney(quoted)}">
           <div class="kanban-pay-bar-fill" style="width:${payPct}%;background:${payBarColor}"></div>
@@ -1604,6 +1618,47 @@
         ${enquiry.curated_itinerary_id ? `<div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:2px">Itinerary: ${escapeHtml(enquiry.curated_itinerary_id)}</div>` : ''}
       </div>` : ''}
 
+      <!-- Phase 2: Shareable Itinerary Panel (confirmed+ only) -->
+      ${['Confirmed','In_Progress','Completed'].includes(enquiry.status) ? `
+      <div class="divider"></div>
+      <div style="margin-bottom:var(--space-4)">
+        <div style="font-size:var(--text-sm);font-weight:700;color:var(--text-primary);margin-bottom:var(--space-2);display:flex;align-items:center;gap:6px">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M8.5 1.5h3v3M11.5 1.5L7 6M5.5 2.5h-3a1 1 0 00-1 1v7a1 1 0 001 1h7a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Shareable Itinerary Link
+        </div>
+        <div id="shareLinksPanel" style="font-size:var(--text-xs);color:var(--text-muted)">Loading&hellip;</div>
+        <div style="display:flex;gap:6px;margin-top:var(--space-2);flex-wrap:wrap;align-items:center">
+          <select id="shareExpirySelect" class="form-control" style="font-size:var(--text-xs);height:30px;padding:0 8px;width:auto">
+            <option value="">No expiry</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+            <option value="90">90 days</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:4px;font-size:var(--text-xs);font-weight:600;color:var(--text-muted);cursor:pointer">
+            <input type="checkbox" id="shareIncludePricing"> Include pricing
+          </label>
+          <button class="btn btn-sm btn-primary" id="generateShareBtn"
+                  data-enquiry-id="${escapeHtml(enquiry.id)}" data-booking-ref="${escapeHtml(enquiry.booking_ref || '')}">
+            Generate Link
+          </button>
+        </div>
+      </div>` : ''}
+
+      <!-- Phase 2: Guest Info Panel -->
+      <div class="divider"></div>
+      <div style="margin-bottom:var(--space-4)">
+        <div style="font-size:var(--text-sm);font-weight:700;color:var(--text-primary);margin-bottom:var(--space-2);display:flex;align-items:center;gap:6px">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="4.5" r="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M1.5 12c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          Guest Information
+        </div>
+        <div id="guestInfoPanel" style="font-size:var(--text-xs);color:var(--text-muted)">Loading&hellip;</div>
+        <button class="btn btn-sm btn-secondary" id="generateGuestFormBtn" style="margin-top:var(--space-2)"
+                data-enquiry-id="${escapeHtml(enquiry.id)}">
+          Send Guest Form Link
+        </button>
+      </div>
+
       <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-4);display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap">
         <span>Created: ${fmtDate(enquiry.inquiry_date)} &middot; Last updated: ${fmtDate(enquiry.last_updated)}</span>
         ${enquiry.sheets_synced != null ? `
@@ -1647,6 +1702,60 @@
 
     // After rendering, wire up buttons
     document.getElementById('detailCancelBtn').addEventListener('click', closeSlideover);
+
+    // Phase 2: Load share links panel
+    if (document.getElementById('shareLinksPanel')) {
+      _loadShareLinksPanel(enquiry.booking_ref || enquiry.id);
+    }
+    // Phase 2: Load guest info panel
+    _loadGuestInfoPanel(enquiry.id);
+
+    // Phase 2: Generate share link
+    const generateShareBtn = document.getElementById('generateShareBtn');
+    if (generateShareBtn) {
+      generateShareBtn.addEventListener('click', async () => {
+        const bookingRef = generateShareBtn.dataset.bookingRef;
+        const expiryDays = parseInt(document.getElementById('shareExpirySelect').value) || null;
+        const includePricing = document.getElementById('shareIncludePricing').checked;
+        generateShareBtn.disabled = true; generateShareBtn.textContent = 'Generating…';
+        try {
+          const res = await apiFetch(`/api/share/${bookingRef}`, {
+            method: 'POST',
+            body: JSON.stringify({ expires_days: expiryDays, include_pricing: includePricing }),
+          });
+          if (res.url) {
+            await _loadShareLinksPanel(bookingRef);
+            toast('success', 'Share link created', res.url);
+          }
+        } catch (e) {
+          toast('error', 'Failed to generate link', e.message || '');
+        } finally {
+          generateShareBtn.disabled = false; generateShareBtn.textContent = 'Generate Link';
+        }
+      });
+    }
+
+    // Phase 2: Generate guest form link
+    const guestFormBtn = document.getElementById('generateGuestFormBtn');
+    if (guestFormBtn) {
+      guestFormBtn.addEventListener('click', async () => {
+        const enquiryId = guestFormBtn.dataset.enquiryId;
+        guestFormBtn.disabled = true; guestFormBtn.textContent = 'Generating…';
+        try {
+          const res = await apiFetch(`/api/enquiries/${enquiryId}/guest-form`, { method: 'POST' });
+          if (res.token) {
+            const url = `${location.origin}/guest-form/${res.token}`;
+            await navigator.clipboard.writeText(url).catch(() => {});
+            toast('success', 'Guest form link copied!', url, 6000);
+            await _loadGuestInfoPanel(enquiryId);
+          }
+        } catch (e) {
+          toast('error', 'Failed to generate guest form', e.message || '');
+        } finally {
+          guestFormBtn.disabled = false; guestFormBtn.textContent = 'Send Guest Form Link';
+        }
+      });
+    }
 
     document.getElementById('detailSaveBtn').addEventListener('click', async () => {
       const statusSel = document.getElementById('detailStatusSelect');
@@ -9318,6 +9427,276 @@
       </div>
     `;
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 2 — SHARE LINKS PANEL (inside enquiry detail slideover)
+  // ══════════════════════════════════════════════════════════════════════════
+  async function _loadShareLinksPanel(bookingRef) {
+    const panel = document.getElementById('shareLinksPanel');
+    if (!panel) return;
+    try {
+      const links = await apiFetch(`/api/share-links/${bookingRef}`);
+      if (!links.length) {
+        panel.innerHTML = `<span style="color:var(--text-muted)">No share links yet.</span>`;
+        return;
+      }
+      panel.innerHTML = links.map(l => {
+        const url = `${location.origin}/share/${l.token}`;
+        const expired = l.expires_at && new Date(l.expires_at) < new Date();
+        const revoked = l.is_revoked;
+        const statusBadge = revoked
+          ? `<span style="color:var(--danger);font-weight:700">Revoked</span>`
+          : expired
+            ? `<span style="color:var(--text-muted)">Expired</span>`
+            : `<span style="color:var(--success);font-weight:700">Active</span>`;
+        const lastView = l.last_viewed_at
+          ? `Client viewed ${l.view_count} time${l.view_count !== 1 ? 's' : ''} · last: ${fmtDate(l.last_viewed_at)}`
+          : `${l.view_count} view${l.view_count !== 1 ? 's' : ''} · not yet opened`;
+        return `
+          <div style="background:var(--bg-surface,#f5f7f6);border:1px solid var(--border);border-radius:var(--radius-sm,6px);padding:8px 10px;margin-bottom:6px">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+              <div style="display:flex;gap:6px;align-items:center">
+                ${statusBadge}
+                <span style="color:var(--text-muted)">${lastView}</span>
+              </div>
+              <div style="display:flex;gap:4px">
+                ${!revoked && !expired ? `
+                  <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px"
+                    onclick="navigator.clipboard.writeText('${escapeHtml(url)}');window.TRVE._toast('success','Copied!','Link copied to clipboard')">
+                    Copy
+                  </button>
+                  <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;color:var(--danger)"
+                    onclick="window.TRVE._revokeShare('${escapeHtml(l.token)}','${escapeHtml(bookingRef)}')">
+                    Revoke
+                  </button>` : ''}
+              </div>
+            </div>
+            ${l.expires_at ? `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Expires: ${fmtDate(l.expires_at)}</div>` : ''}
+          </div>`;
+      }).join('');
+    } catch (e) {
+      panel.innerHTML = `<span style="color:var(--text-muted)">Could not load links.</span>`;
+    }
+  }
+
+  window.TRVE._revokeShare = async function(token, bookingRef) {
+    if (!confirm('Revoke this share link? It will no longer be accessible.')) return;
+    try {
+      await apiFetch(`/api/share/${token}/revoke`, { method: 'PATCH' });
+      toast('info', 'Link revoked', '');
+      _loadShareLinksPanel(bookingRef);
+    } catch (e) {
+      toast('error', 'Revoke failed', e.message || '');
+    }
+  };
+  window.TRVE._toast = (type, title, msg) => toast(type, title, msg);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 2 — GUEST INFO PANEL (inside enquiry detail slideover)
+  // ══════════════════════════════════════════════════════════════════════════
+  async function _loadGuestInfoPanel(enquiryId) {
+    const panel = document.getElementById('guestInfoPanel');
+    if (!panel) return;
+    try {
+      const data = await apiFetch(`/api/enquiries/${enquiryId}/guest-info`);
+      const guests = data.guests || [];
+      const complete = data.guest_info_complete;
+      if (!guests.length) {
+        panel.innerHTML = `<span style="color:var(--text-muted)">No guest info submitted yet.</span>`;
+        return;
+      }
+      panel.innerHTML = `
+        <div style="margin-bottom:6px">
+          <span style="font-weight:700;color:${complete ? 'var(--success)' : 'var(--warning)'}">
+            ${complete ? '✓ Complete' : '⚠ Partial'}
+          </span>
+          <span style="color:var(--text-muted);margin-left:4px">${guests.length} guest${guests.length !== 1 ? 's' : ''} submitted</span>
+        </div>
+        ${guests.map(g => `
+          <div style="background:var(--bg-surface,#f5f7f6);border:1px solid var(--border);border-radius:var(--radius-sm,6px);padding:8px 10px;margin-bottom:6px">
+            <div style="font-weight:700;font-size:var(--text-sm)">${escapeHtml(g.guest_name)}</div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+              ${g.nationality ? escapeHtml(g.nationality) + ' · ' : ''}
+              ${g.passport_expiry ? 'Passport exp: ' + escapeHtml(g.passport_expiry) + ' · ' : ''}
+              ${g.dietary ? '🍽 ' + escapeHtml(g.dietary) : ''}
+            </div>
+            ${g.flight_in || g.flight_out ? `
+              <div style="font-size:10px;color:var(--text-muted);margin-top:2px">
+                ✈ In: ${escapeHtml(g.flight_in || '—')} · Out: ${escapeHtml(g.flight_out || '—')}
+              </div>` : ''}
+          </div>`).join('')}`;
+    } catch (e) {
+      panel.innerHTML = `<span style="color:var(--text-muted)">Could not load guest info.</span>`;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 2 — CLIENTS VIEW
+  // ══════════════════════════════════════════════════════════════════════════
+  async function loadClientsView() {
+    const searchInput = document.getElementById('clientSearchInput');
+    const listView    = document.getElementById('clientsListView');
+    const detailView  = document.getElementById('clientDetailView');
+    if (!listView) return;
+
+    async function fetchAndRender(q = '') {
+      listView.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted)">Loading…</div>`;
+      detailView.style.display = 'none';
+      listView.style.display = '';
+      try {
+        const clients = await apiFetch(`/api/clients?search=${encodeURIComponent(q)}`);
+        if (!clients.length) {
+          listView.innerHTML = `<div class="card" style="padding:32px;text-align:center;color:var(--text-muted)">No clients found${q ? ' for "' + escapeHtml(q) + '"' : ''}.</div>`;
+          return;
+        }
+        listView.innerHTML = `
+          <div class="card" style="overflow:hidden">
+            <table style="width:100%;border-collapse:collapse">
+              <thead>
+                <tr style="background:var(--bg-surface)">
+                  <th style="padding:10px 14px;text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border)">Name</th>
+                  <th style="padding:10px 14px;text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border)">Email</th>
+                  <th style="padding:10px 14px;text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border)">Country</th>
+                  <th style="padding:10px 14px;text-align:center;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border)">Bookings</th>
+                  <th style="padding:10px 14px;text-align:right;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border)">Total Spend</th>
+                  <th style="padding:10px 14px;text-align:left;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border)">Last Trip</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${clients.map(c => `
+                  <tr class="client-row" data-client-id="${escapeHtml(c.id)}"
+                      style="cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s"
+                      onmouseenter="this.style.background='var(--bg-surface)'" onmouseleave="this.style.background=''">
+                    <td style="padding:10px 14px">
+                      <div style="font-weight:700;font-size:var(--text-sm)">${escapeHtml(c.name)}</div>
+                      ${c.booking_count > 1 ? `<span class="badge badge-returning" style="font-size:9px;margin-top:2px">&#9733; Returning</span>` : ''}
+                    </td>
+                    <td style="padding:10px 14px;font-size:var(--text-sm);color:var(--text-muted)">${escapeHtml(c.email)}</td>
+                    <td style="padding:10px 14px;font-size:var(--text-sm)">${escapeHtml(c.country || '—')}</td>
+                    <td style="padding:10px 14px;text-align:center">
+                      <span class="badge ${c.booking_count > 1 ? 'badge-confirmed' : ''}">${c.booking_count || 0}</span>
+                    </td>
+                    <td style="padding:10px 14px;text-align:right;font-family:var(--font-mono,monospace);font-size:var(--text-sm)">${c.total_spend_usd > 0 ? fmtMoney(c.total_spend_usd) : '—'}</td>
+                    <td style="padding:10px 14px;font-size:var(--text-sm);color:var(--text-muted)">${c.last_booking_at ? fmtDate(c.last_booking_at) : '—'}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>`;
+        // Wire click handlers
+        listView.querySelectorAll('.client-row').forEach(row => {
+          row.addEventListener('click', () => openClientDetail(row.dataset.clientId));
+        });
+      } catch (e) {
+        listView.innerHTML = `<div class="card" style="padding:24px;color:var(--danger)">Failed to load clients: ${escapeHtml(e.message || '')}</div>`;
+      }
+    }
+
+    async function openClientDetail(clientId) {
+      listView.style.display = 'none';
+      detailView.style.display = '';
+      detailView.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted)">Loading…</div>`;
+      try {
+        const c = await apiFetch(`/api/clients/${clientId}`);
+        const prefs = c.preferences || {};
+        const bookings = c.bookings || [];
+        detailView.innerHTML = `
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:var(--space-4)">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('clientsListView').style.display='';document.getElementById('clientDetailView').style.display='none'">
+              &#8592; All Clients
+            </button>
+          </div>
+          <div class="card mb-4">
+            <div class="card-body" style="padding:var(--space-5)">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                <div>
+                  <h2 style="font-size:var(--text-xl);font-weight:700;margin-bottom:4px">${escapeHtml(c.name)}</h2>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+                    <span style="color:var(--text-muted);font-size:var(--text-sm)">${escapeHtml(c.email)}</span>
+                    ${c.phone ? `<span style="color:var(--text-muted);font-size:var(--text-sm)">· ${escapeHtml(c.phone)}</span>` : ''}
+                    ${c.country ? `<span class="badge badge-gold">${escapeHtml(c.country)}</span>` : ''}
+                    <span class="badge badge-teal">${escapeHtml(c.nationality_tier || 'FNR')}</span>
+                    ${c.booking_count > 1 ? `<span class="badge badge-returning">&#9733; Returning Client</span>` : ''}
+                  </div>
+                </div>
+              </div>
+              <!-- Summary stats -->
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-3);margin-top:var(--space-4)">
+                <div style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:12px;text-align:center;border:1px solid var(--border)">
+                  <div style="font-size:var(--text-xl);font-weight:700;color:var(--brand-green)">${c.booking_count || 0}</div>
+                  <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Bookings</div>
+                </div>
+                <div style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:12px;text-align:center;border:1px solid var(--border)">
+                  <div style="font-size:var(--text-xl);font-weight:700;color:var(--brand-green)">${c.total_spend_usd > 0 ? fmtMoney(c.total_spend_usd) : '—'}</div>
+                  <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Total Spend</div>
+                </div>
+                <div style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:12px;text-align:center;border:1px solid var(--border)">
+                  <div style="font-size:var(--text-xl);font-weight:700;color:var(--brand-green)">${c.last_booking_at ? fmtDate(c.last_booking_at) : '—'}</div>
+                  <div style="font-size:var(--text-xs);color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Last Trip</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Preferences panel -->
+          ${(prefs.dietary || prefs.room_type || prefs.interests || prefs.mobility_notes) ? `
+          <div class="card mb-4">
+            <div class="card-header"><span class="card-title">Preferences</span></div>
+            <div class="card-body" style="padding:var(--space-4)">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3)">
+                ${prefs.dietary ? `<div><div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:3px">Dietary</div><div style="font-size:var(--text-sm)">${escapeHtml(prefs.dietary)}</div></div>` : ''}
+                ${prefs.room_type ? `<div><div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:3px">Room Type</div><div style="font-size:var(--text-sm)">${escapeHtml(prefs.room_type)}</div></div>` : ''}
+                ${prefs.interests ? `<div><div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:3px">Interests</div><div style="font-size:var(--text-sm)">${escapeHtml(prefs.interests)}</div></div>` : ''}
+                ${prefs.mobility_notes ? `<div><div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:3px">Mobility Notes</div><div style="font-size:var(--text-sm)">${escapeHtml(prefs.mobility_notes)}</div></div>` : ''}
+              </div>
+            </div>
+          </div>` : ''}
+
+          <!-- Bookings list -->
+          <div class="card">
+            <div class="card-header"><span class="card-title">Booking History (${bookings.length})</span></div>
+            <div class="card-body" style="padding:0">
+              ${bookings.length === 0 ? `<div style="padding:20px;text-align:center;color:var(--text-muted)">No bookings yet.</div>` :
+                `<table style="width:100%;border-collapse:collapse">
+                  <thead><tr style="background:var(--bg-surface)">
+                    <th style="padding:8px 14px;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border);text-align:left">Ref</th>
+                    <th style="padding:8px 14px;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border);text-align:left">Status</th>
+                    <th style="padding:8px 14px;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border);text-align:left">Travel Date</th>
+                    <th style="padding:8px 14px;font-size:var(--text-xs);color:var(--text-muted);font-weight:700;border-bottom:1px solid var(--border);text-align:right">Value</th>
+                  </tr></thead>
+                  <tbody>
+                    ${bookings.map(b => `
+                      <tr style="border-bottom:1px solid var(--border)">
+                        <td style="padding:8px 14px;font-family:var(--font-mono,monospace);font-size:var(--text-sm)">${escapeHtml(b.booking_ref)}</td>
+                        <td style="padding:8px 14px"><span class="badge">${escapeHtml(b.status || '—')}</span></td>
+                        <td style="padding:8px 14px;font-size:var(--text-sm);color:var(--text-muted)">${b.travel_start_date ? fmtDate(b.travel_start_date) : '—'}</td>
+                        <td style="padding:8px 14px;text-align:right;font-family:var(--font-mono,monospace);font-size:var(--text-sm)">${b.quoted_usd ? fmtMoney(parseFloat(b.quoted_usd) || 0) : '—'}</td>
+                      </tr>`).join('')}
+                  </tbody>
+                </table>`}
+            </div>
+          </div>`;
+      } catch (e) {
+        detailView.innerHTML = `<div class="card" style="padding:24px;color:var(--danger)">Failed to load client: ${escapeHtml(e.message || '')}</div>`;
+      }
+    }
+
+    // Wire search
+    document.getElementById('clientSearchBtn')?.addEventListener('click', () => {
+      fetchAndRender(searchInput?.value || '');
+    });
+    searchInput?.addEventListener('keydown', e => { if (e.key === 'Enter') fetchAndRender(searchInput.value); });
+
+    // Initial load
+    fetchAndRender();
+  }
+
+  // Hook into navigate() to trigger clients view load
+  const _origNavigate = typeof navigate === 'function' ? navigate : null;
+  // Patch: clients view init when navigated to
+  document.addEventListener('click', e => {
+    const item = e.target.closest('.nav-item[data-view="clients"]');
+    if (item) setTimeout(loadClientsView, 100);
+  });
 
 })();
 

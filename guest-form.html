@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Guest Information — TRVE Safari</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --green: #0D5E4F; --green-dark: #094a3e; --green-light: #e8f4f1;
+      --gold: #C8963E; --gold-dark: #a97830; --gold-light: #fdf3e3;
+      --danger: #dc2626; --danger-bg: #fef2f2;
+      --text: #1a2e2a; --text-muted: #6b8070; --text-light: #9ab0a8;
+      --bg: #f5f7f6; --surface: #ffffff; --border: #dde8e4;
+      --radius: 12px; --radius-sm: 8px;
+      --shadow: 0 2px 12px rgba(13,94,79,.10);
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* Header */
+    .site-header { background: var(--green); color: #fff; padding: 16px 20px; }
+    .site-header-inner { max-width: 640px; margin: 0 auto;
+                         display: flex; align-items: center; gap: 12px; }
+    .brand-logo { width: 32px; height: 32px; background: var(--gold); border-radius: 8px;
+                  display: flex; align-items: center; justify-content: center;
+                  font-weight: 800; font-size: 13px; color: #fff; flex-shrink: 0; }
+    .brand-name { font-size: 15px; font-weight: 700; }
+    .brand-sub  { font-size: 11px; opacity: .75; }
+
+    .page { max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+
+    /* Loading / error */
+    .state-card { background: var(--surface); border-radius: var(--radius); padding: 40px 24px;
+                  text-align: center; box-shadow: var(--shadow); }
+    .state-card h2 { font-size: 18px; color: var(--green); margin-bottom: 8px; }
+    .state-card p  { color: var(--text-muted); font-size: 14px; }
+    .spinner { width: 36px; height: 36px; border: 3px solid var(--green-light);
+               border-top-color: var(--green); border-radius: 50%;
+               animation: spin .8s linear infinite; margin: 0 auto 16px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Booking banner */
+    .booking-banner { background: var(--green); color: #fff; border-radius: var(--radius);
+                      padding: 18px 20px; margin-bottom: 20px; }
+    .booking-banner h2 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+    .booking-banner p  { font-size: 12px; opacity: .8; }
+
+    /* Progress bar */
+    .progress-wrap { background: var(--surface); border-radius: var(--radius);
+                     border: 1px solid var(--border); padding: 14px 16px;
+                     margin-bottom: 20px; }
+    .progress-label { display: flex; justify-content: space-between;
+                      font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+    .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--green); border-radius: 3px;
+                     transition: width .3s ease; }
+
+    /* Guest section */
+    .guest-section { background: var(--surface); border-radius: var(--radius);
+                     border: 1px solid var(--border); margin-bottom: 16px;
+                     overflow: hidden; box-shadow: var(--shadow); }
+    .guest-header { background: var(--green-light); padding: 12px 16px;
+                    display: flex; align-items: center; justify-content: space-between;
+                    border-bottom: 1px solid var(--border); }
+    .guest-header h3 { font-size: 14px; font-weight: 700; color: var(--green); }
+    .guest-header button { background: none; border: none; color: var(--danger);
+                           cursor: pointer; font-size: 13px; padding: 2px 6px;
+                           border-radius: 4px; display: none; }
+    .guest-header button:hover { background: var(--danger-bg); }
+    .guest-body { padding: 16px; }
+
+    /* Form elements */
+    .form-row { margin-bottom: 14px; }
+    .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
+    label .req { color: var(--danger); margin-left: 2px; }
+    input, select, textarea {
+      width: 100%; padding: 10px 12px; border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm); font-size: 15px; color: var(--text);
+      background: var(--bg); outline: none; transition: border-color .15s;
+      -webkit-appearance: none; appearance: none;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--green); background: #fff; }
+    input.error, select.error { border-color: var(--danger); }
+    .field-error { font-size: 11px; color: var(--danger); margin-top: 3px; display: none; }
+    .field-error.show { display: block; }
+    textarea { resize: vertical; min-height: 72px; }
+    .hint { font-size: 11px; color: var(--text-light); margin-top: 3px; }
+
+    /* Section title */
+    .section-divider { font-size: 11px; font-weight: 700; color: var(--text-light);
+                       text-transform: uppercase; letter-spacing: .08em;
+                       margin: 16px 0 10px; padding-top: 10px;
+                       border-top: 1px solid var(--border); }
+
+    /* Buttons */
+    .add-guest-btn { width: 100%; padding: 12px; border: 2px dashed var(--border);
+                     border-radius: var(--radius-sm); background: none; color: var(--text-muted);
+                     font-size: 14px; font-weight: 600; cursor: pointer;
+                     display: flex; align-items: center; justify-content: center; gap: 8px;
+                     transition: border-color .15s, color .15s; margin-bottom: 20px; }
+    .add-guest-btn:hover { border-color: var(--green); color: var(--green); }
+    .submit-btn { width: 100%; padding: 15px; background: var(--green); color: #fff;
+                  border: none; border-radius: var(--radius-sm); font-size: 16px;
+                  font-weight: 700; cursor: pointer; transition: background .15s; }
+    .submit-btn:hover { background: var(--green-dark); }
+    .submit-btn:disabled { opacity: .6; cursor: not-allowed; }
+
+    /* Success screen */
+    .success-card { background: var(--surface); border-radius: var(--radius);
+                    padding: 48px 24px; text-align: center; box-shadow: var(--shadow); }
+    .success-icon { width: 64px; height: 64px; background: #f0fdf4; border-radius: 50%;
+                    display: flex; align-items: center; justify-content: center;
+                    margin: 0 auto 20px; }
+    .success-card h2 { font-size: 20px; color: var(--green); margin-bottom: 8px; }
+    .success-card p  { color: var(--text-muted); font-size: 14px; max-width: 360px; margin: 0 auto; }
+
+    /* Toast */
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+             background: #1e3530; color: #fff; padding: 12px 20px; border-radius: 8px;
+             font-size: 13px; font-weight: 600; opacity: 0; pointer-events: none;
+             transition: opacity .2s; z-index: 100; white-space: nowrap; }
+    .toast.show { opacity: 1; }
+
+    .page-footer { text-align: center; padding: 24px 16px;
+                   font-size: 11px; color: var(--text-light); }
+  </style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="site-header-inner">
+    <div class="brand-logo">T</div>
+    <div>
+      <div class="brand-name">TRVE — The Rift Valley Explorer</div>
+      <div class="brand-sub">Guest Information Form</div>
+    </div>
+  </div>
+</header>
+
+<main class="page" id="mainContent">
+  <div class="state-card" id="loadingState">
+    <div class="spinner"></div>
+    <h2>Loading&hellip;</h2>
+    <p>Preparing your form</p>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<footer class="page-footer">
+  &copy; TRVE &mdash; The Rift Valley Explorer &bull; trve.co.ug
+</footer>
+
+<script>
+  const token = location.pathname.split('/').filter(Boolean).pop();
+  let formData = null;   // loaded from API
+  let guestCount = 0;
+
+  function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmt(d) {
+    if (!d) return '—';
+    try { return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
+    catch { return d; }
+  }
+  function showToast(msg, ms = 3500) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), ms);
+  }
+
+  function updateProgress() {
+    const sections = document.querySelectorAll('.guest-section');
+    const total = sections.length;
+    if (!total) return;
+    let filled = 0;
+    sections.forEach(s => {
+      const req = s.querySelectorAll('input[required], select[required]');
+      let ok = true;
+      req.forEach(inp => { if (!inp.value.trim()) ok = false; });
+      if (ok) filled++;
+    });
+    const pct = total ? Math.round((filled / total) * 100) : 0;
+    const fill = document.getElementById('progressFill');
+    const label = document.getElementById('progressLabel');
+    if (fill) fill.style.width = pct + '%';
+    if (label) label.textContent = `${filled} of ${total} guest${total !== 1 ? 's' : ''} complete`;
+  }
+
+  function buildGuestSection(index, prefill = {}, removable = false) {
+    const num = index + 1;
+    const id = `g${index}`;
+    return `
+      <div class="guest-section" id="guest-section-${index}" data-index="${index}">
+        <div class="guest-header">
+          <h3>Guest ${num}</h3>
+          <button type="button" class="remove-guest-btn" onclick="removeGuest(${index})"
+                  style="display:${removable ? 'inline-flex' : 'none'}">&#x2715; Remove</button>
+        </div>
+        <div class="guest-body">
+          <div class="form-row">
+            <label for="${id}_name">Full Name <span class="req">*</span></label>
+            <input type="text" id="${id}_name" required autocomplete="name"
+                   value="${esc(prefill.guest_name || '')}" placeholder="As on passport">
+            <div class="field-error" id="${id}_name_err">Name is required</div>
+          </div>
+          <div class="form-row-2">
+            <div>
+              <label for="${id}_nationality">Nationality <span class="req">*</span></label>
+              <input type="text" id="${id}_nationality" required autocomplete="country-name"
+                     value="${esc(prefill.nationality || '')}" placeholder="e.g. British">
+              <div class="field-error" id="${id}_nationality_err">Nationality is required</div>
+            </div>
+            <div>
+              <label for="${id}_dietary">Dietary Requirements</label>
+              <input type="text" id="${id}_dietary" autocomplete="off"
+                     value="${esc(prefill.dietary || '')}" placeholder="e.g. vegetarian">
+            </div>
+          </div>
+
+          <div class="section-divider">Passport</div>
+          <div class="form-row-2">
+            <div>
+              <label for="${id}_passport">Passport Number <span class="req">*</span></label>
+              <input type="text" id="${id}_passport" required autocomplete="off"
+                     placeholder="e.g. AB1234567">
+              <div class="field-error" id="${id}_passport_err">Passport number is required</div>
+            </div>
+            <div>
+              <label for="${id}_expiry">Passport Expiry <span class="req">*</span></label>
+              <input type="date" id="${id}_expiry" required
+                     value="${esc(prefill.passport_expiry || '')}"
+                     min="${new Date().toISOString().slice(0,10)}">
+              <div class="field-error" id="${id}_expiry_err">Valid expiry date required</div>
+            </div>
+          </div>
+
+          <div class="section-divider">Flights</div>
+          <div class="form-row-2">
+            <div>
+              <label for="${id}_flight_in">Inbound Flight</label>
+              <input type="text" id="${id}_flight_in"
+                     value="${esc(prefill.flight_in || '')}" placeholder="e.g. KQ101, 14 Mar">
+            </div>
+            <div>
+              <label for="${id}_flight_out">Outbound Flight</label>
+              <input type="text" id="${id}_flight_out"
+                     value="${esc(prefill.flight_out || '')}" placeholder="e.g. EK202, 21 Mar">
+            </div>
+          </div>
+
+          <div class="section-divider">Emergency Contact</div>
+          <div class="form-row-2">
+            <div>
+              <label for="${id}_ec_name">Contact Name</label>
+              <input type="text" id="${id}_ec_name" autocomplete="off"
+                     value="${esc(prefill.emergency_contact_name || '')}" placeholder="Full name">
+            </div>
+            <div>
+              <label for="${id}_ec_phone">Contact Phone</label>
+              <input type="tel" id="${id}_ec_phone" autocomplete="tel"
+                     value="${esc(prefill.emergency_contact_phone || '')}" placeholder="+44 7700 900000">
+            </div>
+          </div>
+
+          <div class="form-row" style="margin-top:4px">
+            <label for="${id}_medical">Medical Notes</label>
+            <textarea id="${id}_medical" rows="2"
+                      placeholder="Any medical conditions, allergies, or medication we should know about">${esc(prefill.medical_notes || '')}</textarea>
+            <div class="hint">This information is confidential and used only for your safety.</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function removeGuest(index) {
+    const section = document.getElementById(`guest-section-${index}`);
+    if (section) section.remove();
+    updateProgress();
+    updateRemoveButtons();
+  }
+
+  function updateRemoveButtons() {
+    const sections = document.querySelectorAll('.guest-section');
+    sections.forEach((s, i) => {
+      const btn = s.querySelector('.remove-guest-btn');
+      if (btn) btn.style.display = sections.length > 1 ? 'inline-flex' : 'none';
+    });
+  }
+
+  function addGuest() {
+    guestCount++;
+    const container = document.getElementById('guestContainer');
+    const div = document.createElement('div');
+    div.innerHTML = buildGuestSection(guestCount - 1, {}, true);
+    container.appendChild(div.firstElementChild);
+    updateRemoveButtons();
+    updateProgress();
+    // Attach change listeners to new inputs
+    attachProgressListeners();
+  }
+
+  function attachProgressListeners() {
+    document.querySelectorAll('.guest-section input, .guest-section select')
+      .forEach(el => { el.removeEventListener('input', updateProgress); el.addEventListener('input', updateProgress); });
+  }
+
+  function collectGuests() {
+    const sections = document.querySelectorAll('.guest-section');
+    const guests = [];
+    let valid = true;
+
+    sections.forEach(s => {
+      const idx = s.dataset.index;
+      const id = `g${idx}`;
+      const get = field => (document.getElementById(`${id}_${field}`) || {}).value?.trim() || '';
+
+      // Validate required
+      ['name', 'nationality', 'passport', 'expiry'].forEach(f => {
+        const el = document.getElementById(`${id}_${f}`);
+        const err = document.getElementById(`${id}_${f}_err`);
+        if (el && !el.value.trim()) {
+          el.classList.add('error');
+          if (err) err.classList.add('show');
+          valid = false;
+        } else if (el) {
+          el.classList.remove('error');
+          if (err) err.classList.remove('show');
+        }
+      });
+
+      // Validate passport expiry in future
+      const expEl = document.getElementById(`${id}_expiry`);
+      const expErr = document.getElementById(`${id}_expiry_err`);
+      if (expEl && expEl.value) {
+        if (new Date(expEl.value) <= new Date()) {
+          expEl.classList.add('error');
+          if (expErr) { expErr.textContent = 'Passport must not be expired'; expErr.classList.add('show'); }
+          valid = false;
+        }
+      }
+
+      guests.push({
+        guest_name: get('name'),
+        passport_number: get('passport'),
+        passport_expiry: get('expiry'),
+        nationality: get('nationality'),
+        dietary: get('dietary'),
+        medical_notes: (document.getElementById(`${id}_medical`) || {}).value?.trim() || '',
+        emergency_contact_name: get('ec_name'),
+        emergency_contact_phone: get('ec_phone'),
+        flight_in: get('flight_in'),
+        flight_out: get('flight_out'),
+      });
+    });
+
+    return valid ? guests : null;
+  }
+
+  function renderForm(data) {
+    formData = data;
+    const enquiry = data.enquiry || {};
+    const pax = enquiry.pax || 1;
+    const existing = data.existing_guests || [];
+
+    let html = '';
+
+    // Booking banner
+    const dest = enquiry.destinations_requested
+      ? (enquiry.destinations_requested.startsWith('[')
+          ? JSON.parse(enquiry.destinations_requested).join(' · ')
+          : enquiry.destinations_requested)
+      : 'Your Safari';
+    html += `
+      <div class="booking-banner">
+        <h2>${esc(dest)}</h2>
+        <p>Ref: <strong>${esc(data.booking_ref)}</strong>
+          &bull; ${esc(enquiry.travel_start_date || '')}${enquiry.travel_end_date ? ' – ' + esc(enquiry.travel_end_date) : ''}
+          &bull; ${pax} traveller${pax !== 1 ? 's' : ''}</p>
+      </div>`;
+
+    // Progress
+    html += `
+      <div class="progress-wrap">
+        <div class="progress-label">
+          <span>Form progress</span>
+          <span id="progressLabel">0 of ${pax} guest${pax !== 1 ? 's' : ''} complete</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+      </div>`;
+
+    // Intro text
+    html += `
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;line-height:1.6">
+        Please fill in the details below for each guest travelling. This information is required
+        for park permits, accommodation bookings, and entry documents.
+      </p>`;
+
+    // Guest sections container
+    html += `<div id="guestContainer">`;
+    // Pre-fill from existing data or blank sections up to pax count
+    const count = Math.max(pax, existing.length, 1);
+    for (let i = 0; i < count; i++) {
+      html += buildGuestSection(i, existing[i] || {}, i > 0);
+      guestCount = i + 1;
+    }
+    html += `</div>`;
+
+    // Add guest button (allow more than pax if needed)
+    html += `
+      <button type="button" class="add-guest-btn" onclick="addGuest()">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="8" cy="8" r="6.5"/><path d="M8 5v6M5 8h6" stroke-linecap="round"/>
+        </svg>
+        Add another guest
+      </button>`;
+
+    // Submit
+    html += `
+      <button type="button" class="submit-btn" id="submitBtn" onclick="handleSubmit()">
+        Submit Guest Information
+      </button>`;
+
+    document.getElementById('mainContent').innerHTML = html;
+    attachProgressListeners();
+    updateProgress();
+  }
+
+  function renderSuccess(guestCount) {
+    document.getElementById('mainContent').innerHTML = `
+      <div class="success-card">
+        <div class="success-icon">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="14" fill="#dcfce7"/>
+            <path d="M10 16l4 4 8-8" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <h2>Thank you!</h2>
+        <p>Guest information for <strong>${guestCount} traveller${guestCount !== 1 ? 's' : ''}</strong>
+           has been submitted. Your TRVE coordinator will be in touch to confirm all details.</p>
+        <p style="margin-top:12px">You can close this page.</p>
+      </div>`;
+  }
+
+  function renderError(msg) {
+    document.getElementById('mainContent').innerHTML = `
+      <div class="state-card">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style="margin:0 auto 16px">
+          <circle cx="20" cy="20" r="18" stroke="#C8963E" stroke-width="2"/>
+          <path d="M20 12v10M20 27v1" stroke="#C8963E" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <h2>Form unavailable</h2>
+        <p>${esc(msg)}</p>
+      </div>`;
+  }
+
+  async function handleSubmit() {
+    const btn = document.getElementById('submitBtn');
+    const guests = collectGuests();
+    if (!guests) {
+      showToast('Please fill in all required fields');
+      document.querySelector('.error')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Submitting…';
+    try {
+      const res = await fetch(`/api/guest-form/${token}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guests }),
+      });
+      if (res.status === 410) { renderError('This form link has expired.'); return; }
+      if (res.status === 422) {
+        const err = await res.json();
+        showToast(err.detail || 'Validation error');
+        btn.disabled = false; btn.textContent = 'Submit Guest Information';
+        return;
+      }
+      if (!res.ok) { throw new Error('Server error'); }
+      renderSuccess(guests.length);
+    } catch (e) {
+      showToast('Submission failed. Please try again.');
+      btn.disabled = false; btn.textContent = 'Submit Guest Information';
+    }
+  }
+
+  async function load() {
+    try {
+      const res = await fetch(`/api/guest-form/${token}`);
+      if (res.status === 410) { renderError('This form link has expired. Please contact your TRVE coordinator for a new link.'); return; }
+      if (res.status === 404) { renderError('Invalid form link. Please check the URL or contact your TRVE coordinator.'); return; }
+      if (!res.ok) { renderError('Unable to load form. Please try again.'); return; }
+      const data = await res.json();
+      if (data.is_submitted && (data.existing_guests || []).length) {
+        // Allow re-submission for edits, but show note
+        renderForm(data);
+        showToast('This form was already submitted — you can update details below', 5000);
+      } else {
+        renderForm(data);
+      }
+    } catch (e) {
+      renderError('Connection error. Please check your internet and try again.');
+    }
+  }
+
+  load();
+</script>
+</body>
+</html>

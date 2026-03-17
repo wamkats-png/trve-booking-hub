@@ -5,6 +5,8 @@ SQLite-backed, full 18-itinerary library, branded PDF quotation engine.
 Runs on port 8000.
 """
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -12,7 +14,7 @@ import sqlite3
 import uuid
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Any
@@ -74,6 +76,50 @@ def dict_from_row(row):
 
 def rows_to_list(rows):
     return [dict(r) for r in rows]
+
+# ---------------------------------------------------------------------------
+# Passport field obfuscation (XOR + base64).
+# For true at-rest encryption install cryptography and use Fernet.
+# Set ENCRYPTION_KEY env var to a secret string in production.
+# ---------------------------------------------------------------------------
+_ENC_KEY = os.environ.get("ENCRYPTION_KEY", "trve-hub-default-key-change-in-prod")
+
+def _obfuscate(plaintext: str) -> str:
+    if not plaintext:
+        return ""
+    kb = (_ENC_KEY.encode() * (len(plaintext) // len(_ENC_KEY) + 1))[:len(plaintext)]
+    return base64.urlsafe_b64encode(bytes(a ^ b for a, b in zip(plaintext.encode(), kb))).decode()
+
+def _deobfuscate(token: str) -> str:
+    if not token:
+        return ""
+    try:
+        raw = base64.urlsafe_b64decode(token.encode())
+        kb = (_ENC_KEY.encode() * (len(raw) // len(_ENC_KEY) + 1))[:len(raw)]
+        return bytes(a ^ b for a, b in zip(raw, kb)).decode()
+    except Exception:
+        return ""
+
+# In-memory session store for unique share-link view counting (30-min window).
+# { "token:ip_hash": datetime_of_last_view }
+_share_sessions: dict = {}
+_share_sessions_lock = __import__("threading").Lock()
+
+def _is_bot(user_agent: str) -> bool:
+    ua = (user_agent or "").lower()
+    return any(b in ua for b in ("bot", "crawl", "spider", "slurp", "facebookexternalhit",
+                                  "whatsapp", "telegrambot", "twitterbot", "linkedinbot"))
+
+def _count_unique_view(token: str, ip: str) -> bool:
+    """Return True if this counts as a new unique view (first hit or >30 min since last)."""
+    key = f"{token}:{hashlib.md5(ip.encode()).hexdigest()[:8]}"
+    now = datetime.utcnow()
+    with _share_sessions_lock:
+        last = _share_sessions.get(key)
+        if last is None or (now - last) > timedelta(minutes=30):
+            _share_sessions[key] = now
+            return True
+        return False
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -257,6 +303,74 @@ CREATE INDEX IF NOT EXISTS idx_invoices_booking_ref ON invoices(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_payments_booking_ref ON payments(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_vouchers_booking_ref ON vouchers(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_itn_versions_enquiry ON itinerary_versions(enquiry_id);
+
+-- Phase 2: Persistent Client Profiles
+CREATE TABLE IF NOT EXISTS clients (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    phone TEXT DEFAULT '',
+    country TEXT DEFAULT '',
+    nationality_tier TEXT DEFAULT 'FNR',
+    preferences TEXT DEFAULT '{}',
+    notes TEXT DEFAULT '',
+    source TEXT DEFAULT 'direct',
+    first_booking_ref TEXT DEFAULT '',
+    booking_count INTEGER DEFAULT 0,
+    total_spend_usd REAL DEFAULT 0,
+    last_booking_at TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Phase 2: Shareable Digital Itineraries
+CREATE TABLE IF NOT EXISTS shared_itineraries (
+    id TEXT PRIMARY KEY,
+    token TEXT UNIQUE NOT NULL,
+    booking_ref TEXT NOT NULL,
+    itinerary_data TEXT DEFAULT '{}',
+    expires_at TEXT DEFAULT NULL,
+    is_revoked INTEGER DEFAULT 0,
+    view_count INTEGER DEFAULT 0,
+    unique_view_count INTEGER DEFAULT 0,
+    last_viewed_at TEXT DEFAULT NULL,
+    include_pricing INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Phase 2: Guest Information
+CREATE TABLE IF NOT EXISTS guest_info (
+    id TEXT PRIMARY KEY,
+    booking_ref TEXT NOT NULL,
+    guest_name TEXT NOT NULL,
+    passport_number TEXT DEFAULT '',
+    passport_expiry TEXT DEFAULT '',
+    nationality TEXT DEFAULT '',
+    dietary TEXT DEFAULT '',
+    medical_notes TEXT DEFAULT '',
+    emergency_contact_name TEXT DEFAULT '',
+    emergency_contact_phone TEXT DEFAULT '',
+    flight_in TEXT DEFAULT '',
+    flight_out TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS guest_form_tokens (
+    token TEXT PRIMARY KEY,
+    booking_ref TEXT NOT NULL,
+    expires_at TEXT DEFAULT NULL,
+    is_submitted INTEGER DEFAULT 0,
+    submitted_at TEXT DEFAULT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_clients_email ON clients(email);
+CREATE INDEX IF NOT EXISTS idx_shared_itineraries_token ON shared_itineraries(token);
+CREATE INDEX IF NOT EXISTS idx_shared_itineraries_booking ON shared_itineraries(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_guest_info_booking ON guest_info(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_guest_form_tokens_booking ON guest_form_tokens(booking_ref);
 """
 
 # ---------------------------------------------------------------------------
@@ -1320,6 +1434,51 @@ def init_db():
             conn.commit()
         except Exception:
             pass  # Column already exists — safe to ignore
+
+    # Phase 2 migrations — add client_id and guest_info_complete to enquiries
+    for _col, _ctype, _cdefault in [
+        ("client_id", "TEXT", "NULL"),
+        ("guest_info_complete", "INTEGER", "0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE enquiries ADD COLUMN {_col} {_ctype} DEFAULT {_cdefault}")
+            conn.commit()
+        except Exception:
+            pass
+
+    # Ensure Phase 2 tables exist in older DBs (executescript above handles new installs)
+    for _ddl in [
+        """CREATE TABLE IF NOT EXISTS clients (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
+            phone TEXT DEFAULT '', country TEXT DEFAULT '', nationality_tier TEXT DEFAULT 'FNR',
+            preferences TEXT DEFAULT '{}', notes TEXT DEFAULT '', source TEXT DEFAULT 'direct',
+            first_booking_ref TEXT DEFAULT '', booking_count INTEGER DEFAULT 0,
+            total_spend_usd REAL DEFAULT 0, last_booking_at TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))""",
+        """CREATE TABLE IF NOT EXISTS shared_itineraries (
+            id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, booking_ref TEXT NOT NULL,
+            itinerary_data TEXT DEFAULT '{}', expires_at TEXT DEFAULT NULL,
+            is_revoked INTEGER DEFAULT 0, view_count INTEGER DEFAULT 0,
+            unique_view_count INTEGER DEFAULT 0, last_viewed_at TEXT DEFAULT NULL,
+            include_pricing INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))""",
+        """CREATE TABLE IF NOT EXISTS guest_info (
+            id TEXT PRIMARY KEY, booking_ref TEXT NOT NULL, guest_name TEXT NOT NULL,
+            passport_number TEXT DEFAULT '', passport_expiry TEXT DEFAULT '',
+            nationality TEXT DEFAULT '', dietary TEXT DEFAULT '', medical_notes TEXT DEFAULT '',
+            emergency_contact_name TEXT DEFAULT '', emergency_contact_phone TEXT DEFAULT '',
+            flight_in TEXT DEFAULT '', flight_out TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))""",
+        """CREATE TABLE IF NOT EXISTS guest_form_tokens (
+            token TEXT PRIMARY KEY, booking_ref TEXT NOT NULL, expires_at TEXT DEFAULT NULL,
+            is_submitted INTEGER DEFAULT 0, submitted_at TEXT DEFAULT NULL,
+            created_at TEXT DEFAULT (datetime('now')))""",
+    ]:
+        try:
+            conn.execute(_ddl)
+            conn.commit()
+        except Exception:
+            pass
 
     # Check if migration is needed
     count = conn.execute("SELECT COUNT(*) FROM enquiries").fetchone()[0]
@@ -3013,6 +3172,28 @@ def create_enquiry(body: EnquiryCreate):
             body.budget_range or "", interests_str, body.special_requests or "",
             body.agent_name or "", "", "", "", "", "", "", "", "", now_str, 0
         ))
+
+        # Phase 2: Client matching — attach existing client or create new one
+        client_id = None
+        if body.email:
+            existing_client = conn.execute(
+                "SELECT id FROM clients WHERE email = ? COLLATE NOCASE", (body.email.strip(),)
+            ).fetchone()
+            if existing_client:
+                client_id = existing_client["id"]
+            else:
+                client_id = str(uuid.uuid4())
+                conn.execute(
+                    """INSERT INTO clients (id, name, email, phone, country, nationality_tier,
+                        preferences, source, first_booking_ref, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))""",
+                    (client_id, body.client_name, body.email.strip(),
+                     body.phone or "", body.country or "",
+                     body.nationality_tier or "FNR", "{}",
+                     body.channel or "direct", booking_ref)
+                )
+            # Attach client_id to the enquiry
+            conn.execute("UPDATE enquiries SET client_id = ? WHERE id = ?", (client_id, booking_ref))
 
         entry = dict(conn.execute(
             "SELECT * FROM enquiries WHERE id = ?", (booking_ref,)
@@ -5635,6 +5816,407 @@ def clear_market_data_override(key: str):
     return {"status": "cleared", "key": key}
 
 
+# ===========================================================================
+# PHASE 2 — CLIENT PROFILES
+# ===========================================================================
+
+class ClientUpdate(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    country: Optional[str] = None
+    nationality_tier: Optional[str] = None
+    preferences: Optional[dict] = None
+    notes: Optional[str] = None
+    source: Optional[str] = None
+
+@app.get("/api/clients")
+def search_clients(search: str = Query(default="", max_length=100)):
+    with db_session() as conn:
+        if search.strip():
+            q = f"%{search.strip()}%"
+            rows = conn.execute(
+                """SELECT c.*, COUNT(e.id) AS linked_enquiries
+                   FROM clients c
+                   LEFT JOIN enquiries e ON e.client_id = c.id
+                   WHERE c.name LIKE ? OR c.email LIKE ? OR c.phone LIKE ?
+                   GROUP BY c.id ORDER BY c.last_booking_at DESC, c.created_at DESC LIMIT 50""",
+                (q, q, q)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT c.*, COUNT(e.id) AS linked_enquiries
+                   FROM clients c
+                   LEFT JOIN enquiries e ON e.client_id = c.id
+                   GROUP BY c.id ORDER BY c.last_booking_at DESC, c.created_at DESC LIMIT 100"""
+            ).fetchall()
+    clients = []
+    for r in rows:
+        d = dict(r)
+        d["preferences"] = json.loads(d.get("preferences") or "{}")
+        clients.append(d)
+    return clients
+
+@app.get("/api/clients/{client_id}")
+def get_client(client_id: str):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        client = dict(row)
+        client["preferences"] = json.loads(client.get("preferences") or "{}")
+        bookings = rows_to_list(conn.execute(
+            """SELECT id, booking_ref, status, travel_start_date, travel_end_date,
+                      pax, quoted_usd, revenue_usd, destinations_requested
+               FROM enquiries WHERE client_id = ? ORDER BY created_at DESC""",
+            (client_id,)
+        ).fetchall())
+    return {**client, "bookings": bookings}
+
+@app.patch("/api/clients/{client_id}")
+def update_client(client_id: str, body: ClientUpdate):
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Client not found")
+        updates = body.model_dump(exclude_none=True)
+        if not updates:
+            return dict(row)
+        set_parts, vals = [], []
+        for k, v in updates.items():
+            if k == "preferences":
+                # Merge: new non-null values overwrite existing
+                existing_prefs = json.loads(dict(row).get("preferences") or "{}")
+                existing_prefs.update({kk: vv for kk, vv in v.items() if vv is not None})
+                set_parts.append("preferences = ?")
+                vals.append(json.dumps(existing_prefs))
+            else:
+                set_parts.append(f"{k} = ?")
+                vals.append(v)
+        set_parts.append("updated_at = datetime('now')")
+        vals.append(client_id)
+        conn.execute(f"UPDATE clients SET {', '.join(set_parts)} WHERE id = ?", vals)
+        updated = dict(conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone())
+        updated["preferences"] = json.loads(updated.get("preferences") or "{}")
+    return updated
+
+
+# ===========================================================================
+# PHASE 2 — SHAREABLE ITINERARIES
+# ===========================================================================
+
+class ShareCreateBody(BaseModel):
+    expires_days: Optional[int] = None   # None = no expiry
+    include_pricing: bool = False
+
+@app.post("/api/share/{booking_ref}", status_code=201)
+def create_share_link(booking_ref: str, body: ShareCreateBody, request: Request):
+    with db_session() as conn:
+        enquiry = conn.execute(
+            "SELECT * FROM enquiries WHERE booking_ref = ? OR id = ?",
+            (booking_ref, booking_ref)
+        ).fetchone()
+        if not enquiry:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        e = dict(enquiry)
+        token = str(uuid.uuid4())
+        expires_at = None
+        if body.expires_days and body.expires_days > 0:
+            expires_at = (datetime.utcnow() + timedelta(days=body.expires_days)).isoformat()
+
+        # Build itinerary snapshot from enquiry data
+        destinations = json.loads(e.get("destinations_requested") or "[]") if (e.get("destinations_requested") or "").startswith("[") else [e.get("destinations_requested", "")]
+        itinerary_data = {
+            "booking_ref": e["booking_ref"],
+            "client_name": e["client_name"],
+            "travel_start_date": e.get("travel_start_date", ""),
+            "travel_end_date": e.get("travel_end_date", ""),
+            "duration_days": e.get("duration_days"),
+            "pax": e.get("pax", 2),
+            "destinations": destinations,
+            "tour_type": e.get("tour_type", ""),
+            "working_itinerary": e.get("working_itinerary", ""),
+            "accommodation": e.get("accommodation", ""),
+            "interests": json.loads(e.get("interests") or "[]") if (e.get("interests") or "").startswith("[") else [],
+            "special_requests": e.get("special_requests", ""),
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+        if body.include_pricing:
+            itinerary_data["quoted_usd"] = e.get("quoted_usd", "")
+
+        conn.execute(
+            """INSERT INTO shared_itineraries
+               (id, token, booking_ref, itinerary_data, expires_at, include_pricing, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,datetime('now'),datetime('now'))""",
+            (str(uuid.uuid4()), token, e["booking_ref"],
+             json.dumps(itinerary_data), expires_at, int(body.include_pricing))
+        )
+    base = str(request.base_url).rstrip("/")
+    return {
+        "token": token,
+        "url": f"{base}/share/{token}",
+        "expires_at": expires_at,
+        "include_pricing": body.include_pricing,
+    }
+
+@app.get("/api/share/{token}")
+def get_share(token: str, request: Request):
+    """Public endpoint — no auth required."""
+    ua = request.headers.get("user-agent", "")
+    if _is_bot(ua):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM shared_itineraries WHERE token = ?", (token,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
+        share = dict(row)
+
+        if share["is_revoked"]:
+            raise HTTPException(status_code=404, detail="Link has been revoked")
+        if share["expires_at"]:
+            try:
+                if datetime.utcnow() > datetime.fromisoformat(share["expires_at"]):
+                    raise HTTPException(status_code=404, detail="Link has expired")
+            except (ValueError, TypeError):
+                pass
+
+        # Track views
+        client_ip = request.headers.get("x-forwarded-for", request.client.host or "unknown").split(",")[0].strip()
+        is_unique = _count_unique_view(token, client_ip)
+        now_iso = datetime.utcnow().isoformat()
+        conn.execute(
+            """UPDATE shared_itineraries
+               SET view_count = view_count + 1,
+                   unique_view_count = unique_view_count + ?,
+                   last_viewed_at = ?, updated_at = datetime('now')
+               WHERE token = ?""",
+            (1 if is_unique else 0, now_iso, token)
+        )
+        updated = dict(conn.execute(
+            "SELECT view_count, unique_view_count, last_viewed_at FROM shared_itineraries WHERE token = ?", (token,)
+        ).fetchone())
+
+    itinerary_data = json.loads(share.get("itinerary_data") or "{}")
+    return {
+        "token": token,
+        "booking_ref": share["booking_ref"],
+        "itinerary_data": itinerary_data,
+        "view_count": updated["view_count"],
+        "expires_at": share["expires_at"],
+        "include_pricing": bool(share["include_pricing"]),
+    }
+
+@app.patch("/api/share/{token}/revoke")
+def revoke_share(token: str):
+    with db_session() as conn:
+        row = conn.execute("SELECT id FROM shared_itineraries WHERE token = ?", (token,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
+        conn.execute(
+            "UPDATE shared_itineraries SET is_revoked=1, updated_at=datetime('now') WHERE token=?", (token,)
+        )
+    return {"status": "revoked"}
+
+@app.get("/api/share-links/{booking_ref}")
+def list_share_links(booking_ref: str):
+    """Return all share links for a booking (for back-office analytics panel)."""
+    with db_session() as conn:
+        rows = conn.execute(
+            """SELECT token, expires_at, is_revoked, view_count, unique_view_count,
+                      last_viewed_at, include_pricing, created_at
+               FROM shared_itineraries WHERE booking_ref = ? ORDER BY created_at DESC""",
+            (booking_ref,)
+        ).fetchall()
+    return rows_to_list(rows)
+
+
+# ===========================================================================
+# PHASE 2 — GUEST INFORMATION FORMS
+# ===========================================================================
+
+class GuestInfoBody(BaseModel):
+    guest_name: str
+    passport_number: Optional[str] = None
+    passport_expiry: Optional[str] = None
+    nationality: Optional[str] = None
+    dietary: Optional[str] = None
+    medical_notes: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    flight_in: Optional[str] = None
+    flight_out: Optional[str] = None
+
+class GuestFormSubmitBody(BaseModel):
+    guests: List[GuestInfoBody]
+
+@app.post("/api/enquiries/{enquiry_id}/guest-form", status_code=201)
+def generate_guest_form(enquiry_id: str, expires_days: int = 30):
+    """Generate a tokenised guest-info form link for a booking."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT booking_ref FROM enquiries WHERE id = ? OR booking_ref = ?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        booking_ref = row["booking_ref"]
+        token = str(uuid.uuid4())
+        expires_at = (datetime.utcnow() + timedelta(days=expires_days)).isoformat()
+        conn.execute(
+            """INSERT INTO guest_form_tokens (token, booking_ref, expires_at)
+               VALUES (?,?,?)""",
+            (token, booking_ref, expires_at)
+        )
+    return {"token": token, "booking_ref": booking_ref, "expires_at": expires_at}
+
+@app.get("/api/guest-form/{token}")
+def get_guest_form(token: str):
+    """Public — returns booking context and any existing partial guest data."""
+    with db_session() as conn:
+        tok = conn.execute(
+            "SELECT * FROM guest_form_tokens WHERE token = ?", (token,)
+        ).fetchone()
+        if not tok:
+            raise HTTPException(status_code=404, detail="Invalid form link")
+        t = dict(tok)
+        if t["expires_at"]:
+            try:
+                if datetime.utcnow() > datetime.fromisoformat(t["expires_at"]):
+                    raise HTTPException(status_code=410, detail="This form link has expired")
+            except (ValueError, TypeError):
+                pass
+
+        enquiry = conn.execute(
+            """SELECT client_name, travel_start_date, travel_end_date, pax, destinations_requested
+               FROM enquiries WHERE booking_ref = ?""",
+            (t["booking_ref"],)
+        ).fetchone()
+        existing_guests = rows_to_list(conn.execute(
+            """SELECT id, guest_name, passport_expiry, nationality, dietary,
+                      emergency_contact_name, emergency_contact_phone, flight_in, flight_out
+               FROM guest_info WHERE booking_ref = ?""",
+            (t["booking_ref"],)
+        ).fetchall())
+        # Note: passport_number intentionally omitted from GET (write-only after submission)
+
+    return {
+        "token": token,
+        "booking_ref": t["booking_ref"],
+        "is_submitted": bool(t["is_submitted"]),
+        "expires_at": t["expires_at"],
+        "enquiry": dict_from_row(enquiry) or {},
+        "existing_guests": existing_guests,
+    }
+
+@app.post("/api/guest-form/{token}")
+def submit_guest_form(token: str, body: GuestFormSubmitBody):
+    """Public — validate and store guest info, mark form submitted."""
+    if not body.guests:
+        raise HTTPException(status_code=422, detail="At least one guest is required")
+
+    with db_session() as conn:
+        tok = conn.execute(
+            "SELECT * FROM guest_form_tokens WHERE token = ?", (token,)
+        ).fetchone()
+        if not tok:
+            raise HTTPException(status_code=404, detail="Invalid form link")
+        t = dict(tok)
+        if t["expires_at"]:
+            try:
+                if datetime.utcnow() > datetime.fromisoformat(t["expires_at"]):
+                    raise HTTPException(status_code=410, detail="This form link has expired")
+            except (ValueError, TypeError):
+                pass
+
+        # Validate required fields and passport expiry
+        errors = []
+        for i, g in enumerate(body.guests, 1):
+            if not g.guest_name.strip():
+                errors.append(f"Guest {i}: name is required")
+            if not (g.nationality or "").strip():
+                errors.append(f"Guest {i}: nationality is required")
+            if not (g.passport_number or "").strip():
+                errors.append(f"Guest {i}: passport number is required")
+            if g.passport_expiry:
+                try:
+                    exp = date.fromisoformat(g.passport_expiry)
+                    if exp <= date.today():
+                        errors.append(f"Guest {i}: passport has expired")
+                except ValueError:
+                    errors.append(f"Guest {i}: invalid passport expiry date")
+        if errors:
+            raise HTTPException(status_code=422, detail="; ".join(errors))
+
+        booking_ref = t["booking_ref"]
+        for g in body.guests:
+            conn.execute(
+                """INSERT INTO guest_info
+                   (id, booking_ref, guest_name, passport_number, passport_expiry,
+                    nationality, dietary, medical_notes, emergency_contact_name,
+                    emergency_contact_phone, flight_in, flight_out)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), booking_ref, g.guest_name.strip(),
+                 _obfuscate(g.passport_number or ""), g.passport_expiry or "",
+                 g.nationality or "", g.dietary or "", g.medical_notes or "",
+                 g.emergency_contact_name or "", g.emergency_contact_phone or "",
+                 g.flight_in or "", g.flight_out or "")
+            )
+
+        # Mark token submitted
+        conn.execute(
+            "UPDATE guest_form_tokens SET is_submitted=1, submitted_at=datetime('now') WHERE token=?",
+            (token,)
+        )
+        # Mark enquiry complete if pax count is met
+        enquiry = conn.execute(
+            "SELECT pax FROM enquiries WHERE booking_ref=?", (booking_ref,)
+        ).fetchone()
+        if enquiry:
+            total_submitted = conn.execute(
+                "SELECT COUNT(*) FROM guest_info WHERE booking_ref=?", (booking_ref,)
+            ).fetchone()[0]
+            if total_submitted >= (enquiry["pax"] or 1):
+                conn.execute(
+                    "UPDATE enquiries SET guest_info_complete=1 WHERE booking_ref=?", (booking_ref,)
+                )
+
+    return {"status": "submitted", "guests_saved": len(body.guests)}
+
+@app.get("/api/enquiries/{enquiry_id}/guest-info")
+def get_guest_info(enquiry_id: str):
+    """Back-office: return guest records for a booking (passport numbers redacted)."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT booking_ref, guest_info_complete FROM enquiries WHERE id=? OR booking_ref=?",
+            (enquiry_id, enquiry_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enquiry not found")
+        guests = rows_to_list(conn.execute(
+            """SELECT id, guest_name, passport_expiry, nationality, dietary,
+                      emergency_contact_name, emergency_contact_phone, flight_in, flight_out,
+                      created_at
+               FROM guest_info WHERE booking_ref=? ORDER BY created_at""",
+            (row["booking_ref"],)
+        ).fetchall())
+        tokens = rows_to_list(conn.execute(
+            "SELECT token, expires_at, is_submitted, submitted_at, created_at FROM guest_form_tokens WHERE booking_ref=? ORDER BY created_at DESC",
+            (row["booking_ref"],)
+        ).fetchall())
+    return {
+        "booking_ref": row["booking_ref"],
+        "guest_info_complete": bool(row["guest_info_complete"]),
+        "guests": guests,
+        "form_tokens": tokens,
+    }
+
+
+# ===========================================================================
+# Static file serving
+# ===========================================================================
+
 STATIC_DIR = BASE_DIR
 
 @app.get("/styles.css")
@@ -5644,6 +6226,14 @@ def serve_css():
 @app.get("/app.js")
 def serve_js():
     return FileResponse(STATIC_DIR / "app.js", media_type="application/javascript")
+
+@app.get("/share/{token}", response_class=HTMLResponse)
+def serve_share(token: str):
+    return FileResponse(STATIC_DIR / "share.html", media_type="text/html")
+
+@app.get("/guest-form/{token}", response_class=HTMLResponse)
+def serve_guest_form(token: str):
+    return FileResponse(STATIC_DIR / "guest-form.html", media_type="text/html")
 
 @app.get("/", response_class=HTMLResponse)
 def serve_index():
