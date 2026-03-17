@@ -194,6 +194,8 @@
     roomExtras: {},        // {rowKey: {dietary, packedLunch}} — per-room special requirements
     accomHistory: [],      // undo stack — each entry is a snapshot of lodge-row config
     accomFuture:  [],      // redo stack
+    roomOverrides: {},     // {roomKey: {overridden:bool, reason:string, timestamp:string}} — soft-warning overrides
+    overrideLog:  [],      // audit log [{roomKey, reason, timestamp, guestIds}]
   };
 
   /* ============================================================
@@ -3416,16 +3418,90 @@
   // CHILD MEAL & OCCUPANCY TIER HELPERS
   // ---------------------------------------------------------------------------
 
-  // Age-banded meal pricing (Section 4 of booking logic spec).
-  // Returns {multiplier, label, free, cotNeeded, highChairNeeded, confirmNeeded}
-  function _getChildMealTier(age) {
+  // Age-banded meal pricing — aligns with lodge child policy tiers.
+  // Thresholds: under 5 = free, 5–9 = child rate (50%), 10+ = half/adult rate.
+  // Returns {multiplier, label, free, cotNeeded, highChairNeeded, confirmNeeded, ageGroup}
+  function _getChildMealTier(age, lodgePolicy) {
+    const p = lodgePolicy || {};
+    const freeUnder  = p.free_under_age  ?? 5;
+    const childUnder = p.child_under_age ?? 10;
     if (age === null || age === undefined) {
-      return { multiplier: 0.5, label: 'Child rate (age unknown — assumed 5–11)', free: false };
+      return { multiplier: 0.5, label: 'Child rate (age unknown — assumed 5–9)', free: false, ageGroup: 'mid' };
     }
-    if (age < 2)  return { multiplier: 0, label: 'FREE — under 2', free: true, cotNeeded: true, highChairNeeded: true };
-    if (age < 5)  return { multiplier: 0, label: 'FREE / token — age 2–4 (confirm with property)', free: true, cotNeeded: true, confirmNeeded: true };
-    if (age < 12) return { multiplier: 0.5, label: 'Child rate — 50% of adult (age 5–11)', free: false };
-    return          { multiplier: 1.0, label: 'Full adult rate (age 12+)', free: false };
+    if (age < 2)         return { multiplier: 0,   label: 'FREE — under 2', free: true, cotNeeded: true, highChairNeeded: true, ageGroup: 'infant' };
+    if (age < freeUnder) return { multiplier: 0,   label: `FREE / token — age 2–${freeUnder - 1} (confirm with property)`, free: true, cotNeeded: true, confirmNeeded: true, ageGroup: 'young' };
+    if (age < childUnder) return { multiplier: 0.5, label: `Child rate — 50% of adult (age ${freeUnder}–${childUnder - 1})`, free: false, ageGroup: 'mid' };
+    return                      { multiplier: p.older_child_multiplier ?? 0.5, label: `Half/configured rate (age ${childUnder}+)`, free: false, ageGroup: 'older' };
+  }
+
+  // Return lodge-specific child sharing policy from supplier data.
+  // Falls back to sensible defaults if no supplier data available.
+  function _getLodgeChildPolicy(lodgeName) {
+    const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+    const policy = lodge?.child_policy || {};
+    return {
+      free_under_age:          policy.free_under_age          ?? 5,
+      child_under_age:         policy.child_under_age         ?? 10,
+      older_child_multiplier:  policy.older_child_multiplier  ?? 0.5,
+      max_adults_per_room:     policy.max_adults_per_room     ?? 2,
+      child_sharing_allowed:   policy.child_sharing_allowed   ?? true,
+      max_children_sharing:    policy.max_children_sharing    ?? 3,
+    };
+  }
+
+  // Log a soft-warning override to the audit trail.
+  function _logOverride(roomKey, reason, guestIds) {
+    if (!state.overrideLog) state.overrideLog = [];
+    const entry = { roomKey, reason: reason || '(no reason given)', timestamp: new Date().toISOString(), guestIds: guestIds || [] };
+    state.overrideLog.push(entry);
+    if (!state.roomOverrides) state.roomOverrides = {};
+    state.roomOverrides[roomKey] = { overridden: true, reason: entry.reason, timestamp: entry.timestamp };
+    console.info('[RoomOverride]', entry);
+  }
+
+  // Show a modal confirmation dialog for soft-warning overrides.
+  // Calls onConfirm(reason) when user confirms, or nothing when they cancel.
+  function _showOverrideConfirmDialog(message, roomKey, onConfirm) {
+    // Remove any existing dialog first
+    document.getElementById('roomOverrideDialog')?.remove();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'roomOverrideDialog';
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+    backdrop.innerHTML = `
+      <div style="background:var(--bg-card,#fff);border-radius:var(--radius-lg,10px);box-shadow:0 8px 32px rgba(0,0,0,.22);padding:24px 28px;max-width:420px;width:90%;font-family:inherit">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.6"/><path d="M9 5.5v4" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.8" stroke-linecap="round"/><circle cx="9" cy="12.5" r=".9" fill="var(--brand-gold,#f59e0b)"/></svg>
+          <span style="font-size:var(--text-sm,13px);font-weight:700;color:var(--brand-gold-dark,#b45309)">Override Room Warning</span>
+        </div>
+        <p style="font-size:var(--text-xs,11px);color:var(--text-secondary);margin:0 0 6px">${message}</p>
+        <p style="font-size:var(--text-xs,11px);color:var(--text-muted);margin:0 0 14px;font-style:italic">This configuration is allowed based on lodge policy. Ensure pricing and rooming are correct.</p>
+        <label style="font-size:var(--text-xs,11px);font-weight:700;color:var(--text-muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Reason for override <span style="color:var(--danger)">*</span></label>
+        <input id="overrideReasonInput" type="text" class="form-control"
+          placeholder="e.g. Family group — 1 adult with 2 young children, lodge confirmed"
+          style="font-size:var(--text-xs,11px);margin-bottom:14px;width:100%;box-sizing:border-box">
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button id="overrideCancelBtn" type="button" class="btn btn-xs" style="font-size:var(--text-xs,11px);padding:5px 14px;background:var(--bg-surface);border:1px solid var(--border)">Cancel</button>
+          <button id="overrideConfirmBtn" type="button" class="btn btn-xs" style="font-size:var(--text-xs,11px);padding:5px 14px;background:var(--brand-gold,#f59e0b);color:#fff;border:none;font-weight:700">Override and Proceed</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const input    = backdrop.querySelector('#overrideReasonInput');
+    const confirmB = backdrop.querySelector('#overrideConfirmBtn');
+    const cancelB  = backdrop.querySelector('#overrideCancelBtn');
+    input.focus();
+    const close = () => backdrop.remove();
+    cancelB.addEventListener('click', close);
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
+    confirmB.addEventListener('click', () => {
+      const reason = input.value.trim();
+      if (!reason) { input.style.borderColor = 'var(--danger)'; input.focus(); return; }
+      close();
+      onConfirm(reason);
+    });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') confirmB.click();
+      if (e.key === 'Escape') close();
+    });
   }
 
   // True when a guest object represents an under-5 child (free occupant).
@@ -3597,13 +3673,15 @@
     return (state.guestPool || []).filter(g => !state.roomAssignments[g.id]);
   }
 
-  // Returns {ok, warnings?[], error?, suggestions?[]}
-  // Applies the full occupancy rule set from the booking logic spec:
-  //   - Children under 5 are FREE occupants — do not count against maxOcc
-  //   - Every room must have ≥1 adult when any child is present
-  //   - Standard: max 2 adults per room
-  //   - Older children (5+) count toward maxOcc
-  //   - U5 children need cots; under-2 need high chairs
+  // Returns {ok, warnings?[], error?, softWarning?, message?, suggestions?[]}
+  // WARNING CLASSIFICATION:
+  //   Hard errors  (error field set)       — block progression:
+  //     • No adult present when children are being assigned
+  //     • Adults alone exceed maxOcc
+  //     • Room index out of range / guest not found
+  //   Soft warnings (softWarning:true)     — alert but allow override:
+  //     • Non-standard occupancy: adult + multiple children exceeding standard capacity
+  //     • Capacity edge cases permitted by lodge child-sharing policy
   // rtIdx is the room-type-entry index within the lodge row (default 0).
   function _validateDrop(guestId, rowIdx, rtIdx, roomIdx) {
     // Handle 3-arg legacy calls (no rtIdx): _validateDrop(guestId, rowIdx, roomIdx)
@@ -3613,6 +3691,7 @@
     const roomType  = _getRoomTypeForEntry(row, rtIdx);
     const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
     const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const lodgePolicy = _getLodgeChildPolicy(lodgeName);
     const roomCount = _getRoomsCountForEntry(row, rtIdx);
     if (roomIdx >= roomCount) return { error: 'Room index out of range' };
     const guest = (state.guestPool || []).find(g => g.id === guestId);
@@ -3633,20 +3712,40 @@
     const newOlderChild  = curOlderChild + (addingOlderChild ? 1 : 0);
     const newTotalChild  = newU5 + newOlderChild;
 
-    // Rule: every room with children must have at least 1 adult
+    // HARD ERROR: every room with children must have at least 1 adult (data integrity)
     if (newAdults === 0 && newTotalChild > 0) {
       return { error: 'Every room must have at least 1 adult. Assign an adult to this room first.', suggestions: [] };
     }
 
-    // Standard rule: max 2 adults per room
-    if (newAdults > 2) {
-      return { error: 'Maximum 2 adults per room (standard rule).', suggestions: ['add-room', 'upgrade'] };
+    // HARD ERROR: adults alone exceed room capacity — cannot be overridden by child policy
+    if (newAdults > maxOcc) {
+      return { error: `Adults alone exceed room capacity (${maxOcc}). Add another room or upgrade room type.`, suggestions: ['add-room', 'upgrade'] };
+    }
+
+    // Standard max-adults check (hard error if no children present, soft if family group)
+    const maxAdultsPolicy = lodgePolicy.max_adults_per_room ?? 2;
+    if (newAdults > maxAdultsPolicy && newTotalChild === 0) {
+      return { error: `Maximum ${maxAdultsPolicy} adults per room (standard rule).`, suggestions: ['add-room', 'upgrade'] };
     }
 
     // Occupancy check: U5 children do NOT count against maxOcc.
     // Only adults + children aged 5+ count.
     const occupancyCount = newAdults + newOlderChild;
     if (occupancyCount > maxOcc) {
+      // SOFT WARNING: capacity exceeded but may be allowed under lodge child-sharing policy
+      if (lodgePolicy.child_sharing_allowed && newTotalChild > 0) {
+        const roomKey = _makeRoomKey(rowIdx, rtIdx, roomIdx);
+        const alreadyOverridden = !!(state.roomOverrides || {})[roomKey]?.overridden;
+        return {
+          softWarning: true,
+          alreadyOverridden,
+          message: `Room exceeds standard adult capacity (${maxOcc}) but may be allowed under child sharing policy. ` +
+            `Current: ${newAdults} adult${newAdults !== 1 ? 's' : ''} + ${newTotalChild} child${newTotalChild !== 1 ? 'ren' : ''}.`,
+          suggestions: ['adjust', 'override'],
+          roomKey,
+        };
+      }
+      // HARD ERROR: no child sharing policy applicable
       return { error: `Exceeds room capacity (${maxOcc}). Children under 5 don't count, but adults + older children do.`, suggestions: ['add-room', 'upgrade', 'reassign'] };
     }
 
@@ -3666,26 +3765,52 @@
 
   // Assign guest to room; validates, records history, re-renders.
   // rtIdx (room-type-entry index) defaults to 0 for backward compatibility.
-  function _assignGuest(guestId, rowIdx, rtIdx, roomIdx) {
+  // Returns true on success, false on hard error, and 'pending' when a soft-warning dialog is shown.
+  function _assignGuest(guestId, rowIdx, rtIdx, roomIdx, _skipOverrideCheck) {
     if (arguments.length === 3) { roomIdx = rtIdx; rtIdx = 0; } // legacy 3-arg call
     if (!state.roomAssignments) state.roomAssignments = {};
     const v = _validateDrop(guestId, rowIdx, rtIdx, roomIdx);
+
+    // HARD ERROR — block assignment
     if (v.error) {
       _showAssignmentError(v.error, v.suggestions || [], rowIdx, rtIdx, roomIdx);
       return false;
     }
+
+    // SOFT WARNING — show override dialog unless already overridden for this room
+    if (v.softWarning && !_skipOverrideCheck) {
+      const { roomKey, message, alreadyOverridden } = v;
+      if (alreadyOverridden) {
+        // Room was already overridden by user — proceed silently
+        _doAssign(guestId, rowIdx, rtIdx, roomIdx, roomKey);
+        return true;
+      }
+      _showOverrideConfirmDialog(message, roomKey, (reason) => {
+        const guestIds = _getGuestsInRoom(rowIdx, rtIdx, roomIdx).map(g => g.id).concat(guestId);
+        _logOverride(roomKey, reason, guestIds);
+        _doAssign(guestId, rowIdx, rtIdx, roomIdx, roomKey);
+        toast('info', 'Override applied', 'Room configuration overridden based on lodge policy. Verify pricing.');
+      });
+      return 'pending';
+    }
+
+    // All clear (or override already applied)
     if (v.warnings && v.warnings.length > 0) {
-      // Non-blocking: toast the warnings after assigning
       setTimeout(() => v.warnings.forEach(w => toast('info', 'Room note', w)), 100);
     }
-    _accomPushHistory();
-    state.roomAssignments[guestId] = _makeRoomKey(rowIdx, rtIdx, roomIdx);
-    _renderGuestAssignmentUI();
-    _renderAccommPricingSummary();
-    _checkCapacityMismatch();
+    _doAssign(guestId, rowIdx, rtIdx, roomIdx, _makeRoomKey(rowIdx, rtIdx, roomIdx));
     return true;
   }
   window.TRVE._assignGuest = _assignGuest;
+
+  // Internal: commit the assignment after all checks pass.
+  function _doAssign(guestId, rowIdx, rtIdx, roomIdx, roomKey) {
+    _accomPushHistory();
+    state.roomAssignments[guestId] = roomKey || _makeRoomKey(rowIdx, rtIdx, roomIdx);
+    _renderGuestAssignmentUI();
+    _renderAccommPricingSummary();
+    _checkCapacityMismatch();
+  }
 
   // Return guest to the unassigned pool.
   function _unassignGuest(guestId) {
@@ -3956,7 +4081,8 @@
   // Helper: render room assignment cards for one room-type-entry.
   // container = the .lodge-guest-assign-list element inside the entry.
   function _renderRoomCardsForEntry(container, rowIdx, rtIdx, roomType, lodgeName, rooms) {
-    const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const maxOcc      = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const lodgePolicy = _getLodgeChildPolicy(lodgeName);
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
     if (totalGuests === 0 || !roomType) {
@@ -3966,27 +4092,41 @@
     let html = '';
     let assignedCount = 0;
     for (let r = 0; r < rooms; r++) {
+      const roomKey   = _makeRoomKey(rowIdx, rtIdx, r);
       const guests    = _getGuestsInRoom(rowIdx, rtIdx, r);
       const nAdults   = guests.filter(g => g.type === 'adult').length;
       const nChildren = guests.filter(g => g.type === 'child').length;
+      const nU5       = guests.filter(g => _isU5(g)).length;
       const n         = guests.length;
       assignedCount  += n;
-      const childBeds   = Math.ceil(nChildren / 2);
-      const sharingOk   = nAdults <= 1 && nChildren <= 2 && (nAdults + childBeds) <= maxOcc;
-      const adultOver   = nAdults > 2;
-      const exceeded    = n > maxOcc && !sharingOk;
-      const sharing     = n > maxOcc && sharingOk;
-      const hasError    = exceeded || adultOver;
-      const borderCol   = hasError ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : 'var(--border)';
-      const badgeBg     = hasError ? 'var(--danger)' : sharing ? 'var(--brand-gold,#f59e0b)' : n > 0 ? 'var(--success)' : 'var(--bg-surface)';
-      const badgeColor  = n > 0 ? '#fff' : 'var(--text-muted)';
+      const occupancyCount = nAdults + (nChildren - nU5); // U5 don't count against capacity
+      const isOverridden   = !!(state.roomOverrides || {})[roomKey]?.overridden;
+      const adultOver      = nAdults > (lodgePolicy.max_adults_per_room ?? 2) && nChildren === 0;
+      const adultExceedsCap = nAdults > maxOcc;
+      // Hard error: adults alone bust capacity or no-child adult overflow
+      const hasError       = adultExceedsCap || adultOver;
+      // Soft warning: occupancy exceeded due to children (overridable)
+      const softOver       = !hasError && occupancyCount > maxOcc;
+      const softAllowed    = softOver && lodgePolicy.child_sharing_allowed && !isOverridden;
+      const softConfirmed  = softOver && isOverridden;
+      // Classic child-sharing: fits within maxOcc with child-bed-sharing math
+      const childBeds      = Math.ceil(nChildren / 2);
+      const sharingOk      = !softOver && nAdults >= 1 && nChildren > 0 && (nAdults + childBeds) <= maxOcc && n > maxOcc;
+      const borderCol = hasError
+        ? 'var(--danger)'
+        : (softAllowed ? 'var(--brand-gold,#f59e0b)' : softConfirmed ? 'var(--success)' : sharingOk ? 'var(--brand-gold,#f59e0b)' : 'var(--border)');
+      const badgeBg   = hasError
+        ? 'var(--danger)'
+        : (softAllowed ? 'var(--brand-gold,#f59e0b)' : softConfirmed ? 'var(--success)' : n > 0 ? 'var(--success)' : 'var(--bg-surface)');
+      const badgeColor = n > 0 ? '#fff' : 'var(--text-muted)';
       const chipsHTML   = guests.length > 0
         ? guests.map(g => _guestChipHTML(g, { inRoom: true })).join('')
         : `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">Drop guests here</span>`;
+      // Hard error block
       const warningHTML = hasError ? `
         <div style="padding:7px 10px;background:rgba(220,38,38,.06);border-top:1px solid rgba(220,38,38,.2)">
           <div style="font-size:10px;color:var(--danger);font-weight:600;margin-bottom:5px">
-            ${adultOver ? 'Maximum 2 adults per room.' : `Exceeds room capacity of ${maxOcc}.`} Resolve:
+            ${adultExceedsCap ? `Adults exceed room capacity (${maxOcc}).` : `Maximum ${lodgePolicy.max_adults_per_room ?? 2} adults per room.`} Resolve:
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:5px">
             <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--brand-green);color:#fff;border:none"
@@ -3997,7 +4137,30 @@
               onclick="window.TRVE._autoAssignGuests()">Auto Reassign</button>
           </div>
         </div>` : '';
-      const sharingHTML = sharing ? `
+      // Soft warning block — overridable by user
+      const softWarningHTML = softAllowed ? `
+        <div style="padding:7px 10px;background:rgba(245,158,11,.06);border-top:1px solid rgba(245,158,11,.3)">
+          <div style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600;margin-bottom:4px">
+            ⚠ Warning: This room exceeds standard occupancy but may be allowed for families.
+          </div>
+          <div style="font-size:10px;color:var(--text-secondary);margin-bottom:5px">
+            ${nAdults} adult${nAdults !== 1 ? 's' : ''} + ${nChildren} child${nChildren !== 1 ? 'ren' : ''} in ${escapeHtml(roomType)} (max ${maxOcc}). Child-sharing policy may apply.
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'), +1)">Adjust Room Allocation</button>
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--brand-gold,#f59e0b);color:#fff;border:none;font-weight:600"
+              onclick="window.TRVE._triggerRoomOverride('${escapeHtml(roomKey)}',${rowIdx},${rtIdx},${r})">Override and Proceed</button>
+          </div>
+        </div>` : '';
+      // Soft override confirmed block
+      const softConfirmedHTML = softConfirmed ? `
+        <div style="padding:7px 10px;background:rgba(34,197,94,.06);border-top:1px solid rgba(34,197,94,.25)">
+          <span style="font-size:10px;color:var(--success,#16a34a);font-weight:600">✓ Override applied — lodge policy confirmed.</span>
+          <span style="font-size:10px;color:var(--text-muted);margin-left:4px">Verify pricing reflects child rates.</span>
+        </div>` : '';
+      // Classic child-sharing note (within capacity)
+      const sharingHTML = sharingOk ? `
         <div style="padding:7px 10px;background:rgba(245,158,11,.06);border-top:1px solid rgba(245,158,11,.3)">
           <span style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600">Child-sharing:</span>
           <span style="font-size:10px;color:var(--text-secondary)"> ${nAdults} adult + ${nChildren} children — 2 children share 1 bed ✓</span>
@@ -4032,12 +4195,33 @@
             ondrop="window.TRVE._onRoomDrop(event, ${rowIdx}, ${rtIdx}, ${r})">
             ${chipsHTML}
           </div>
-          ${warningHTML}${sharingHTML}${extrasHTML}
+          ${warningHTML}${softWarningHTML}${softConfirmedHTML}${sharingHTML}${extrasHTML}
         </div>`;
     }
     container.innerHTML = html;
     return assignedCount;
   }
+
+  // Trigger soft-warning override dialog from a room card button.
+  function _triggerRoomOverride(roomKey, rowIdx, rtIdx, roomIdx) {
+    const row = document.querySelector(`#lodgeItems .lodge-item[data-idx="${rowIdx}"]`);
+    const lodgeName = row?.querySelector('[name^="lodge_name_"]')?.value || '';
+    const roomType  = _getRoomTypeForEntry(row, rtIdx);
+    const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+    const guests    = _getGuestsInRoom(rowIdx, rtIdx, roomIdx);
+    const nAdults   = guests.filter(g => g.type === 'adult').length;
+    const nChildren = guests.filter(g => g.type === 'child').length;
+    const message   = `Room exceeds standard adult capacity (${maxOcc}) but allowed under child sharing policy. ` +
+      `Current: ${nAdults} adult${nAdults !== 1 ? 's' : ''} + ${nChildren} child${nChildren !== 1 ? 'ren' : ''} in ${roomType}.`;
+    _showOverrideConfirmDialog(message, roomKey, (reason) => {
+      _logOverride(roomKey, reason, guests.map(g => g.id));
+      _renderGuestAssignmentUI();
+      _renderAccommPricingSummary();
+      _checkCapacityMismatch();
+      toast('info', 'Override applied', 'Room configuration overridden based on lodge policy. Verify pricing.');
+    });
+  }
+  window.TRVE._triggerRoomOverride = _triggerRoomOverride;
 
   // Render drag-drop room cards inside one lodge row.
   // Iterates all .room-type-entry elements within the row.
@@ -4367,27 +4551,40 @@
         mealPlan === 'AI' ? 85 : 0
       );
 
-      // Age-banded child costs
+      // Age-banded child costs — room rate + meal supplement split by age tier
+      const lodgePolicy = _getLodgeChildPolicy(lodge);
       let childLinesHTML = '';
+      let childRoomTotal = 0;
       let childMealTotal = 0;
       const childGuests = (state.guestPool || []).filter(g => g.type === 'child');
       if (childGuests.length > 0) {
         const tierGroups = {};
         childGuests.forEach(g => {
-          const tier = _getChildMealTier(g.age);
+          const tier = _getChildMealTier(g.age, lodgePolicy);
           const key  = tier.label;
           if (!tierGroups[key]) tierGroups[key] = { tier, count: 0 };
           tierGroups[key].count++;
         });
+        // Compute average room rate across all room-type-entries for child room rate calculation
+        const avgRoomRate = priceItems.length > 0
+          ? priceItems.reduce((s, i) => s + i.rate, 0) / priceItems.length
+          : 0;
         Object.values(tierGroups).forEach(({ tier, count }) => {
-          const perNight = isRO ? 0 : adultMealCost * tier.multiplier;
-          const subtotal = nights * count * perNight;
-          childMealTotal += subtotal;
-          const confirmMark = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
+          const roomPerNight  = tier.free ? 0 : avgRoomRate * tier.multiplier;
+          const mealPerNight  = isRO ? 0 : adultMealCost * tier.multiplier;
+          const roomSub       = nights * count * roomPerNight;
+          const mealSub       = nights * count * mealPerNight;
+          childRoomTotal     += roomSub;
+          childMealTotal     += mealSub;
+          const total         = roomSub + mealSub;
+          const confirmMark   = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
+          const pricingDetail = tier.free
+            ? 'FREE (cot only)'
+            : `${fmtMoney(roomPerNight + mealPerNight)}/night`;
           childLinesHTML += `
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding-left:12px">
-              <span>Children ×${count} — ${tier.label}${confirmMark}</span>
-              <span style="font-family:var(--font-mono)">${tier.free && !isRO ? 'FREE' : fmtMoney(subtotal)}</span>
+              <span>Children ×${count} — ${tier.label}${confirmMark} (${pricingDetail})</span>
+              <span style="font-family:var(--font-mono)">${tier.free ? 'FREE' : fmtMoney(total)}</span>
             </div>`;
         });
       }
@@ -4407,12 +4604,15 @@
 
       // Adult meal supplement (if not RO)
       const adultMealTotal = isRO ? 0 : nights * globalAdults * adultMealCost;
-      const rowTotal  = roomCost + adultMealTotal + childMealTotal;
+      const rowTotal  = roomCost + adultMealTotal + childRoomTotal + childMealTotal;
       guestTotal     += rowTotal;
 
       // Cot requirements across all rooms
       const u5Total    = (state.guestPool || []).filter(g => _isU5(g)).length;
       const under2Total = (state.guestPool || []).filter(g => g.type === 'child' && g.age !== null && g.age < 2).length;
+
+      // Check for any active overrides in this lodge row
+      const hasOverride = Object.values(state.roomOverrides || {}).some(o => o.overridden);
 
       // Summary label for the lodge header
       const totalRooms = priceItems.reduce((s, i) => s + i.rooms, 0);
@@ -4434,6 +4634,7 @@
           </div>` : ''}
           ${childLinesHTML}
           ${u5Total > 0 ? `<div style="font-size:10px;color:#6366f1;margin-top:3px">⊕ ${u5Total} cot${u5Total > 1 ? 's' : ''} required${under2Total > 0 ? ` · ${under2Total} high chair${under2Total > 1 ? 's' : ''}` : ''} — confirm with property</div>` : ''}
+          ${hasOverride ? `<div style="font-size:10px;color:var(--brand-gold-dark,#b45309);margin-top:3px">⚑ Override active — lodge child-sharing policy applied. Verify pricing impact.</div>` : ''}
           <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);font-weight:700;margin-top:4px">
             <span>Row subtotal</span>
             <span style="font-family:var(--font-mono)">${fmtMoney(rowTotal)}</span>
@@ -4556,6 +4757,7 @@
 
   // Checks that room configuration (rooms × maxOcc across all lodge rows) can fit
   // totalGuests from Basic Details. Uses computed model — no manual per-room inputs.
+  // Distinguishes hard capacity errors from soft warnings (child-sharing scenarios).
   function _checkCapacityMismatch() {
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
@@ -4603,6 +4805,12 @@
 
     const gap = Math.max(totalGuests - totalCapacity, unassignedCount);
 
+    // Determine if this is a soft-warning scenario (gap is entirely due to young children)
+    // Young children (<5) need cots but do not take up beds — so effective occupancy is lower.
+    const youngChildCount = _getYoungChildCount();
+    const effectiveGuests = totalGuests - youngChildCount; // occupancy-relevant guests
+    const isSoftCapacity  = totalChildren > 0 && effectiveGuests <= totalCapacity && unassignedCount === 0;
+
     // One-click resolution buttons
     const addRoomBtn = `
       <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--brand-green);color:#fff;border:none;font-weight:600"
@@ -4632,37 +4840,109 @@
       </button>` : '';
 
     alertEl.style.display = '';
-    alertEl.innerHTML = `
-      <div style="border:1px solid var(--danger);border-radius:var(--radius-md);padding:12px 14px;margin-top:8px;background:rgba(220,38,38,.05)">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="var(--danger)" stroke-width="1.4"/><path d="M7 4v3.5" stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round"/><circle cx="7" cy="10" r=".7" fill="var(--danger)"/></svg>
-          <span style="font-size:var(--text-xs);font-weight:700;color:var(--danger)">Accommodation Incomplete</span>
-        </div>
-        <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
-          Total guests (Basic Details): <strong>${totalGuests}</strong>
-          (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
-        </div>
-        <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:8px">
-          Configured room capacity: <strong>${totalCapacity}</strong>
-          &nbsp;·&nbsp; <span style="color:var(--danger);font-weight:700">
-            ${gap} guest${gap !== 1 ? 's' : ''} remain${gap === 1 ? 's' : ''} unaccommodated
-          </span>
-        </div>
-        <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">
-          Recommended: add another room
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${addRoomBtn}
-          ${addSingleBtn}
-          ${addFamilyBtn}
-          ${addTripleBtn}
-          <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--bg-surface);border:1px solid var(--border)"
-            onclick="window.TRVE.addLodgeItem()">
-            + Add Lodge Row
-          </button>
-        </div>
-      </div>`;
+
+    if (isSoftCapacity) {
+      // SOFT WARNING — capacity only appears short because young children count toward total
+      // but don't consume beds. Offer override option.
+      alertEl.innerHTML = `
+        <div style="border:1px solid var(--brand-gold,#f59e0b);border-radius:var(--radius-md);padding:12px 14px;margin-top:8px;background:rgba(245,158,11,.05)">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.4"/><path d="M7 4v3.5" stroke="var(--brand-gold,#f59e0b)" stroke-width="1.6" stroke-linecap="round"/><circle cx="7" cy="10" r=".7" fill="var(--brand-gold,#f59e0b)"/></svg>
+            <span style="font-size:var(--text-xs);font-weight:700;color:var(--brand-gold-dark,#b45309)">Accommodation Warning — Child Sharing Scenario</span>
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+            Total guests (Basic Details): <strong>${totalGuests}</strong>
+            (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+            Configured room capacity: <strong>${totalCapacity}</strong>
+            &nbsp;·&nbsp; Young children (&lt;5): <strong>${youngChildCount}</strong> (cot only — no bed needed)
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--brand-gold-dark,#b45309);margin-bottom:8px;font-weight:600">
+            Warning: This room exceeds standard occupancy but may be allowed for families.
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:8px;font-style:italic">
+            This configuration is allowed based on lodge policy. Ensure pricing and rooming are correct.
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${addRoomBtn}
+            ${addFamilyBtn}
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--brand-gold,#f59e0b);color:#fff;border:none;font-weight:600"
+              onclick="window.TRVE._triggerCapacityOverride()">
+              Override and Proceed
+            </button>
+          </div>
+        </div>`;
+    } else {
+      // HARD ERROR — genuine capacity shortfall requiring an extra room
+      alertEl.innerHTML = `
+        <div style="border:1px solid var(--danger);border-radius:var(--radius-md);padding:12px 14px;margin-top:8px;background:rgba(220,38,38,.05)">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="var(--danger)" stroke-width="1.4"/><path d="M7 4v3.5" stroke="var(--danger)" stroke-width="1.6" stroke-linecap="round"/><circle cx="7" cy="10" r=".7" fill="var(--danger)"/></svg>
+            <span style="font-size:var(--text-xs);font-weight:700;color:var(--danger)">Accommodation Incomplete</span>
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+            Total guests (Basic Details): <strong>${totalGuests}</strong>
+            (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''})
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:8px">
+            Configured room capacity: <strong>${totalCapacity}</strong>
+            &nbsp;·&nbsp; <span style="color:var(--danger);font-weight:700">
+              ${gap} guest${gap !== 1 ? 's' : ''} remain${gap === 1 ? 's' : ''} unaccommodated
+            </span>
+          </div>
+          <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">
+            Recommended: add another room
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${addRoomBtn}
+            ${addSingleBtn}
+            ${addFamilyBtn}
+            ${addTripleBtn}
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:4px 10px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE.addLodgeItem()">
+              + Add Lodge Row
+            </button>
+          </div>
+        </div>`;
+    }
   }
+
+  // Trigger capacity-level soft-warning override dialog (from mismatch alert button).
+  function _triggerCapacityOverride() {
+    const { adults: totalAdults, children: totalChildren } = _getBasicPax();
+    const youngChildCount = _getYoungChildCount();
+    const message = `Total guests (${totalAdults} adult${totalAdults !== 1 ? 's' : ''} + ${totalChildren} child${totalChildren !== 1 ? 'ren' : ''}) ` +
+      `appear to exceed configured room capacity. However, ${youngChildCount} young child${youngChildCount !== 1 ? 'ren' : ''} (under 5) ` +
+      `require cots only and may share a bed — this configuration may be allowed under lodge child-sharing policy.`;
+    const overrideKey = 'capacity-level';
+    _showOverrideConfirmDialog(message, overrideKey, (reason) => {
+      _logOverride(overrideKey, reason, []);
+      // Mark all rooms with children as overridden so subsequent drag-drops don't re-prompt
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, rowIdx) => {
+        const entries = _getRoomTypeEntries(row);
+        const processEntry = (rtIdx, roomCount) => {
+          for (let r = 0; r < roomCount; r++) {
+            const roomKey = _makeRoomKey(rowIdx, rtIdx, r);
+            const guests  = _getGuestsInRoom(rowIdx, rtIdx, r);
+            if (guests.some(g => g.type === 'child')) {
+              if (!state.roomOverrides) state.roomOverrides = {};
+              state.roomOverrides[roomKey] = { overridden: true, reason, timestamp: new Date().toISOString() };
+            }
+          }
+        };
+        if (entries.length === 0) {
+          processEntry(0, parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1);
+        } else {
+          entries.forEach((entry, rtIdx) => processEntry(rtIdx, parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1));
+        }
+      });
+      _renderGuestAssignmentUI();
+      _checkCapacityMismatch();
+      toast('info', 'Override applied', 'Child-sharing configuration accepted. Verify pricing and room assignments.');
+    });
+  }
+  window.TRVE._triggerCapacityOverride = _triggerCapacityOverride;
 
   // Add a room by incrementing rooms count on the first lodge row, then setting its type
   function _addRoomOfType(roomType) {
