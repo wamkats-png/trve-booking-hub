@@ -1070,8 +1070,12 @@ def _seed_lodges(conn):
         ("lodge-mfc-paraa-1", "Paraa Safari Lodge", "Standard Double", "Uganda", "Murchison Falls NP — Paraa", 450, 355, "Full Board", "2025-01-01", "2025-12-31", ""),
         ("lodge-mfc-paraa-2", "Paraa Safari Lodge", "Standard Single", "Uganda", "Murchison Falls NP — Paraa", 540, 420, "Full Board", "2025-01-01", "2025-12-31", ""),
         ("lodge-mfc-pakuba-1", "Pakuba Safari Lodge", "Banda (Double)", "Uganda", "Murchison Falls NP — Pakuba", 320, 250, "Half Board", "2025-01-01", "2025-12-31", "Mid-range"),
+        ("lodge-mfc-pakuba-2", "Pakuba Safari Lodge", "Banda (Single)", "Uganda", "Murchison Falls NP — Pakuba", 250, 195, "Half Board", "2025-01-01", "2025-12-31", "Single supplement"),
+        ("lodge-mfc-pakuba-3", "Pakuba Safari Lodge", "Family Banda", "Uganda", "Murchison Falls NP — Pakuba", 480, 375, "Half Board", "2025-01-01", "2025-12-31", "Up to 4 guests"),
         ("lodge-mfc-chobe-1", "Chobe Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP — Chobe", 380, 300, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-chobe-3", "Chobe Safari Lodge", "Tent (Single)", "Uganda", "Murchison Falls NP — Chobe", 460, 360, "Full Board", "2025-01-01", "2025-12-31", "Single supplement"),
         ("lodge-mfc-nile-1", "Nile Safari Lodge", "Tent (Double)", "Uganda", "Murchison Falls NP", 520, 405, "Full Board", "2025-01-01", "2025-12-31", ""),
+        ("lodge-mfc-nile-2", "Nile Safari Lodge", "Tent (Single)", "Uganda", "Murchison Falls NP", 625, 485, "Full Board", "2025-01-01", "2025-12-31", "Single supplement"),
         # ── LAKE MBURO NATIONAL PARK ────────────────────────────────
         ("lodge-mburo-mihingo-1", "Mihingo Lodge", "Tent (Double)", "Uganda", "Lake Mburo NP", 620, 485, "Full Board", "2025-01-01", "2025-12-31", "Premium, hillside"),
         ("lodge-mburo-mihingo-2", "Mihingo Lodge", "Tent (Single)", "Uganda", "Lake Mburo NP", 745, 580, "Full Board", "2025-01-01", "2025-12-31", ""),
@@ -1182,6 +1186,9 @@ def _seed_lodges(conn):
                 rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to, notes)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """, l)
+    # Set correct max_occupancy for family/triple room types that hold more than 2 guests
+    conn.execute("UPDATE lodges SET max_occupancy=4 WHERE id='lodge-mfc-pakuba-3'")
+    conn.execute("UPDATE lodges SET max_occupancy=4 WHERE room_type LIKE '%Family%' AND max_occupancy=2")
 
 
 def seed_lodges(conn):
