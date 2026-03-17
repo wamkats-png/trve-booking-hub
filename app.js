@@ -1408,24 +1408,39 @@
       </div>` : ''}
 
       <!-- Working Itinerary -->
-      <div class="detail-field mb-4">
-        <div class="detail-field-label" style="display:flex;align-items:center;justify-content:space-between">
+      <div class="detail-field mb-4" id="workingItinSection">
+        <div class="detail-field-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
           <span>Working Itinerary</span>
-          <button type="button" class="btn btn-ghost btn-sm" id="btnEditWorkingItin"
-            style="font-size:10px;padding:2px 8px;margin-left:8px"
-            onclick="document.getElementById('workingItinEditor').style.display='';document.getElementById('workingItinDisplay').style.display='none';this.style.display='none'">
-            Edit
-          </button>
+          <div style="display:flex;gap:4px;align-items:center">
+            <button type="button" class="btn btn-ghost btn-sm" id="btnEditWorkingItin" style="font-size:10px;padding:2px 8px">Edit</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btnWIHistory" style="font-size:10px;padding:2px 8px" title="Version history">
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="vertical-align:-1px">
+                <circle cx="5.5" cy="5.5" r="4" stroke="currentColor" stroke-width="1.2"/>
+                <path d="M5.5 3.2v2.4l1.4 1.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              </svg> History
+            </button>
+            <button type="button" class="btn btn-gold btn-sm" id="btnWICreateInvoice" style="font-size:10px;padding:2px 8px" title="Create invoice from this booking">
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="vertical-align:-1px">
+                <path d="M1 9h9M1 1h9v8H1V1z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+                <path d="M3.5 4h4M3.5 6.5h2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              </svg> Create Invoice
+            </button>
+          </div>
         </div>
-        <div id="workingItinDisplay" style="white-space:pre-wrap;font-size:var(--text-sm);color:var(--text-secondary);margin-top:4px;min-height:20px">
-          ${enquiry.working_itinerary ? escapeHtml(enquiry.working_itinerary) : '<span style="color:var(--text-muted);font-style:italic">No working itinerary saved. Click Edit to add day-by-day plan.</span>'}
+        <div id="workingItinDisplay" style="white-space:pre-wrap;font-size:var(--text-sm);color:var(--text-secondary);margin-top:4px;min-height:24px;line-height:1.6">
+          ${enquiry.working_itinerary
+            ? escapeHtml(enquiry.working_itinerary)
+            : '<span style="color:var(--text-muted);font-style:italic">No working itinerary saved yet. Click Edit to add a day-by-day plan.</span>'}
         </div>
-        <div id="workingItinEditor" style="display:none;margin-top:6px">
-          <textarea id="workingItinText" class="form-control" rows="8" placeholder="Day 1: Arrive Entebbe…&#10;Day 2: Transfer to Bwindi…"
-            style="font-size:var(--text-sm);width:100%;resize:vertical">${escapeHtml(enquiry.working_itinerary || '')}</textarea>
-          <div style="display:flex;gap:8px;margin-top:6px">
+        <div id="workingItinEditor" style="display:none;margin-top:8px">
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">Edit the day-by-day plan below. Auto-saves on Save.</div>
+          <textarea id="workingItinText" class="form-control" rows="10"
+            placeholder="Day 1: Arrive Entebbe. Airport pickup, evening briefing.&#10;Day 2: Transfer to Bwindi. Check in, afternoon nature walk.&#10;Day 3: Gorilla tracking permit. Full day in the forest."
+            style="font-size:var(--text-sm);width:100%;resize:vertical;font-family:'Courier New',monospace">${escapeHtml(enquiry.working_itinerary || '')}</textarea>
+          <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
             <button type="button" class="btn btn-primary btn-sm" id="btnSaveWorkingItin">Save</button>
             <button type="button" class="btn btn-ghost btn-sm" id="btnCancelWorkingItin">Cancel</button>
+            <span id="workingItinSaveStatus" style="font-size:10px;color:var(--success);align-self:center"></span>
           </div>
         </div>
       </div>
@@ -1714,35 +1729,78 @@
       });
     }
 
-    // Working itinerary save/cancel
-    const btnSaveWI = document.getElementById('btnSaveWorkingItin');
+    // Working itinerary — Edit / Save / Cancel
+    const btnEditWI   = document.getElementById('btnEditWorkingItin');
+    const btnSaveWI   = document.getElementById('btnSaveWorkingItin');
     const btnCancelWI = document.getElementById('btnCancelWorkingItin');
+    const btnWIHist   = document.getElementById('btnWIHistory');
+    const btnWIInv    = document.getElementById('btnWICreateInvoice');
+
+    if (btnEditWI) {
+      btnEditWI.addEventListener('click', () => {
+        document.getElementById('workingItinEditor').style.display = '';
+        document.getElementById('workingItinDisplay').style.display = 'none';
+        btnEditWI.style.display = 'none';
+      });
+    }
+
     if (btnSaveWI) {
       btnSaveWI.addEventListener('click', async () => {
         const text = document.getElementById('workingItinText').value;
+        const statusEl = document.getElementById('workingItinSaveStatus');
         try {
-          await apiFetch(`/api/enquiries/${enquiry.id}`, {
-            method: 'PATCH',
-            body: { working_itinerary: text },
-          });
+          btnSaveWI.disabled = true;
+          btnSaveWI.textContent = 'Saving…';
+          await apiFetch(`/api/enquiries/${enquiry.id}`, { method: 'PATCH', body: { working_itinerary: text } });
           document.getElementById('workingItinDisplay').innerHTML = text
             ? escapeHtml(text).replace(/\n/g, '<br>')
-            : '<span style="color:var(--text-muted);font-style:italic">No working itinerary saved. Click Edit to add day-by-day plan.</span>';
+            : '<span style="color:var(--text-muted);font-style:italic">No working itinerary saved yet. Click Edit to add a day-by-day plan.</span>';
           document.getElementById('workingItinDisplay').style.display = '';
           document.getElementById('workingItinEditor').style.display = 'none';
-          document.getElementById('btnEditWorkingItin').style.display = '';
+          if (btnEditWI) btnEditWI.style.display = '';
           enquiry.working_itinerary = text;
-          toast('success', 'Working itinerary saved');
+          if (statusEl) { statusEl.textContent = 'Saved ' + new Date().toLocaleTimeString(); }
+          toast('success', 'Working itinerary saved', 'Version history updated.');
         } catch (err) {
           toast('error', 'Save failed', err.message);
+        } finally {
+          btnSaveWI.disabled = false;
+          btnSaveWI.textContent = 'Save';
         }
       });
     }
+
     if (btnCancelWI) {
       btnCancelWI.addEventListener('click', () => {
         document.getElementById('workingItinEditor').style.display = 'none';
         document.getElementById('workingItinDisplay').style.display = '';
-        document.getElementById('btnEditWorkingItin').style.display = '';
+        if (btnEditWI) btnEditWI.style.display = '';
+      });
+    }
+
+    // Version history button
+    if (btnWIHist) {
+      btnWIHist.addEventListener('click', () => showItineraryVersionHistory(enquiry.id));
+    }
+
+    // Create Invoice from enquiry detail panel
+    if (btnWIInv) {
+      btnWIInv.addEventListener('click', async () => {
+        try {
+          btnWIInv.disabled = true;
+          btnWIInv.textContent = 'Creating…';
+          const result = await apiFetch(`/api/enquiries/${enquiry.id}/create-invoice`, { method: 'POST', body: {} });
+          toast('success', 'Invoice created', `${result.invoice_number} · $${(result.total_usd || 0).toLocaleString()}${result.line_items_count ? ` · ${result.line_items_count} line items` : ''}`);
+          navigate('invoices');
+          closeSlideover();
+        } catch (e) {
+          toast('error', 'Invoice creation failed', e.message);
+        } finally {
+          if (btnWIInv) {
+            btnWIInv.disabled = false;
+            btnWIInv.innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="vertical-align:-1px"><path d="M1 9h9M1 1h9v8H1V1z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M3.5 4h4M3.5 6.5h2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Create Invoice`;
+          }
+        }
       });
     }
 
@@ -4325,6 +4383,173 @@
     toast('info', 'Extra cost row added', 'Fill in the description and amount');
   }
 
+  // ---------------------------------------------------------------------------
+  // Structured Itinerary Editor
+  // ---------------------------------------------------------------------------
+
+  function _itnDayBlockHTML(d, editMode) {
+    const acts = d.activities || [];
+    const actsHTML = acts.map((a) => `
+      <div class="itn-activity-item">
+        <input class="form-control itn-activity-input" value="${escapeHtml(a)}"
+          placeholder="Activity description" ${editMode ? '' : 'readonly'}>
+        ${editMode ? `<button type="button" class="btn btn-ghost btn-icon itn-remove-act"
+          style="padding:2px 4px;color:var(--text-muted)" title="Remove activity">
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg></button>` : ''}
+      </div>`).join('');
+
+    return `
+      <div class="itn-day-block" data-day="${d.day}">
+        <div class="itn-day-header">
+          <span class="itn-day-num">Day ${d.day}</span>
+          <input class="form-control itn-day-dest" value="${escapeHtml(d.destination || '')}"
+            placeholder="Destination" ${editMode ? '' : 'readonly'} style="font-weight:600;flex:1;min-width:0;max-width:240px">
+          ${editMode ? `<button type="button" class="btn btn-ghost btn-icon itn-remove-day"
+            data-day="${d.day}" title="Remove day" style="color:var(--danger);padding:2px 6px">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+              <path d="M1 1l9 9M10 1L1 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg></button>` : ''}
+        </div>
+        <div class="itn-day-body">
+          <div class="itn-day-row">
+            <label class="itn-field-label">Accommodation</label>
+            <input class="form-control itn-day-accom" value="${escapeHtml(d.accommodation || '')}"
+              placeholder="Lodge / hotel name" ${editMode ? '' : 'readonly'}>
+          </div>
+          <div class="itn-day-row">
+            <label class="itn-field-label">Transport</label>
+            <input class="form-control itn-day-transport" value="${escapeHtml(d.transport || '')}"
+              placeholder="Transfer details" ${editMode ? '' : 'readonly'}>
+          </div>
+          <div class="itn-day-row">
+            <label class="itn-field-label">Activities</label>
+            <div class="itn-activities-list" data-day="${d.day}">${actsHTML}</div>
+            ${editMode ? `<button type="button" class="btn btn-ghost btn-sm itn-add-act"
+              data-day="${d.day}" style="margin-top:4px;font-size:11px">+ Add Activity</button>` : ''}
+          </div>
+          <div class="itn-day-row" style="display:flex;gap:8px;flex-wrap:wrap">
+            <div style="min-width:160px">
+              <label class="itn-field-label">Meals</label>
+              <input class="form-control itn-day-meals" value="${escapeHtml(d.meals || '')}"
+                placeholder="Full Board / B&B" ${editMode ? '' : 'readonly'} style="max-width:180px">
+            </div>
+            <div style="flex:1;min-width:180px">
+              <label class="itn-field-label">Notes</label>
+              <input class="form-control itn-day-notes" value="${escapeHtml(d.notes || '')}"
+                placeholder="Special instructions" ${editMode ? '' : 'readonly'}>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function _itnStructuredToText(dayData) {
+    return dayData.map(d => {
+      const acts = (d.activities || []).filter(Boolean).join('; ');
+      let line = `Day ${d.day}: ${d.destination || 'TBC'}`;
+      if (acts) line += `. ${acts}`;
+      if (d.accommodation) line += `\n  Accommodation: ${d.accommodation}`;
+      if (d.transport) line += `\n  Transport: ${d.transport}`;
+      if (d.meals) line += `\n  Meals: ${d.meals}`;
+      if (d.notes) line += `\n  Notes: ${d.notes}`;
+      return line;
+    }).join('\n\n');
+  }
+
+  function _itnGetCurrentData(panel) {
+    return Array.from(panel.querySelectorAll('.itn-day-block')).map(block => ({
+      day: parseInt(block.dataset.day),
+      destination: block.querySelector('.itn-day-dest')?.value || '',
+      accommodation: block.querySelector('.itn-day-accom')?.value || '',
+      transport: block.querySelector('.itn-day-transport')?.value || '',
+      meals: block.querySelector('.itn-day-meals')?.value || '',
+      notes: block.querySelector('.itn-day-notes')?.value || '',
+      activities: Array.from(block.querySelectorAll('.itn-activity-input'))
+        .map(i => i.value.trim()).filter(Boolean),
+    }));
+  }
+
+  async function showItineraryVersionHistory(enquiryId) {
+    if (!enquiryId) return;
+    let versions = [];
+    try {
+      const data = await apiFetch(`/api/enquiries/${enquiryId}/itinerary/versions`);
+      versions = data.versions || [];
+    } catch (e) {
+      toast('error', 'Could not load history', e.message);
+      return;
+    }
+    if (!versions.length) {
+      toast('info', 'No version history', 'Save the itinerary to start tracking versions.');
+      return;
+    }
+    const rows = versions.map(v => `
+      <tr>
+        <td style="padding:8px 10px;font-weight:600">${escapeHtml(v.label || `Version ${v.version_number}`)}</td>
+        <td style="padding:8px 10px;color:var(--text-muted);font-size:11px">${(v.saved_at || '').slice(0,16).replace('T',' ')}</td>
+        <td style="padding:8px 10px;font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${escapeHtml(v.preview || '')}">${escapeHtml((v.preview || '').slice(0,80))}${(v.preview||'').length > 80 ? '…' : ''}</td>
+        <td style="padding:8px 10px">
+          <button class="btn btn-secondary btn-sm itn-restore-ver" data-vid="${escapeHtml(v.id)}">Restore</button>
+        </td>
+      </tr>`).join('');
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay active';
+    modal.innerHTML = `
+      <div class="modal" style="max-width:680px;width:95vw">
+        <div class="modal-header">
+          <h3 class="modal-title">Itinerary Version History</h3>
+          <button class="modal-close" id="closeItnHistoryModal">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:0">
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="background:var(--surface-2);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">
+                <th style="padding:8px 10px;text-align:left">Version</th>
+                <th style="padding:8px 10px;text-align:left">Saved At</th>
+                <th style="padding:8px 10px;text-align:left">Preview</th>
+                <th style="padding:8px 10px"></th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" id="closeItnHistoryModalBtn">Close</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    const close = () => { modal.remove(); };
+    modal.querySelector('#closeItnHistoryModal').addEventListener('click', close);
+    modal.querySelector('#closeItnHistoryModalBtn').addEventListener('click', close);
+    modal.addEventListener('click', e => { if (e.target === modal) close(); });
+
+    modal.querySelectorAll('.itn-restore-ver').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const vid = btn.dataset.vid;
+        try {
+          btn.disabled = true;
+          btn.textContent = 'Restoring…';
+          const res = await apiFetch(`/api/enquiries/${enquiryId}/itinerary/versions/${vid}/restore`, { method: 'POST', body: {} });
+          toast('success', 'Version restored', 'The itinerary has been restored. Refresh the enquiry panel to see changes.');
+          close();
+          // Update state if the AI panel is open
+          if (state.workingItinerary) {
+            state.workingItinerary.text = res.content;
+          }
+        } catch (e) {
+          toast('error', 'Restore failed', e.message);
+          btn.disabled = false;
+          btn.textContent = 'Restore';
+        }
+      });
+    });
+  }
+
   function generateItineraryText(itn) {
     const panel = document.getElementById('aiItineraryPanel');
     if (!panel) return;
@@ -4333,93 +4558,314 @@
     const days = itn.duration_days || 7;
     const destinations = itn.destinations || [];
     const highlights = (itn.highlights || '').split(',').map(h => h.trim()).filter(Boolean);
-
-    // Generate day-by-day plain text (editable)
-    const lines = [];
-    lines.push(`Day 1: Arrive ${destinations[0] || 'Entebbe'}. Transfer to lodge, evening briefing.`);
-    const destCycle = destinations.slice(1);
-    for (let d = 2; d <= days - 1; d++) {
-      const dest = destCycle[(d - 2) % Math.max(1, destCycle.length)] || destinations[0];
-      const highlight = highlights[(d - 2) % Math.max(1, highlights.length)] || 'Game drive and wildlife viewing';
-      lines.push(`Day ${d}: ${dest}. ${highlight}.`);
-    }
-    lines.push(`Day ${days}: Transfer to Entebbe / Kigali for departure flight.`);
-    const defaultText = lines.join('\n');
-
-    // Keep existing saved text if user already edited
-    const existingTA = panel.querySelector('.ai-itn-body');
-    const textContent = existingTA ? existingTA.value : defaultText;
-
     const itnId = itn.id || 'current';
+    const enquiryId = state.curation ? state.curation.enquiryId : null;
 
-    panel.innerHTML = `
-      <div class="ai-itn-panel">
-        <div class="ai-itn-header">
-          <div class="ai-itn-title">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
-              <path d="M5 7l2 2 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            AI Itinerary Outline — ${escapeHtml(itn.name || 'Safari Itinerary')}
-            <span id="aiItnSavedBadge" style="display:none" class="ai-itn-saved-badge">
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-              Saved as working itinerary
-            </span>
-          </div>
-          <div class="ai-itn-actions">
-            <button type="button" class="btn btn-secondary btn-sm" id="btnSaveWorkingItn" title="Save this text as the working itinerary for this booking">
-              <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 10h9M2 2h6l3 3v5H2V2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><rect x="4.5" y="6" width="4" height="4" rx=".5" stroke="currentColor" stroke-width="1.3"/></svg>
-              Save Working Itinerary
-            </button>
-            <button type="button" class="btn btn-gold btn-sm" id="btnFastCreateInvoice" title="Convert this itinerary into a quotation">
-              <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 10h9M2 1.5h9v9H2v-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M4.5 5.5h4M4.5 7.5h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-              Fast Create Invoice
-            </button>
-          </div>
-        </div>
-        <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-2)">
-          ${days}-day outline · Click in the text below to edit · Changes are saved per session
-        </div>
-        <textarea class="ai-itn-body" id="aiItnTextarea" spellcheck="true">${escapeHtml(textContent)}</textarea>
-        <div style="margin-top:var(--space-3);display:flex;flex-wrap:wrap;gap:4px;align-items:center">
-          <span style="font-size:var(--text-xs);color:var(--text-muted)">Key highlights: </span>
-          ${highlights.map(h => `<span class="ai-suggestion-chip">${escapeHtml(h)}</span>`).join('')}
-        </div>
-        <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-2)">
-          <em>AI-generated outline from TRVE library. Edit freely — saved version becomes the working itinerary for this booking.</em>
-        </div>
-      </div>
-    `;
+    // Build default structured day data from itinerary metadata
+    function buildDefaultDays() {
+      const result = [];
+      result.push({
+        day: 1, destination: destinations[0] || 'Entebbe',
+        accommodation: '', transport: 'Airport transfer',
+        activities: ['Airport pickup', 'Welcome briefing & evening orientation'],
+        meals: 'Dinner', notes: '',
+      });
+      const destCycle = destinations.slice(1);
+      for (let d = 2; d <= days - 1; d++) {
+        const dest = destCycle[(d - 2) % Math.max(1, destCycle.length)] || destinations[0];
+        const hl = highlights[(d - 2) % Math.max(1, highlights.length)] || 'Game drive and wildlife viewing';
+        result.push({ day: d, destination: dest, accommodation: '', transport: 'Road transfer', activities: [hl], meals: 'Full Board', notes: '' });
+      }
+      if (days > 1) {
+        result.push({ day: days, destination: 'Entebbe / Kigali', accommodation: '', transport: 'Transfer to airport', activities: ['Check out', 'Departure transfer'], meals: 'Breakfast', notes: '' });
+      }
+      return result;
+    }
 
-    // Save Working Itinerary
-    document.getElementById('btnSaveWorkingItn').addEventListener('click', () => {
-      const text = document.getElementById('aiItnTextarea').value.trim();
-      if (!text) { toast('warning', 'Nothing to save', 'Write the itinerary text first.'); return; }
-      state.workingItinerary = {
-        itnId,
-        enquiryId: state.curation ? state.curation.enquiryId : null,
-        itnName: itn.name || 'Safari Itinerary',
-        text,
-        savedAt: new Date().toISOString()
-      };
+    // Restore from session state if same itinerary
+    let dayData = (state.workingItinerary && state.workingItinerary.itnId === itnId && state.workingItinerary.structured)
+      ? state.workingItinerary.structured
+      : buildDefaultDays();
+
+    // Undo / Redo stacks (per editor session)
+    let undoStack = [];
+    let redoStack = [];
+    let editMode = false;
+    let autoSaveTimer = null;
+
+    function pushUndo(data) {
+      undoStack.push(JSON.stringify(data));
+      if (undoStack.length > 30) undoStack.shift();
+      redoStack = [];
+      updateUndoBtn();
+    }
+
+    function updateUndoBtn() {
+      const btn = document.getElementById('btnItnUndo');
+      if (btn) btn.disabled = undoStack.length === 0;
+    }
+
+    async function triggerAutoSave(data) {
+      if (!enquiryId) return;
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(async () => {
+        const text = _itnStructuredToText(data);
+        try {
+          await apiFetch(`/api/enquiries/${enquiryId}`, { method: 'PATCH', body: { working_itinerary: text } });
+          const badge = document.getElementById('aiItnSavedBadge');
+          if (badge) { badge.style.display = 'inline-flex'; badge.title = 'Auto-saved at ' + new Date().toLocaleTimeString(); }
+          const statusEl = document.getElementById('aiItnAutoSaveStatus');
+          if (statusEl) statusEl.textContent = 'Auto-saved ' + new Date().toLocaleTimeString();
+        } catch (_) {}
+      }, 1500);
+    }
+
+    function buildPanelHTML(data, isEdit) {
+      const actionBtns = isEdit ? `
+        <button type="button" class="btn btn-ghost btn-sm" id="btnItnUndo" title="Undo last change" disabled>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M1.5 5H7a3 3 0 0 1 0 6H4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            <path d="M1.5 5l2-2.5M1.5 5l2 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg> Undo
+        </button>
+        <button type="button" class="btn btn-primary btn-sm" id="btnItnSave">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M1 9h10M1 1h6l3 3v5H1V1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+            <rect x="4" y="5.5" width="4" height="3.5" rx=".5" stroke="currentColor" stroke-width="1.3"/>
+          </svg> Save
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btnItnCancel">Cancel</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btnItnAddDayBottom">+ Add Day</button>
+      ` : `
+        <button type="button" class="btn btn-secondary btn-sm" id="btnItnEdit">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M1.5 9V10.5H3l5-5-1.5-1.5-5 5zM9.5 3l-1-1a.6.6 0 0 0-.85 0L6.5 3.15 8 4.65 9.5 3.15a.6.6 0 0 0 0-.15z" fill="currentColor"/>
+          </svg> Edit
+        </button>
+      `;
+
+      return `
+        <div class="ai-itn-panel">
+          <div class="ai-itn-header">
+            <div class="ai-itn-title">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M5 7l2 2 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              AI Itinerary — ${escapeHtml(itn.name || 'Safari Itinerary')}
+              <span id="aiItnSavedBadge" style="display:none" class="ai-itn-saved-badge">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M2 5l2.5 2.5 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg> Saved
+              </span>
+            </div>
+            <div class="ai-itn-actions" style="flex-wrap:wrap;gap:4px">
+              ${actionBtns}
+              <button type="button" class="btn btn-gold btn-sm" id="btnFastCreateInvoice" title="Create invoice from this booking's itinerary">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M1.5 9.5h9M1.5 1h9v9h-9V1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+                  <path d="M4 4.5h4M4 7h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                </svg> Create Invoice
+              </button>
+              ${enquiryId ? `
+              <button type="button" class="btn btn-ghost btn-sm" id="btnItnHistory" title="View version history">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/>
+                  <path d="M6 3.5v2.7l1.5 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                </svg> History
+              </button>` : ''}
+            </div>
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-3);display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <span>${days}-day outline · ${enquiryId ? 'Auto-saves to booking record' : 'Approve for a booking to persist'}</span>
+            <span id="aiItnAutoSaveStatus" style="color:var(--success);font-size:10px"></span>
+            ${isEdit ? '<span style="background:var(--gold-100,#fef9ec);color:var(--gold-700,#b47d00);padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600">✎ Edit mode</span>' : ''}
+          </div>
+          <div id="aiItnDayBlocks" class="itn-day-blocks">
+            ${data.map(d => _itnDayBlockHTML(d, isEdit)).join('')}
+          </div>
+          <div style="margin-top:var(--space-3);display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+            <span style="font-size:var(--text-xs);color:var(--text-muted)">Highlights: </span>
+            ${highlights.map(h => `<span class="ai-suggestion-chip">${escapeHtml(h)}</span>`).join('')}
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--space-2)">
+            <em>Structured day-by-day plan. Changes auto-save to the booking and feed pricing, quotation &amp; invoice modules.</em>
+          </div>
+        </div>`;
+    }
+
+    function bindPanelEvents() {
+      const btnEdit   = document.getElementById('btnItnEdit');
+      const btnSave   = document.getElementById('btnItnSave');
+      const btnCancel = document.getElementById('btnItnCancel');
+      const btnUndo   = document.getElementById('btnItnUndo');
+      const btnAddDay = document.getElementById('btnItnAddDayBottom');
+      const btnHist   = document.getElementById('btnItnHistory');
+      const btnInv    = document.getElementById('btnFastCreateInvoice');
+
+      if (btnEdit) {
+        btnEdit.addEventListener('click', () => {
+          editMode = true;
+          dayData = _itnGetCurrentData(panel);
+          panel.innerHTML = buildPanelHTML(dayData, true);
+          bindPanelEvents();
+        });
+      }
+
+      if (btnSave) {
+        btnSave.addEventListener('click', async () => {
+          dayData = _itnGetCurrentData(panel);
+          const text = _itnStructuredToText(dayData);
+          state.workingItinerary = { itnId, enquiryId, itnName: itn.name, structured: dayData, text, savedAt: new Date().toISOString() };
+          editMode = false;
+          if (enquiryId) {
+            try {
+              await apiFetch(`/api/enquiries/${enquiryId}`, { method: 'PATCH', body: { working_itinerary: text } });
+              toast('success', 'Itinerary saved', 'Persisted to booking record.');
+            } catch (e) { toast('error', 'Save failed', e.message); return; }
+          } else {
+            toast('success', 'Itinerary saved (session)', 'Approve for a booking to persist permanently.');
+          }
+          panel.innerHTML = buildPanelHTML(dayData, false);
+          const badge = document.getElementById('aiItnSavedBadge');
+          if (badge) badge.style.display = 'inline-flex';
+          bindPanelEvents();
+        });
+      }
+
+      if (btnCancel) {
+        btnCancel.addEventListener('click', () => {
+          editMode = false;
+          panel.innerHTML = buildPanelHTML(dayData, false);
+          bindPanelEvents();
+        });
+      }
+
+      if (btnUndo) {
+        btnUndo.addEventListener('click', () => {
+          if (!undoStack.length) return;
+          redoStack.push(JSON.stringify(_itnGetCurrentData(panel)));
+          dayData = JSON.parse(undoStack.pop());
+          panel.innerHTML = buildPanelHTML(dayData, true);
+          bindPanelEvents();
+          updateUndoBtn();
+        });
+      }
+
+      if (btnAddDay) {
+        btnAddDay.addEventListener('click', () => {
+          const current = _itnGetCurrentData(panel);
+          pushUndo(current);
+          const nextDay = current.length > 0 ? current[current.length - 1].day + 1 : 1;
+          current.push({ day: nextDay, destination: '', accommodation: '', transport: '', activities: [''], meals: 'Full Board', notes: '' });
+          dayData = current;
+          panel.innerHTML = buildPanelHTML(dayData, true);
+          bindPanelEvents();
+          triggerAutoSave(dayData);
+        });
+      }
+
+      // Remove day
+      panel.querySelectorAll('.itn-remove-day').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const current = _itnGetCurrentData(panel);
+          pushUndo(current);
+          const dayNum = parseInt(btn.dataset.day);
+          let filtered = current.filter(d => d.day !== dayNum).map((d, i) => ({ ...d, day: i + 1 }));
+          dayData = filtered;
+          panel.innerHTML = buildPanelHTML(dayData, true);
+          bindPanelEvents();
+          triggerAutoSave(dayData);
+        });
+      });
+
+      // Add activity within a day
+      panel.querySelectorAll('.itn-add-act').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const current = _itnGetCurrentData(panel);
+          pushUndo(current);
+          const dayNum = parseInt(btn.dataset.day);
+          dayData = current.map(d => d.day === dayNum ? { ...d, activities: [...d.activities, ''] } : d);
+          panel.innerHTML = buildPanelHTML(dayData, true);
+          bindPanelEvents();
+        });
+      });
+
+      // Remove activity
+      panel.querySelectorAll('.itn-remove-act').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const current = _itnGetCurrentData(panel);
+          pushUndo(current);
+          const actItem = btn.closest('.itn-activity-item');
+          const actList = actItem?.closest('.itn-activities-list');
+          const dayNum = actList ? parseInt(actList.dataset.day) : null;
+          const actIdx = actItem ? Array.from(actList.children).indexOf(actItem) : -1;
+          if (dayNum !== null && actIdx >= 0) {
+            dayData = current.map(d => {
+              if (d.day !== dayNum) return d;
+              const acts = [...d.activities];
+              acts.splice(actIdx, 1);
+              return { ...d, activities: acts };
+            });
+            panel.innerHTML = buildPanelHTML(dayData, true);
+            bindPanelEvents();
+          }
+        });
+      });
+
+      // Auto-save on input change in edit mode
+      if (editMode) {
+        panel.querySelectorAll('.itn-day-block input').forEach(inp => {
+          inp.addEventListener('change', () => triggerAutoSave(_itnGetCurrentData(panel)));
+        });
+      }
+
+      // Version history
+      if (btnHist) {
+        btnHist.addEventListener('click', () => showItineraryVersionHistory(enquiryId));
+      }
+
+      // Create Invoice button
+      if (btnInv) {
+        btnInv.addEventListener('click', async () => {
+          if (!enquiryId) {
+            toast('warning', 'No booking linked', 'Approve an itinerary for a booking first to create an invoice.');
+            return;
+          }
+          const current = _itnGetCurrentData(panel);
+          const text = _itnStructuredToText(current);
+          state.workingItinerary = { itnId, enquiryId, itnName: itn.name, structured: current, text, savedAt: new Date().toISOString() };
+          try {
+            btnInv.disabled = true;
+            btnInv.textContent = 'Creating…';
+            // Save working itinerary first
+            await apiFetch(`/api/enquiries/${enquiryId}`, { method: 'PATCH', body: { working_itinerary: text } });
+            // Create invoice directly from booking
+            const result = await apiFetch(`/api/enquiries/${enquiryId}/create-invoice`, { method: 'POST', body: {} });
+            toast('success', 'Invoice created', `${result.invoice_number} · $${(result.total_usd || 0).toLocaleString()} — navigate to Finance to view.`);
+            navigate('invoices');
+          } catch (e) {
+            toast('error', 'Invoice creation failed', e.message);
+          } finally {
+            if (document.getElementById('btnFastCreateInvoice')) {
+              document.getElementById('btnFastCreateInvoice').disabled = false;
+              document.getElementById('btnFastCreateInvoice').innerHTML =
+                `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1.5 9.5h9M1.5 1h9v9h-9V1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M4 4.5h4M4 7h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg> Create Invoice`;
+            }
+          }
+        });
+      }
+    }
+
+    // Initial render
+    panel.innerHTML = buildPanelHTML(dayData, editMode);
+    bindPanelEvents();
+
+    // Show saved badge if this itinerary was already saved this session
+    if (state.workingItinerary && state.workingItinerary.itnId === itnId) {
       const badge = document.getElementById('aiItnSavedBadge');
       if (badge) badge.style.display = 'inline-flex';
-      toast('success', 'Working itinerary saved', `"${itn.name || 'Itinerary'}" is now the working itinerary for this booking. It will be included when generating a quotation.`);
-    });
-
-    // Fast Create Invoice
-    document.getElementById('btnFastCreateInvoice').addEventListener('click', () => {
-      const text = document.getElementById('aiItnTextarea')?.value || defaultText;
-      // Ensure working itinerary is saved
-      state.workingItinerary = state.workingItinerary || {
-        itnId, enquiryId: state.curation ? state.curation.enquiryId : null,
-        itnName: itn.name || 'Safari Itinerary', text, savedAt: new Date().toISOString()
-      };
-      // Navigate to quotations
-      navigate('quotations');
-      toast('info', 'Ready to invoice',
-        `Itinerary loaded: "${itn.name || 'Safari'}". Complete the quotation form and click Generate.`);
-    });
+    }
   }
 
   async function loadActivities() {
