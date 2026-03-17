@@ -274,11 +274,20 @@
       unit: 'day'
     },
     vehicle_entry: {
-      label: 'Vehicle Entry',
-      FNR: { usd: 40 }, FR: { usd: 30 }, ROA: { usd: 25 },
-      EAC: { ugx: 20000 }, Ugandan: { ugx: 20000 },
+      // Uganda-registered tour 4WD: UGX 30,000/day — same for all guest tiers (UWA tariff 2024-2026)
+      label: 'Vehicle Entry \u2014 4WD/Tour (Standard Parks)',
+      FNR: { ugx: 30000 }, FR: { ugx: 30000 }, ROA: { ugx: 30000 },
+      EAC: { ugx: 30000 }, Ugandan: { ugx: 30000 },
       unit: 'day',
-      per_vehicle: true  // per vehicle per day, not per person
+      per_vehicle: true
+    },
+    vehicle_entry_murchison: {
+      // UGX 30,000 standard + UGX 10,000 MFNP surcharge = UGX 40,000/day (UWA tariff 2024-2026)
+      label: 'Vehicle Entry \u2014 4WD/Tour (Murchison Falls)',
+      FNR: { ugx: 40000 }, FR: { ugx: 40000 }, ROA: { ugx: 40000 },
+      EAC: { ugx: 40000 }, Ugandan: { ugx: 40000 },
+      unit: 'day',
+      per_vehicle: true
     }
   };
 
