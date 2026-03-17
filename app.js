@@ -6701,12 +6701,16 @@
         }
       }
       if (hasOvercrowded) {
-        toast('warning', 'Room overcrowded',
-          'One or more rooms exceed max occupancy. Please upgrade room type or add rooms before calculating.');
-        btn.classList.remove('loading');
-        btn.disabled = false;
-        btn.innerHTML = originalBtnText;
-        return;
+        // Skip if the user has already confirmed a room override — override clears all room allocation rules
+        const hasRoomOverride = Object.values(state.roomOverrides || {}).some(o => o.overridden);
+        if (!hasRoomOverride) {
+          toast('warning', 'Room overcrowded',
+            'One or more rooms exceed max occupancy. Please upgrade room type or add rooms before calculating.');
+          btn.classList.remove('loading');
+          btn.disabled = false;
+          btn.innerHTML = originalBtnText;
+          return;
+        }
       }
     }
 
