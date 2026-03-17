@@ -2392,6 +2392,13 @@
         if (dateEl && approvedEnq.travel_start_date) dateEl.value = approvedEnq.travel_start_date;
         const daysEl = document.getElementById('pricingDays');
         if (daysEl && approvedEnq.duration_days) daysEl.value = approvedEnq.duration_days;
+        // Derive and populate travel_end_date so nights calculation has both bounds
+        const endDateEl = document.getElementById('pricingTravelEndDate');
+        if (endDateEl && approvedEnq.travel_start_date && approvedEnq.duration_days && !endDateEl.value) {
+          const endDate = new Date(approvedEnq.travel_start_date);
+          endDate.setDate(endDate.getDate() + approvedEnq.duration_days - 1); // inclusive
+          endDateEl.value = endDate.toISOString().slice(0, 10);
+        }
       }
 
       const tierLabel = approvedEnq.nationality_tier ? ` · Nationality: ${approvedEnq.nationality_tier}` : '';
@@ -2575,13 +2582,21 @@
       : '<option value="" disabled>⚠ No lodges — check backend connection</option>';
 
     // Auto-derive nights from trip dates (checkout − checkin) or days − 1
+    // computeTripDates: duration_days = (endDate - startDate) + 1 (inclusive); nights = duration_days - 1
     const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
     const endDateVal   = document.getElementById('pricingTravelEndDate')?.value   || '';
-    const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 7;
-    let totalNights = Math.max(1, tripDays - 1);
+    const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    let totalNights;
     if (startDateVal && endDateVal) {
+      // Primary: compute from actual date range
       const diff = Math.round((new Date(endDateVal) - new Date(startDateVal)) / 86400000);
-      if (diff > 0) totalNights = diff;
+      totalNights = Math.max(1, diff); // nights = endDate - startDate (not +1 which would be duration_days)
+    } else if (tripDays > 0) {
+      // Secondary: derive from duration field (nights = duration_days - 1)
+      totalNights = Math.max(1, tripDays - 1);
+    } else {
+      // No data yet — safe minimum; avoids the hardcoded-7 / 6-nights false default
+      totalNights = 1;
     }
 
     // For 2nd+ lodges, default to remaining unallocated nights (min 1)
@@ -4580,13 +4595,17 @@
         state.lodges.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('')
       : '<option value="">— No lodges in database —</option>';
 
-    const tripDays  = parseInt(document.getElementById('pricingDays')?.value) || 7;
+    const tripDays  = parseInt(document.getElementById('pricingDays')?.value) || 0;
     const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
     const endDateVal   = document.getElementById('pricingTravelEndDate')?.value   || '';
-    let autoNights = Math.max(1, tripDays - 1);
+    let autoNights;
     if (startDateVal && endDateVal) {
       const diff = Math.round((new Date(endDateVal) - new Date(startDateVal)) / 86400000);
-      if (diff > 0) autoNights = diff;
+      autoNights = Math.max(1, diff);
+    } else if (tripDays > 0) {
+      autoNights = Math.max(1, tripDays - 1);
+    } else {
+      autoNights = 1;
     }
 
     const el = document.createElement('div');
@@ -5585,7 +5604,8 @@
     const selectedType = presetType || (dropdownSel ? dropdownSel.value : '') || VEHICLE_TYPES[0].value;
     const vDef = VEHICLE_TYPES.find(v => v.value === selectedType) || VEHICLE_TYPES[0];
     const defaultRate = presetRate || vDef.rate;
-    const defaultDays = parseInt(dropdownDays?.value) || Math.max(1, (parseInt(document.getElementById('pricingDays')?.value) || 7) - 1);
+    const _pDays = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    const defaultDays = parseInt(dropdownDays?.value) || (_pDays > 0 ? Math.max(1, _pDays - 1) : 1);
 
     if (!selectedType) {
       toast('warning', 'No vehicle selected', 'Please select a vehicle type from the dropdown');
@@ -5663,15 +5683,29 @@
       });
       return;
     }
-    // Use actual room_type strings from DB — prevents single/double mismatch
-    // Deduplicate by room_type name (multiple seasonal entries per room_type)
-    const seen = new Set();
+    // Use actual room_type strings from DB — prevents single/double mismatch.
+    // Deduplicate by room_type name: for each distinct room_type, prefer the entry
+    // whose validity window covers today; fall back to the most recent entry.
+    // The API returns rows ordered: currently-valid first (valid_from DESC within that),
+    // so the first occurrence of each room_type is already the best rate to display.
+    const today = new Date().toISOString().slice(0, 10);
+    const bestRateMap = new Map(); // room_type → best rt entry
     lodge.room_types.forEach(rt => {
-      if (seen.has(rt.room_type)) return;
-      seen.add(rt.room_type);
+      if (!rt.room_type) return;
+      if (!bestRateMap.has(rt.room_type)) {
+        bestRateMap.set(rt.room_type, rt); // first = best (API orders valid rates first)
+      } else {
+        // Prefer currently-valid entry over any existing
+        const existing = bestRateMap.get(rt.room_type);
+        const existingCurrent = existing.valid_from <= today && existing.valid_to >= today;
+        const thisCurrent = rt.valid_from <= today && rt.valid_to >= today;
+        if (thisCurrent && !existingCurrent) bestRateMap.set(rt.room_type, rt);
+      }
+    });
+    bestRateMap.forEach((rt, roomTypeName) => {
       const opt = document.createElement('option');
-      opt.value = rt.room_type;  // EXACT DB value — no more LIKE mismatch
-      opt.textContent = `${rt.room_type} — $${rt.net_rate_usd}/night`;
+      opt.value = roomTypeName;  // EXACT DB value — no more LIKE mismatch
+      opt.textContent = `${roomTypeName} — $${rt.net_rate_usd}/night`;
       selectEl.appendChild(opt);
     });
     selectEl.selectedIndex = 0;
@@ -6366,8 +6400,8 @@
     if (daysInput) {
       daysInput.addEventListener('input', () => {
         if (daysInput.readOnly) return; // locked when both dates present
-        const d = parseInt(daysInput.value) || 7;
-        _syncLodgeNightsFromDays(d);
+        const d = parseInt(daysInput.value) || 0;
+        if (d > 0) _syncLodgeNightsFromDays(d);
         _updateAccommodationDates();
         _updateVehicleHint();
         // Show nights hint
@@ -6782,7 +6816,7 @@
         adults,
         children,
         pax: adults + children,
-        duration_days: parseInt(document.getElementById('pricingDays').value) || 7,
+        duration_days: parseInt(document.getElementById('pricingDays').value) || null,
         travel_start_date: document.getElementById('pricingTravelStartDate').value || null,
         include_insurance: document.getElementById('pricingIncludeInsurance').checked,
         commission_type: document.getElementById('pricingCommissionType').value || null,

@@ -1179,6 +1179,10 @@ def _seed_lodges(conn):
         # Ishasha Wilderness Camp 2026 (Exclusive Camps / Wild Frontiers)
         ("lodge-qenp-ishasha-3", "Ishasha Wilderness Camp", "Tent (Double)", "Uganda", "Queen Elizabeth NP — Ishasha", 740, 590, "Full Board", "2026-01-01", "2026-12-31", "Exclusive Camps 2026"),
         ("lodge-qenp-ishasha-4", "Ishasha Wilderness Camp", "Tent (Single)", "Uganda", "Queen Elizabeth NP — Ishasha", 890, 710, "Full Board", "2026-01-01", "2026-12-31", ""),
+        # Pakuba Safari Lodge 2026 rates (all three room types)
+        ("lodge-mfc-pakuba-4", "Pakuba Safari Lodge", "Banda (Double)", "Uganda", "Murchison Falls NP — Pakuba", 345, 270, "Half Board", "2026-01-01", "2026-12-31", "2026 rates"),
+        ("lodge-mfc-pakuba-5", "Pakuba Safari Lodge", "Banda (Single)", "Uganda", "Murchison Falls NP — Pakuba", 270, 210, "Half Board", "2026-01-01", "2026-12-31", "Single supplement 2026"),
+        ("lodge-mfc-pakuba-6", "Pakuba Safari Lodge", "Family Banda", "Uganda", "Murchison Falls NP — Pakuba", 520, 405, "Half Board", "2026-01-01", "2026-12-31", "Up to 4 guests 2026"),
     ]
     for l in lodges:
         conn.execute("""
@@ -1188,6 +1192,7 @@ def _seed_lodges(conn):
         """, l)
     # Set correct max_occupancy for family/triple room types that hold more than 2 guests
     conn.execute("UPDATE lodges SET max_occupancy=4 WHERE id='lodge-mfc-pakuba-3'")
+    conn.execute("UPDATE lodges SET max_occupancy=4 WHERE id='lodge-mfc-pakuba-6'")
     conn.execute("UPDATE lodges SET max_occupancy=4 WHERE room_type LIKE '%Family%' AND max_occupancy=2")
 
 
@@ -3249,8 +3254,16 @@ def list_itineraries(limit: int = Query(100, ge=1, le=500)):
 # --- Lodge Rates ---
 @app.get("/api/lodge-rates/lodges")
 def list_lodges():
+    today = datetime.now().strftime("%Y-%m-%d")
     with db_session() as conn:
-        rows = conn.execute("SELECT * FROM lodges ORDER BY lodge_name").fetchall()
+        # Order so that currently-valid rates (valid_from <= today <= valid_to) appear first
+        # for each lodge/room_type pair; within that, most recent valid_from wins.
+        rows = conn.execute(
+            "SELECT * FROM lodges ORDER BY lodge_name, "
+            "CASE WHEN valid_from <= ? AND valid_to >= ? THEN 0 ELSE 1 END, "
+            "valid_from DESC",
+            (today, today),
+        ).fetchall()
     lodge_map = {}
     for r in rows:
         l = dict(r)
