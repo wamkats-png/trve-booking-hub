@@ -5054,7 +5054,6 @@
       // Age-banded child costs — room rate + meal supplement split by age tier
       const lodgePolicy = _getLodgeChildPolicy(lodge);
       let childLinesHTML = '';
-      let childRoomTotal = 0;
       let childMealTotal = 0;
       const childGuests = (state.guestPool || []).filter(g => g.type === 'child');
       if (childGuests.length > 0) {
@@ -5065,26 +5064,25 @@
           if (!tierGroups[key]) tierGroups[key] = { tier, count: 0 };
           tierGroups[key].count++;
         });
-        // Compute average room rate across all room-type-entries for child room rate calculation
-        const avgRoomRate = priceItems.length > 0
-          ? priceItems.reduce((s, i) => s + i.rate, 0) / priceItems.length
-          : 0;
         Object.values(tierGroups).forEach(({ tier, count }) => {
-          const roomPerNight  = tier.free ? 0 : avgRoomRate * tier.multiplier;
-          const mealPerNight  = isRO ? 0 : adultMealCost * tier.multiplier;
-          const roomSub       = nights * count * roomPerNight;
-          const mealSub       = nights * count * mealPerNight;
-          childRoomTotal     += roomSub;
-          childMealTotal     += mealSub;
-          const total         = roomSub + mealSub;
-          const confirmMark   = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
+          // Room is already covered by the adult room rate lines above — children
+          // sharing a room do not pay room cost again. They pay only a meal
+          // supplement at their tier rate, and only when the rate does not already
+          // include the selected meal plan (adultMealCost > 0 after Fix 1).
+          const mealPerNight = tier.free ? 0 : adultMealCost * tier.multiplier;
+          const mealSub      = nights * count * mealPerNight;
+          childMealTotal    += mealSub;
+          const total        = mealSub;
+          const confirmMark  = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
           const pricingDetail = tier.free
             ? 'FREE (cot only)'
-            : `${fmtMoney(roomPerNight + mealPerNight)}/night`;
+            : mealPerNight > 0
+              ? `$${mealPerNight.toFixed(2)}/night meal supplement`
+              : 'Included — sharing with adult';
           childLinesHTML += `
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding-left:12px">
               <span>Children ×${count} — ${tier.label}${confirmMark} (${pricingDetail})</span>
-              <span style="font-family:var(--font-mono)">${tier.free ? 'FREE' : fmtMoney(total)}</span>
+              <span style="font-family:var(--font-mono)">${tier.free ? 'FREE' : total > 0 ? fmtMoney(total) : 'Included'}</span>
             </div>`;
         });
       }
@@ -5104,7 +5102,7 @@
 
       // Adult meal supplement (if not RO)
       const adultMealTotal = isRO ? 0 : nights * globalAdults * adultMealCost;
-      const rowTotal  = roomCost + adultMealTotal + childRoomTotal + childMealTotal;
+      const rowTotal  = roomCost + adultMealTotal + childMealTotal;
       guestTotal     += rowTotal;
 
       // Cot requirements across all rooms
