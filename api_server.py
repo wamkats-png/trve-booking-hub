@@ -3497,27 +3497,65 @@ def approve_itinerary(enquiry_id: str, body: ApprovalRequest):
         if not row:
             raise HTTPException(status_code=404, detail="Enquiry not found")
 
-        # If we have selected_itinerary_id but no name, look it up
-        if not itn_name and body.selected_itinerary_id:
+        enquiry_data = dict(row)
+
+        # ── Pre-approval validation ──────────────────────────────────────────
+        # 1. nationality_tier is required before approval.
+        #    UWA permit rates differ by up to 9× across tiers (FNR $800 vs EAC $83).
+        nat_tier = (enquiry_data.get("nationality_tier") or "").strip()
+        if not nat_tier:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Approval blocked: nationality_tier is required on this enquiry. "
+                    "UWA permit rates differ by up to 9× across tiers "
+                    "(FNR $800 vs EAC $83 for gorilla tracking). "
+                    "Set FNR, FR, ROA, EAC, or Ugandan on the enquiry first."
+                )
+            )
+
+        # 2. If a specific itinerary is selected, validate its nationality_tiers
+        #    compatibility (soft warning stored in flags — not a hard block).
+        tier_warning = ""
+        if body.selected_itinerary_id:
+            itn_row = conn.execute(
+                "SELECT name, nationality_tiers FROM itineraries WHERE id = ?",
+                (body.selected_itinerary_id,)
+            ).fetchone()
+            if itn_row:
+                itn_data = dict(itn_row)
+                if not itn_name:
+                    itn_name = itn_data.get("name", "")
+                try:
+                    compat_tiers = json.loads(itn_data.get("nationality_tiers") or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    compat_tiers = []
+                if compat_tiers and nat_tier not in compat_tiers:
+                    tier_warning = (
+                        f" [Tier note: {nat_tier} not in itinerary compatibility list "
+                        f"{compat_tiers}; coordinator to verify permits]"
+                    )
+        elif not itn_name and body.selected_itinerary_id:
             itn_row = conn.execute(
                 "SELECT name FROM itineraries WHERE id = ?",
                 (body.selected_itinerary_id,)
             ).fetchone()
             if itn_row:
                 itn_name = dict(itn_row)["name"]
+        # ────────────────────────────────────────────────────────────────────
 
-        actual_id = dict(row)["id"]
+        actual_id = enquiry_data["id"]
         conn.execute("""
             UPDATE enquiries SET status = 'Active_Quote', coordinator = ?,
                 internal_flags = ?, last_updated = ?, synced = 0
             WHERE id = ?
         """, (
             approver,
-            f"Itinerary approved: {itn_name}. {notes}",
+            f"Itinerary approved: {itn_name}. {notes}{tier_warning}",
             datetime.now().strftime("%d-%b-%Y"),
             actual_id,
         ))
-    return {"status": "approved", "enquiry_id": enquiry_id}
+    return {"status": "approved", "enquiry_id": enquiry_id, "nationality_tier": nat_tier}
 
 
 # ---------------------------------------------------------------------------
