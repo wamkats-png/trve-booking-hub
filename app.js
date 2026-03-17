@@ -2570,13 +2570,24 @@
     const startDateVal = document.getElementById('pricingTravelStartDate')?.value || '';
     const endDateVal   = document.getElementById('pricingTravelEndDate')?.value   || '';
     const tripDays = parseInt(document.getElementById('pricingDays')?.value) || 7;
-    let autoNights = Math.max(1, tripDays - 1);
+    let totalNights = Math.max(1, tripDays - 1);
     if (startDateVal && endDateVal) {
       const diff = Math.round((new Date(endDateVal) - new Date(startDateVal)) / 86400000);
-      if (diff > 0) autoNights = diff;
+      if (diff > 0) totalNights = diff;
     }
+
+    // For 2nd+ lodges, default to remaining unallocated nights (min 1)
+    let autoNights = totalNights;
+    if (idx > 0 && !cfg.nights) {
+      let usedNights = 0;
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
+        usedNights += parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
+      });
+      autoNights = Math.max(1, totalNights - usedNights);
+    }
+
     const initRooms   = cfg.rooms   || 1;
-    const initNights  = cfg.nights  || autoNights;
+    const initNights  = cfg.nights  ?? autoNights;
     const initMeal    = cfg.mealPlan || 'FB';
 
     // Check-in / check-out display
@@ -2596,13 +2607,13 @@
     el.innerHTML = `
       <div class="lodge-item-body">
 
-        <!-- ① Date bar — auto-synced from Basic Data -->
+        <!-- ① Date bar — auto-synced (cascading across lodge rows) -->
         <div class="lodge-date-bar" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:7px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);font-size:var(--text-xs);color:var(--text-secondary)">
           <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="1.5" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 4h9" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 1v1.5M7.5 1v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
           Check-in:&nbsp;<strong class="lodge-checkin-display">${checkInDisplay}</strong>
           &nbsp;&rarr;&nbsp;
           Check-out:&nbsp;<strong class="lodge-checkout-display">${checkOutDisplay}</strong>
-          <span style="color:var(--text-muted);margin-left:4px">(${initNights} nights)</span>
+          <span class="lodge-nights-badge" style="color:var(--text-muted);margin-left:4px">(${initNights} nights)</span>
           <label style="display:flex;align-items:center;gap:4px;margin-left:auto;cursor:pointer;font-size:var(--text-xs);color:var(--text-muted)">
             <input type="checkbox" class="lodge-custom-dates-toggle" style="width:11px;height:11px">
             Custom stay dates
@@ -2784,6 +2795,7 @@
     // Initial render
     _autoSyncRoomGuests(el);
     if (!cfg.skipRender) _renderAccommPricingSummary();
+    _updateLodgeRowDates(); // cascade dates including this new row
     _validateAndShowNightsSummary();
   }
 
@@ -2869,6 +2881,7 @@
     _syncLodgeGuestAssignments();
     _checkCapacityMismatch();
     _renderAccommPricingSummary();
+    _updateLodgeRowDates(); // re-cascade dates after removal
     _validateAndShowNightsSummary();
   }
   window.TRVE._removeLodgeItem = _removeLodgeItem;
@@ -3047,12 +3060,16 @@
     const days = parseInt(document.getElementById('pricingDays')?.value) || 0;
     const expected = days > 0 ? Math.max(1, days - 1) : null;
 
-    // Sum all lodge nights
-    let assigned = 0;
-    const rows = document.querySelectorAll('#lodgeItems .lodge-item');
-    rows.forEach(row => {
-      assigned += parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
-    });
+    // Collect per-row data
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    const rowData = rows.map((row, i) => ({
+      nights: parseInt(row.querySelector('.lodge-nights-input')?.value) || 0,
+      name:   row.querySelector('[name^="lodge_name_"]')?.value || `Lodge ${i + 1}`,
+    }));
+    const assigned = rowData.reduce((s, r) => s + r.nights, 0);
+
+    // Check for any zero-night rows (data integrity)
+    const zeroNightRows = rowData.filter(r => r.nights === 0);
 
     // Get or create the banner element
     let banner = document.getElementById('nightsSummaryBanner');
@@ -3071,41 +3088,48 @@
       return true;
     }
 
-    const match = assigned === expected;
+    const match = assigned === expected && zeroNightRows.length === 0;
     const diff  = assigned - expected;
-    const sign  = diff > 0 ? '+' : '';
 
     if (match) {
       banner.style.display = '';
+      const multiInfo = rows.length > 1
+        ? ` &nbsp;·&nbsp; ${rows.length} lodges: ${rowData.map(r => `${r.name.split(' ')[0]} = ${r.nights}n`).join(' + ')}`
+        : '';
       banner.innerHTML = `
         <div style="display:flex;align-items:center;gap:6px;padding:7px 12px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius-md);font-size:var(--text-xs)">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="var(--success)" stroke-width="1.3"/><path d="M3.5 6l2 2 3-3" stroke="var(--success)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span style="color:var(--success);font-weight:700">Nights match</span>
-          <span style="color:var(--text-secondary)">Total nights assigned: <strong>${assigned}</strong> = expected (${days} days − 1)</span>
+          <span style="color:var(--text-secondary)">Total nights assigned: <strong>${assigned}</strong> = expected (${days} days − 1)${multiInfo}</span>
         </div>`;
     } else {
       const overUnder = diff > 0 ? 'over by' : 'short by';
       const absD = Math.abs(diff);
+      let detail = '';
+      if (zeroNightRows.length > 0) {
+        detail = `Lodges with 0 nights: ${zeroNightRows.map(r => r.name.split(' ')[0]).join(', ')}. Set at least 1 night per lodge.`;
+      } else if (rows.length > 1) {
+        const remaining = expected - assigned;
+        detail = `Adjust lodge nights so they sum to ${expected}. Current: ${rowData.map(r => `${r.name.split(' ')[0]} = ${r.nights}`).join(' + ')} = ${assigned}.`
+               + (remaining > 0 ? ` Need ${remaining} more night${remaining !== 1 ? 's' : ''}.` : ` Remove ${Math.abs(remaining)} night${Math.abs(remaining) !== 1 ? 's' : ''}.`);
+      } else {
+        detail = `Set this lodge's nights to ${expected} to match the ${days}-day trip.`;
+      }
       banner.style.display = '';
       banner.innerHTML = `
         <div style="display:flex;align-items:start;gap:8px;padding:10px 12px;background:rgba(220,38,38,.05);border:1px solid rgba(220,38,38,.35);border-radius:var(--radius-md);font-size:var(--text-xs)">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style="flex-shrink:0;margin-top:1px"><circle cx="6.5" cy="6.5" r="5.5" stroke="var(--danger)" stroke-width="1.3"/><path d="M6.5 3.5v3.2" stroke="var(--danger)" stroke-width="1.5" stroke-linecap="round"/><circle cx="6.5" cy="9" r=".6" fill="var(--danger)"/></svg>
-          <div>
+          <div style="flex:1">
             <div style="font-weight:700;color:var(--danger);margin-bottom:3px">Nights mismatch — pricing and quotation blocked</div>
             <div style="color:var(--text-secondary);margin-bottom:4px">
               Total nights assigned: <strong>${assigned}</strong>
               &nbsp;·&nbsp; Expected: <strong>${expected}</strong> (${days} days − 1)
               &nbsp;·&nbsp; <strong style="color:var(--danger)">${overUnder} ${absD} night${absD !== 1 ? 's' : ''}</strong>
             </div>
-            <div style="color:var(--text-muted)">
-              ${rows.length > 1
-                ? `Adjust lodge nights so they sum to ${expected}. Current: ${Array.from(rows).map((r, i) => {
-                    const n = parseInt(r.querySelector('.lodge-nights-input')?.value) || 0;
-                    const lname = r.querySelector('[name^="lodge_name_"]')?.value || `Lodge ${i+1}`;
-                    return `${lname.split(' ')[0]} = ${n}`;
-                  }).join(' + ')} = ${assigned}.`
-                : `Set this lodge's nights to ${expected} to match the ${days}-day trip.`}
-            </div>
+            <div style="color:var(--text-muted);margin-bottom:${rows.length > 1 ? 6 : 0}px">${detail}</div>
+            ${rows.length > 1 ? `
+            <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._autoDistributeNights()">Auto-Distribute Nights</button>` : ''}
           </div>
         </div>`;
     }
@@ -3157,33 +3181,197 @@
       }
     }
 
-    // Update check-in / check-out display on each lodge row
-    document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
-      _updateLodgeRowDates(row);
-    });
+    // Update check-in / check-out display on ALL lodge rows (cascading)
+    _updateLodgeRowDates();
 
     // Re-validate nights totals whenever dates/duration change
     _validateAndShowNightsSummary();
   }
 
-  function _updateLodgeRowDates(row) {
+  // Update check-in/check-out display for ALL lodge rows in sequence (cascade).
+  // Row 1: check-in = trip start; Row N: check-in = Row (N-1) check-out.
+  // Rows with "Custom stay dates" checked keep their own date inputs and are treated
+  // as anchors — subsequent non-custom rows resume cascading from that anchor's checkout.
+  // Also accepts a single row argument for backward-compat but always re-cascades all rows.
+  function _updateLodgeRowDates(_row) {
     const startVal = document.getElementById('pricingTravelStartDate')?.value;
-    const checkInEl = row.querySelector('.lodge-checkin-display');
-    const checkOutEl = row.querySelector('.lodge-checkout-display');
-    if (!checkInEl || !checkOutEl) return;
-    if (!startVal) { checkInEl.textContent = '—'; checkOutEl.textContent = '—'; return; }
-    const customToggle = row.querySelector('.lodge-custom-dates-toggle');
-    const isCustom = customToggle && customToggle.checked;
-    if (!isCustom) {
-      const nights = parseInt(row.querySelector('.lodge-nights-input')?.value) || 1;
-      const checkIn = new Date(startVal);
-      const checkOut = new Date(checkIn);
-      checkOut.setDate(checkOut.getDate() + nights);
-      const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-      checkInEl.textContent = fmt(checkIn);
-      checkOutEl.textContent = fmt(checkOut);
-    }
+    const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    if (rows.length === 0) return;
+
+    // Running cursor: starts at trip start date
+    let cursor = startVal ? new Date(startVal) : null;
+
+    rows.forEach((row, i) => {
+      const checkInEl  = row.querySelector('.lodge-checkin-display');
+      const checkOutEl = row.querySelector('.lodge-checkout-display');
+      const badgeEl    = row.querySelector('.lodge-nights-badge');
+      const customToggle = row.querySelector('.lodge-custom-dates-toggle');
+      const isCustom   = customToggle?.checked;
+      const nights     = parseInt(row.querySelector('.lodge-nights-input')?.value) || 1;
+
+      if (isCustom) {
+        // Custom row: read from explicit date inputs; update cursor to this checkout
+        const ciInput = row.querySelector('.lodge-custom-checkin');
+        const coInput = row.querySelector('.lodge-custom-checkout');
+        const ciVal   = ciInput?.value;
+        const coVal   = coInput?.value;
+        // Auto-fill checkout from custom check-in + nights if checkout not set
+        if (ciVal && !coVal && coInput) {
+          const co = new Date(ciVal);
+          co.setDate(co.getDate() + nights);
+          coInput.value = co.toISOString().slice(0, 10);
+        }
+        if (ciVal) cursor = coVal ? new Date(coVal) : null;
+        if (badgeEl) badgeEl.textContent = `(${nights} nights)`;
+      } else {
+        // Auto row: derive from cursor
+        if (!cursor) {
+          if (checkInEl)  checkInEl.textContent  = '—';
+          if (checkOutEl) checkOutEl.textContent = '—';
+          if (badgeEl)    badgeEl.textContent    = `(${nights} nights)`;
+          // Advance cursor even without a start date (accumulate nights)
+          return;
+        }
+        const checkIn  = new Date(cursor);
+        const checkOut = new Date(cursor);
+        checkOut.setDate(checkOut.getDate() + nights);
+        if (checkInEl)  checkInEl.textContent  = fmt(checkIn);
+        if (checkOutEl) checkOutEl.textContent = fmt(checkOut);
+        if (badgeEl)    badgeEl.textContent    = `(${nights} nights)`;
+        cursor = checkOut; // advance cascade cursor
+      }
+    });
+
+    // Rebuild trip timeline bar after any date update
+    _buildTripTimeline();
   }
+
+  // ---------------------------------------------------------------------------
+  // TRIP TIMELINE — visual strip showing lodge segments across trip nights
+  // ---------------------------------------------------------------------------
+
+  // Palette for up to 8 lodges (cycles if more)
+  const _TIMELINE_COLORS = [
+    '#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#f97316','#84cc16'
+  ];
+
+  // Build (or update) the trip timeline bar above the lodge items.
+  // Shows a horizontal strip with one segment per lodge, proportional to nights.
+  function _buildTripTimeline() {
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    let tlEl = document.getElementById('tripTimelineBar');
+
+    // Hide timeline if only 1 lodge or no trip dates
+    const startVal = document.getElementById('pricingTravelStartDate')?.value;
+    if (rows.length <= 1) { if (tlEl) tlEl.style.display = 'none'; return; }
+
+    if (!tlEl) {
+      const lodgeItems = document.getElementById('lodgeItems');
+      if (!lodgeItems) return;
+      tlEl = document.createElement('div');
+      tlEl.id = 'tripTimelineBar';
+      lodgeItems.parentNode.insertBefore(tlEl, lodgeItems);
+    }
+    tlEl.style.display = '';
+
+    const days   = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    const expected = days > 0 ? Math.max(1, days - 1) : null;
+
+    // Collect segment data from rows
+    const segments = rows.map((row, i) => {
+      const name    = row.querySelector('[name^="lodge_name_"]')?.value || `Lodge ${i + 1}`;
+      const nights  = parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
+      const ciText  = row.querySelector('.lodge-checkin-display')?.textContent  || '';
+      const coText  = row.querySelector('.lodge-checkout-display')?.textContent || '';
+      return { name, nights, ciText, coText, color: _TIMELINE_COLORS[i % _TIMELINE_COLORS.length] };
+    });
+
+    const totalNightsAssigned = segments.reduce((s, seg) => s + seg.nights, 0);
+    const baseTotal = expected || totalNightsAssigned || 1;
+
+    const segmentsHTML = segments.map((seg, i) => {
+      const pct = totalNightsAssigned > 0 ? (seg.nights / baseTotal * 100).toFixed(1) : (100 / segments.length).toFixed(1);
+      const shortName = seg.name.split(' ').slice(0, 2).join(' ');
+      const tooltip   = `${seg.name}: ${seg.ciText} → ${seg.coText} (${seg.nights} night${seg.nights !== 1 ? 's' : ''})`;
+      return `<div title="${escapeHtml(tooltip)}"
+        style="flex:${pct};min-width:0;background:${seg.color};border-radius:${i===0?'var(--radius-md) 0 0 var(--radius-md)':''}${i===segments.length-1?' var(--radius-md) var(--radius-md) 0 0':''};
+               display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:default;position:relative">
+        <span style="font-size:9px;color:#fff;font-weight:700;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;padding:0 4px;text-shadow:0 1px 2px rgba(0,0,0,.4)">${escapeHtml(shortName)} · ${seg.nights}n</span>
+      </div>`;
+    }).join('');
+
+    const dayLabels = (() => {
+      if (!startVal || !expected) return '';
+      let html = '<div style="display:flex;gap:0;margin-bottom:2px">';
+      let cursor = new Date(startVal);
+      const fmt  = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      let nightIdx = 0;
+      segments.forEach(seg => {
+        const pct = (seg.nights / baseTotal * 100).toFixed(1);
+        html += `<div style="flex:${pct};min-width:0;font-size:9px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${fmt(cursor)}">
+          ${fmt(cursor)}
+        </div>`;
+        cursor.setDate(cursor.getDate() + seg.nights);
+      });
+      html += `<div style="font-size:9px;color:var(--text-muted);white-space:nowrap;padding-left:2px">${fmt(cursor)}</div>`;
+      html += '</div>';
+      return html;
+    })();
+
+    const mismatch = expected !== null && totalNightsAssigned !== expected;
+    const borderCol = mismatch ? 'var(--danger)' : 'var(--border)';
+
+    tlEl.innerHTML = `
+      <div style="margin-bottom:10px;padding:10px 12px;background:var(--bg-subtle);border:1px solid ${borderCol};border-radius:var(--radius-md)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">
+            Trip Timeline — ${rows.length} lodge${rows.length !== 1 ? 's' : ''}
+            ${expected ? ` · ${totalNightsAssigned}/${expected} nights allocated` : ''}
+          </span>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="btn btn-xs" title="Distribute remaining nights evenly across all lodges"
+              style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
+              onclick="window.TRVE._autoDistributeNights()">
+              Auto-Distribute
+            </button>
+          </div>
+        </div>
+        ${dayLabels}
+        <div style="display:flex;height:28px;border-radius:var(--radius-md);overflow:hidden;border:1px solid rgba(0,0,0,.08)">
+          ${segmentsHTML}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+          ${segments.map((seg, i) => `
+            <span style="display:flex;align-items:center;gap:3px;font-size:10px;color:var(--text-secondary)">
+              <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${seg.color}"></span>
+              ${escapeHtml(seg.name.split(' ').slice(0,3).join(' '))} (${seg.nights}n)
+            </span>`).join('')}
+        </div>
+      </div>`;
+  }
+  window.TRVE._buildTripTimeline = _buildTripTimeline;
+
+  // Distribute total trip nights evenly across all lodge rows.
+  // Remainders are front-loaded (first lodge gets +1 if not divisible evenly).
+  function _autoDistributeNights() {
+    const rows = Array.from(document.querySelectorAll('#lodgeItems .lodge-item'));
+    if (rows.length === 0) return;
+    const days    = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    const total   = days > 0 ? Math.max(1, days - 1) : null;
+    if (!total) { toast('warn', 'Set trip duration', 'Enter the number of trip days before auto-distributing nights.'); return; }
+    _accomPushHistory();
+    const base  = Math.floor(total / rows.length);
+    const extra = total % rows.length;
+    rows.forEach((row, i) => {
+      const inp = row.querySelector('.lodge-nights-input');
+      if (inp) inp.value = base + (i < extra ? 1 : 0);
+    });
+    _updateLodgeRowDates();
+    _validateAndShowNightsSummary();
+    _renderAccommPricingSummary();
+  }
+  window.TRVE._autoDistributeNights = _autoDistributeNights;
 
   // ---------------------------------------------------------------------------
   // GUEST ID SYSTEM
@@ -3526,11 +3714,14 @@
   function _accomSnapshot() {
     return {
       rows: Array.from(document.querySelectorAll('#lodgeItems .lodge-item')).map(row => ({
-        lodgeName: row.querySelector('[name^="lodge_name_"]')?.value || '',
-        roomType:  row.querySelector('[name^="room_type_"]')?.value  || '',
-        rooms:     parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1,
-        nights:    parseInt(row.querySelector('[name^="nights_"]')?.value) || 1,
-        mealPlan:  row.querySelector('[name^="meal_plan_"]')?.value  || 'BB',
+        lodgeName:    row.querySelector('[name^="lodge_name_"]')?.value || '',
+        roomType:     row.querySelector('[name^="room_type_"]')?.value  || '',
+        rooms:        parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1,
+        nights:       parseInt(row.querySelector('[name^="nights_"]')?.value) || 1,
+        mealPlan:     row.querySelector('[name^="meal_plan_"]')?.value  || 'BB',
+        customDates:  row.querySelector('.lodge-custom-dates-toggle')?.checked || false,
+        customCheckin:  row.querySelector('.lodge-custom-checkin')?.value  || '',
+        customCheckout: row.querySelector('.lodge-custom-checkout')?.value || '',
       })),
       assignments: { ...state.roomAssignments },
       roomExtras:  JSON.parse(JSON.stringify(state.roomExtras || {})),
@@ -3571,9 +3762,24 @@
     rows.forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true, skipRender: true }));
     state.roomAssignments = { ...assignments };
     state.roomExtras      = JSON.parse(JSON.stringify(snap.roomExtras || {}));
+    // Restore custom date fields for each row if snapshot captured them
+    Array.from(container.querySelectorAll('.lodge-item')).forEach((row, i) => {
+      const cfg = rows[i];
+      if (!cfg) return;
+      if (cfg.customDates) {
+        const toggle = row.querySelector('.lodge-custom-dates-toggle');
+        if (toggle) { toggle.checked = true; toggle.dispatchEvent(new Event('change')); }
+        const ci = row.querySelector('.lodge-custom-checkin');
+        const co = row.querySelector('.lodge-custom-checkout');
+        if (ci && cfg.customCheckin)  ci.value  = cfg.customCheckin;
+        if (co && cfg.customCheckout) co.value  = cfg.customCheckout;
+      }
+    });
+    _updateLodgeRowDates();       // re-cascade dates
     _renderGuestAssignmentUI();   // renders pool panel + all room cards
     _renderAccommPricingSummary();
     _checkCapacityMismatch();
+    _validateAndShowNightsSummary();
   }
 
   function _updateUndoRedoButtons() {
