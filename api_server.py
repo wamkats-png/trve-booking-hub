@@ -185,11 +185,60 @@ CREATE TABLE IF NOT EXISTS market_data_cache (
     is_overridden INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS invoices (
+    id TEXT PRIMARY KEY,
+    invoice_number TEXT UNIQUE NOT NULL,
+    booking_ref TEXT NOT NULL,
+    client_name TEXT DEFAULT '',
+    client_email TEXT DEFAULT '',
+    line_items TEXT DEFAULT '[]',
+    subtotal REAL DEFAULT 0,
+    tax_pct REAL DEFAULT 0,
+    tax_amount REAL DEFAULT 0,
+    total_usd REAL DEFAULT 0,
+    status TEXT DEFAULT 'draft',
+    due_date TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    booking_ref TEXT NOT NULL,
+    amount_usd REAL DEFAULT 0,
+    amount_ugx REAL DEFAULT 0,
+    payment_date TEXT DEFAULT '',
+    method TEXT DEFAULT 'bank_transfer',
+    reference TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    recorded_by TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS vouchers (
+    id TEXT PRIMARY KEY,
+    voucher_number TEXT UNIQUE NOT NULL,
+    booking_ref TEXT NOT NULL,
+    client_name TEXT DEFAULT '',
+    supplier_name TEXT NOT NULL,
+    service_type TEXT DEFAULT '',
+    service_dates TEXT DEFAULT '',
+    pax INTEGER DEFAULT 1,
+    room_type TEXT DEFAULT '',
+    meal_plan TEXT DEFAULT '',
+    special_requests TEXT DEFAULT '',
+    status TEXT DEFAULT 'draft',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_enquiries_booking_ref ON enquiries(booking_ref);
 CREATE INDEX IF NOT EXISTS idx_enquiries_status ON enquiries(status);
 CREATE INDEX IF NOT EXISTS idx_lodges_name ON lodges(lodge_name);
 CREATE INDEX IF NOT EXISTS idx_lodges_country ON lodges(country);
 CREATE INDEX IF NOT EXISTS idx_quotations_booking_ref ON quotations(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_invoices_booking_ref ON invoices(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_payments_booking_ref ON payments(booking_ref);
+CREATE INDEX IF NOT EXISTS idx_vouchers_booking_ref ON vouchers(booking_ref);
 """
 
 # ---------------------------------------------------------------------------
@@ -1868,6 +1917,277 @@ def generate_quotation_pdf(quotation: dict) -> bytes:
     return pdf.output()
 
 
+def generate_invoice_pdf(invoice: dict) -> bytes:
+    """Generate a branded TRVE tax invoice PDF."""
+
+    class TRVEInvoicePDF(_MiniPDF):
+        def cell(self, w, h=0, text='', *args, **kwargs):
+            return super().cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
+        def multi_cell(self, w, h, text='', *args, **kwargs):
+            return super().multi_cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
+        def header(self):
+            self.set_fill_color(13, 94, 79)
+            self.rect(0, 0, 210, 28, 'F')
+            self.set_font('Helvetica', 'B', 18)
+            self.set_text_color(255, 255, 255)
+            self.set_y(6)
+            self.cell(0, 10, 'THE RIFT VALLEY EXPLORER', align='C')
+            self.set_font('Helvetica', '', 9)
+            self.set_y(16)
+            self.cell(0, 6, 'Destination Management Company  |  Uganda & East Africa', align='C')
+            self.ln(18)
+        def footer(self):
+            self.set_y(-20)
+            self.set_font('Helvetica', '', 7)
+            self.set_text_color(130, 130, 130)
+            self.cell(0, 4, 'The Rift Valley Explorer Ltd  |  Entebbe, Uganda  |  info@theriftvalleyexplorer.com', align='C')
+            self.ln(4)
+            self.cell(0, 4, f'Page {self.page_no()}/{{nb}}', align='C')
+
+    pdf = TRVEInvoicePDF()
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=True, margin=25)
+    pdf.add_page()
+    pdf.set_text_color(40, 40, 40)
+
+    inv_number = invoice.get("invoice_number", "—")
+    client = invoice.get("client_name", "—")
+    email = invoice.get("client_email", "")
+    ref = invoice.get("booking_ref", "")
+    created = invoice.get("created_at", "")[:10]
+    due_date = invoice.get("due_date", "")
+    notes = invoice.get("notes", "")
+    line_items = invoice.get("line_items", [])
+    if isinstance(line_items, str):
+        try:
+            line_items = json.loads(line_items)
+        except Exception:
+            line_items = []
+    subtotal = invoice.get("subtotal", 0) or 0
+    tax_pct = invoice.get("tax_pct", 0) or 0
+    tax_amount = invoice.get("tax_amount", 0) or 0
+    total_usd = invoice.get("total_usd", 0) or 0
+
+    # Title
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.set_text_color(13, 94, 79)
+    pdf.cell(0, 10, 'TAX INVOICE', ln=True)
+    pdf.set_draw_color(200, 150, 62)
+    pdf.set_line_width(0.6)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(4)
+
+    # Invoice number box
+    pdf.set_fill_color(13, 94, 79)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(190, 9, f'  Invoice No: {inv_number}', fill=True, ln=True)
+    pdf.ln(3)
+
+    # Two-column header: Bill To / Invoice Details
+    pdf.set_text_color(40, 40, 40)
+    col_w = 95
+    y_before = pdf.get_y()
+
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_text_color(13, 94, 79)
+    pdf.cell(col_w, 6, 'BILL TO', ln=False)
+    pdf.cell(col_w, 6, 'INVOICE DETAILS', ln=True)
+
+    pdf.set_font('Helvetica', '', 9)
+    pdf.set_text_color(40, 40, 40)
+    pdf.cell(col_w, 5.5, client, ln=False)
+    pdf.cell(col_w, 5.5, f'Invoice Date: {created}', ln=True)
+    if email:
+        pdf.cell(col_w, 5.5, email, ln=False)
+    else:
+        pdf.cell(col_w, 5.5, '', ln=False)
+    pdf.cell(col_w, 5.5, f'Due Date: {due_date or "On receipt"}', ln=True)
+    pdf.cell(col_w, 5.5, f'Ref: {ref}', ln=False)
+    pdf.cell(col_w, 5.5, f'Status: {invoice.get("status", "draft").upper()}', ln=True)
+    pdf.ln(5)
+
+    # Line items table
+    pdf.set_fill_color(13, 94, 79)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 9)
+    col_desc = 145
+    col_amt = 45
+    pdf.cell(col_desc, 7, 'Description', fill=True, border=0)
+    pdf.cell(col_amt, 7, 'Amount (USD)', fill=True, border=0, align='R', ln=True)
+
+    pdf.set_text_color(40, 40, 40)
+    pdf.set_font('Helvetica', '', 9)
+    row_fill = False
+    for item in line_items:
+        pdf.set_fill_color(245, 250, 248) if row_fill else pdf.set_fill_color(255, 255, 255)
+        desc = item.get("item", item.get("description", ""))
+        amt = item.get("total_usd", item.get("amount", 0)) or 0
+        pdf.cell(col_desc, 6.5, f'  {desc}', fill=True)
+        pdf.cell(col_amt, 6.5, f'${amt:,.2f}', fill=True, align='R', ln=True)
+        row_fill = not row_fill
+
+    pdf.ln(2)
+    pdf.set_draw_color(200, 150, 62)
+    pdf.set_line_width(0.4)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    # Totals
+    def total_row(label, value, bold=False, color=(40, 40, 40)):
+        pdf.set_font('Helvetica', 'B' if bold else '', 9 if not bold else 11)
+        pdf.set_text_color(*color)
+        pdf.cell(145, 7, label, align='R')
+        pdf.cell(45, 7, f'${value:,.2f}', align='R', ln=True)
+
+    total_row('Subtotal', subtotal)
+    if tax_pct and tax_amount:
+        total_row(f'Tax ({tax_pct:.1f}%)', tax_amount)
+
+    pdf.set_draw_color(13, 94, 79)
+    pdf.set_line_width(0.6)
+    pdf.line(100, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(2)
+    total_row('TOTAL DUE (USD)', total_usd, bold=True, color=(13, 94, 79))
+
+    # Notes
+    if notes:
+        pdf.ln(6)
+        pdf.set_font('Helvetica', 'B', 9)
+        pdf.set_text_color(13, 94, 79)
+        pdf.cell(0, 6, 'Notes', ln=True)
+        pdf.set_font('Helvetica', '', 8)
+        pdf.set_text_color(80, 80, 80)
+        pdf.multi_cell(0, 5, notes)
+
+    # Payment details
+    pdf.ln(8)
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.set_text_color(13, 94, 79)
+    pdf.cell(0, 7, 'Payment Details', ln=True)
+    pdf.set_draw_color(200, 150, 62)
+    pdf.set_line_width(0.3)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(2)
+    pdf.set_font('Helvetica', '', 8)
+    pdf.set_text_color(40, 40, 40)
+    for line in [
+        "Bank: Stanbic Bank Uganda",
+        "Account Name: The Rift Valley Explorer Ltd",
+        "USD Account: 9030021XXXXXX",
+        "SWIFT/BIC: SBICUGKX",
+        f"Payment Reference: {inv_number} / {ref}",
+        "",
+        "Please ensure all bank charges are covered by the sender.",
+        "Payment is due by the date shown above. Late payments may affect your booking.",
+    ]:
+        if line:
+            pdf.cell(0, 5, f'  {line}', ln=True)
+        else:
+            pdf.ln(2)
+
+    return pdf.output()
+
+
+def generate_voucher_pdf(voucher: dict) -> bytes:
+    """Generate a supplier-facing booking voucher PDF."""
+
+    class TRVEVoucherPDF(_MiniPDF):
+        def cell(self, w, h=0, text='', *args, **kwargs):
+            return super().cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
+        def multi_cell(self, w, h, text='', *args, **kwargs):
+            return super().multi_cell(w, h, _sanitize_pdf_text(str(text)), *args, **kwargs)
+        def header(self):
+            self.set_fill_color(13, 94, 79)
+            self.rect(0, 0, 210, 22, 'F')
+            self.set_font('Helvetica', 'B', 14)
+            self.set_text_color(255, 255, 255)
+            self.set_y(5)
+            self.cell(0, 8, 'THE RIFT VALLEY EXPLORER', align='C')
+            self.set_font('Helvetica', '', 8)
+            self.set_y(14)
+            self.cell(0, 5, 'BOOKING VOUCHER  |  info@theriftvalleyexplorer.com', align='C')
+            self.ln(14)
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Helvetica', '', 7)
+            self.set_text_color(130, 130, 130)
+            self.cell(0, 5, 'The Rift Valley Explorer Ltd  |  Entebbe, Uganda', align='C')
+
+    pdf = TRVEVoucherPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+    pdf.set_text_color(40, 40, 40)
+
+    voucher_number = voucher.get("voucher_number", "—")
+    booking_ref = voucher.get("booking_ref", "—")
+    client_name = voucher.get("client_name", "—")
+    supplier = voucher.get("supplier_name", "—")
+    service_type = voucher.get("service_type", "—")
+    service_dates = voucher.get("service_dates", "—")
+    pax = voucher.get("pax", 1)
+    room_type = voucher.get("room_type", "")
+    meal_plan = voucher.get("meal_plan", "")
+    special_requests = voucher.get("special_requests", "")
+
+    # Voucher number highlight bar
+    pdf.set_fill_color(200, 150, 62)
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(190, 9, f'  Voucher No: {voucher_number}', fill=True, ln=True)
+    pdf.ln(4)
+
+    def field(label, value, col_w=95):
+        pdf.set_font('Helvetica', 'B', 8)
+        pdf.set_text_color(13, 94, 79)
+        pdf.cell(50, 6, label + ':', ln=False)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(40, 40, 40)
+        pdf.cell(0, 6, str(value), ln=True)
+
+    field('To (Supplier)', supplier)
+    field('From', 'The Rift Valley Explorer Ltd')
+    pdf.ln(3)
+    pdf.set_draw_color(200, 150, 62)
+    pdf.set_line_width(0.3)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+
+    field('Guest Name', client_name)
+    field('Booking Ref', booking_ref)
+    field('Service Type', service_type)
+    field('Service Dates', service_dates)
+    field('Number of Guests', str(pax))
+    if room_type:
+        field('Room / Unit Type', room_type)
+    if meal_plan:
+        field('Meal Plan', meal_plan)
+
+    if special_requests:
+        pdf.ln(3)
+        pdf.set_font('Helvetica', 'B', 8)
+        pdf.set_text_color(13, 94, 79)
+        pdf.cell(0, 6, 'Special Requests / Notes:', ln=True)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(40, 40, 40)
+        pdf.multi_cell(0, 5.5, special_requests)
+
+    pdf.ln(6)
+    pdf.set_draw_color(13, 94, 79)
+    pdf.set_line_width(0.4)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(4)
+
+    pdf.set_font('Helvetica', '', 8)
+    pdf.set_text_color(80, 80, 80)
+    pdf.multi_cell(0, 5, (
+        "This voucher is issued by The Rift Valley Explorer Ltd and confirms the above reservation. "
+        "Please ensure services are provided as described. For queries, contact info@theriftvalleyexplorer.com."
+    ))
+
+    return pdf.output()
+
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
@@ -1994,6 +2314,34 @@ class QuotationRequest(BaseModel):
 
 class SyncPushQuotation(BaseModel):
     quotation_id: str
+
+
+class InvoiceRequest(BaseModel):
+    booking_ref: str
+    client_name: str
+    client_email: Optional[str] = ""
+    line_items: Optional[List[dict]] = []
+    tax_pct: Optional[float] = 0
+    due_date: Optional[str] = ""
+    notes: Optional[str] = ""
+
+
+class PaymentRequest(BaseModel):
+    booking_ref: str
+    amount_usd: float
+    amount_ugx: Optional[float] = 0
+    payment_date: Optional[str] = ""
+    method: Optional[str] = "bank_transfer"
+    reference: Optional[str] = ""
+    notes: Optional[str] = ""
+    recorded_by: Optional[str] = ""
+
+
+class VoucherGenerateRequest(BaseModel):
+    booking_ref: str
+    client_name: str
+    travel_start_date: Optional[str] = ""
+    special_requests: Optional[str] = ""
 
 
 class BankFeeRequest(BaseModel):
@@ -3419,6 +3767,383 @@ def check_quotation_expiry_by_id(quotation_id: str):
         "days_remaining": max(0, days_remaining),
         "status": "expired" if is_expired else ("warning" if days_remaining <= 2 else "valid"),
     }
+
+
+# ---------------------------------------------------------------------------
+# --- Invoices ---
+# ---------------------------------------------------------------------------
+
+def _next_invoice_number(conn) -> str:
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"INV-{today}-"
+    row = conn.execute(
+        "SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1",
+        (prefix + "%",)
+    ).fetchone()
+    if row:
+        try:
+            seq = int(dict(row)["invoice_number"].split("-")[-1]) + 1
+        except (ValueError, IndexError):
+            seq = 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:03d}"
+
+
+@app.post("/api/invoices")
+def create_invoice(body: InvoiceRequest):
+    """Create a tax invoice, optionally auto-populating from the latest quotation for the booking."""
+    line_items = body.line_items or []
+
+    # If no line items supplied, auto-populate from the latest quotation for this booking_ref
+    if not line_items:
+        with db_session() as conn:
+            qrow = conn.execute(
+                "SELECT pricing_data FROM quotations WHERE booking_ref = ? ORDER BY created_at DESC LIMIT 1",
+                (body.booking_ref,)
+            ).fetchone()
+        if qrow:
+            try:
+                pd = json.loads(dict(qrow)["pricing_data"]) if isinstance(dict(qrow)["pricing_data"], str) else dict(qrow)["pricing_data"]
+                line_items = pd.get("line_items") or []
+                # Fallback: build from sections if flat list not available
+                if not line_items:
+                    for section, key in [("accommodation", "lines"), ("vehicles", "lines"), ("permits", "lines"), ("activities", "lines")]:
+                        for l in pd.get(section, {}).get(key, []):
+                            desc = l.get("description", l.get("name", ""))
+                            total = l.get("total", 0)
+                            if desc and total:
+                                line_items.append({"item": desc, "total_usd": total})
+                    # service fee
+                    sf = pd.get("service_fee", {})
+                    if sf.get("total", 0):
+                        line_items.append({"item": sf.get("label", "Service Fee"), "total_usd": sf["total"]})
+            except Exception:
+                pass
+
+    subtotal = sum(float(i.get("total_usd", i.get("amount", 0)) or 0) for i in line_items)
+    tax_amount = round(subtotal * (body.tax_pct or 0) / 100, 2)
+    total_usd = round(subtotal + tax_amount, 2)
+
+    inv_id = str(uuid.uuid4())
+    with db_session() as conn:
+        inv_number = _next_invoice_number(conn)
+        conn.execute("""
+            INSERT INTO invoices (id, invoice_number, booking_ref, client_name, client_email,
+                line_items, subtotal, tax_pct, tax_amount, total_usd, status, due_date, notes, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            inv_id, inv_number, body.booking_ref, body.client_name, body.client_email or "",
+            json.dumps(line_items), round(subtotal, 2), body.tax_pct or 0, tax_amount, total_usd,
+            "draft", body.due_date or "", body.notes or "", datetime.now().isoformat()
+        ))
+    return {
+        "id": inv_id,
+        "invoice_number": inv_number,
+        "booking_ref": body.booking_ref,
+        "client_name": body.client_name,
+        "total_usd": total_usd,
+        "status": "draft",
+        "created_at": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/invoices")
+def list_invoices(booking_ref: str = Query(None)):
+    with db_session() as conn:
+        if booking_ref:
+            rows = conn.execute(
+                "SELECT * FROM invoices WHERE booking_ref = ? ORDER BY created_at DESC", (booking_ref,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM invoices ORDER BY created_at DESC").fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["line_items"] = json.loads(d["line_items"]) if isinstance(d["line_items"], str) else d["line_items"]
+        except Exception:
+            d["line_items"] = []
+        items.append(d)
+    return items
+
+
+@app.get("/api/invoices/{invoice_id}/pdf")
+def get_invoice_pdf(invoice_id: str):
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM invoices WHERE id = ? OR invoice_number = ?", (invoice_id, invoice_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    inv = dict(row)
+    try:
+        inv["line_items"] = json.loads(inv["line_items"]) if isinstance(inv["line_items"], str) else inv["line_items"]
+    except Exception:
+        inv["line_items"] = []
+    pdf_bytes = generate_invoice_pdf(inv)
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="TRVE_Invoice_{inv["invoice_number"]}.pdf"'},
+    )
+
+
+@app.patch("/api/invoices/{invoice_id}")
+def update_invoice(invoice_id: str, updates: dict):
+    allowed = {"status", "due_date", "notes"}
+    patch = {k: v for k, v in updates.items() if k in allowed}
+    if not patch:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    with db_session() as conn:
+        row = conn.execute("SELECT id FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        set_clause = ", ".join(f"{k} = ?" for k in patch)
+        conn.execute(f"UPDATE invoices SET {set_clause} WHERE id = ?", (*patch.values(), invoice_id))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# --- Payments ---
+# ---------------------------------------------------------------------------
+
+@app.post("/api/payments")
+def record_payment(body: PaymentRequest):
+    """Record a payment against a booking and update enquiry revenue_usd / balance_usd."""
+    pay_id = str(uuid.uuid4())
+    pay_date = body.payment_date or datetime.now().strftime("%Y-%m-%d")
+    with db_session() as conn:
+        conn.execute("""
+            INSERT INTO payments (id, booking_ref, amount_usd, amount_ugx, payment_date,
+                method, reference, notes, recorded_by, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+            pay_id, body.booking_ref, body.amount_usd, body.amount_ugx or 0,
+            pay_date, body.method or "bank_transfer", body.reference or "",
+            body.notes or "", body.recorded_by or "", datetime.now().isoformat()
+        ))
+        # Recalculate total received and update enquiry
+        total_received = conn.execute(
+            "SELECT COALESCE(SUM(amount_usd), 0) FROM payments WHERE booking_ref = ?",
+            (body.booking_ref,)
+        ).fetchone()[0]
+        enq_row = conn.execute(
+            "SELECT quoted_usd FROM enquiries WHERE booking_ref = ?", (body.booking_ref,)
+        ).fetchone()
+        if enq_row:
+            quoted = float(enq_row[0] or 0)
+            balance = round(quoted - total_received, 2)
+            if total_received >= quoted - 0.01:
+                pay_status = "paid"
+            elif total_received > 0:
+                pay_status = "partial"
+            else:
+                pay_status = "unpaid"
+            conn.execute(
+                "UPDATE enquiries SET revenue_usd = ?, balance_usd = ?, payment_status = ?, last_updated = ? WHERE booking_ref = ?",
+                (round(total_received, 2), balance, pay_status, datetime.now().isoformat(), body.booking_ref)
+            )
+    return {
+        "id": pay_id,
+        "booking_ref": body.booking_ref,
+        "amount_usd": body.amount_usd,
+        "payment_date": pay_date,
+        "total_received_usd": round(total_received, 2),
+    }
+
+
+@app.get("/api/payments")
+def list_payments(booking_ref: str = Query(None)):
+    with db_session() as conn:
+        if booking_ref:
+            rows = conn.execute(
+                "SELECT * FROM payments WHERE booking_ref = ? ORDER BY payment_date DESC, created_at DESC",
+                (booking_ref,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM payments ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.delete("/api/payments/{payment_id}")
+def delete_payment(payment_id: str):
+    """Delete a payment record and recalculate enquiry totals."""
+    with db_session() as conn:
+        row = conn.execute("SELECT booking_ref FROM payments WHERE id = ?", (payment_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        booking_ref = dict(row)["booking_ref"]
+        conn.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
+        total_received = conn.execute(
+            "SELECT COALESCE(SUM(amount_usd), 0) FROM payments WHERE booking_ref = ?", (booking_ref,)
+        ).fetchone()[0]
+        enq_row = conn.execute(
+            "SELECT quoted_usd FROM enquiries WHERE booking_ref = ?", (booking_ref,)
+        ).fetchone()
+        if enq_row:
+            quoted = float(enq_row[0] or 0)
+            balance = round(quoted - total_received, 2)
+            pay_status = "paid" if total_received >= quoted - 0.01 else ("partial" if total_received > 0 else "unpaid")
+            conn.execute(
+                "UPDATE enquiries SET revenue_usd = ?, balance_usd = ?, payment_status = ?, last_updated = ? WHERE booking_ref = ?",
+                (round(total_received, 2), balance, pay_status, datetime.now().isoformat(), booking_ref)
+            )
+    return {"ok": True, "booking_ref": booking_ref, "total_received_usd": round(total_received, 2)}
+
+
+# ---------------------------------------------------------------------------
+# --- Vouchers ---
+# ---------------------------------------------------------------------------
+
+def _next_voucher_number(conn) -> str:
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"VCH-{today}-"
+    row = conn.execute(
+        "SELECT voucher_number FROM vouchers WHERE voucher_number LIKE ? ORDER BY voucher_number DESC LIMIT 1",
+        (prefix + "%",)
+    ).fetchone()
+    seq = 1
+    if row:
+        try:
+            seq = int(dict(row)["voucher_number"].split("-")[-1]) + 1
+        except (ValueError, IndexError):
+            seq = 1
+    return f"{prefix}{seq:03d}"
+
+
+UWA_PERMIT_SUPPLIERS = {
+    "gorilla_tracking_uganda", "gorilla_habituation_uganda",
+    "chimp_tracking", "chimp_habituation", "golden_monkey",
+    "park_entry_a_plus", "park_entry_a", "park_entry_b",
+}
+RDB_PERMIT_SUPPLIERS = {"gorilla_tracking_rwanda"}
+
+
+@app.post("/api/vouchers/generate")
+def generate_vouchers(body: VoucherGenerateRequest):
+    """Auto-generate vouchers from the latest quotation's pricing data for a booking."""
+    created_vouchers = []
+
+    with db_session() as conn:
+        # Pull latest quotation
+        qrow = conn.execute(
+            "SELECT pricing_data FROM quotations WHERE booking_ref = ? ORDER BY created_at DESC LIMIT 1",
+            (body.booking_ref,)
+        ).fetchone()
+
+        pricing = {}
+        if qrow:
+            try:
+                pricing = json.loads(dict(qrow)["pricing_data"]) if isinstance(dict(qrow)["pricing_data"], str) else dict(qrow)["pricing_data"]
+            except Exception:
+                pricing = {}
+
+        start_date = body.travel_start_date or pricing.get("summary", {}).get("travel_start_date", "")
+        pax = pricing.get("summary", {}).get("pax", 1)
+
+        # Accommodation vouchers
+        for line in pricing.get("accommodation", {}).get("lines", []):
+            desc = line.get("description", "")
+            nights = line.get("nights", 1)
+            # Extract lodge name from description (e.g. "Bwindi Lodge - Double Room")
+            lodge_name = desc.split(" - ")[0] if " - " in desc else desc.split(" (")[0]
+            room_type = ""
+            if " - " in desc:
+                room_type = desc.split(" - ", 1)[1].split("(")[0].strip()
+
+            end_date = ""
+            if start_date:
+                try:
+                    from datetime import timedelta
+                    sd = datetime.strptime(start_date[:10], "%Y-%m-%d")
+                    ed = sd + timedelta(days=nights)
+                    end_date = ed.strftime("%Y-%m-%d")
+                except Exception:
+                    end_date = ""
+
+            service_dates = f"{start_date} to {end_date}" if start_date and end_date else start_date or "TBC"
+            vch_id = str(uuid.uuid4())
+            vch_number = _next_voucher_number(conn)
+            meal_plan = line.get("meal_plan", "Full Board")
+            conn.execute("""
+                INSERT INTO vouchers (id, voucher_number, booking_ref, client_name, supplier_name,
+                    service_type, service_dates, pax, room_type, meal_plan, special_requests, status, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                vch_id, vch_number, body.booking_ref, body.client_name, lodge_name,
+                "Accommodation", service_dates, pax, room_type, meal_plan,
+                body.special_requests or "", "draft", datetime.now().isoformat()
+            ))
+            created_vouchers.append({"id": vch_id, "voucher_number": vch_number, "supplier": lodge_name, "type": "Accommodation"})
+
+        # Permit vouchers — group by authority
+        permit_lines = pricing.get("permits", {}).get("lines", [])
+        uwa_permits = [l for l in permit_lines if l.get("permit_key", "") in UWA_PERMIT_SUPPLIERS]
+        rdb_permits = [l for l in permit_lines if l.get("permit_key", "") in RDB_PERMIT_SUPPLIERS]
+
+        for authority, permits in [("Uganda Wildlife Authority (UWA)", uwa_permits), ("Rwanda Development Board (RDB)", rdb_permits)]:
+            if not permits:
+                continue
+            descriptions = "; ".join(
+                f"{l.get('description', '')} ×{l.get('qty', 1)}" for l in permits
+            )
+            vch_id = str(uuid.uuid4())
+            vch_number = _next_voucher_number(conn)
+            conn.execute("""
+                INSERT INTO vouchers (id, voucher_number, booking_ref, client_name, supplier_name,
+                    service_type, service_dates, pax, room_type, meal_plan, special_requests, status, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                vch_id, vch_number, body.booking_ref, body.client_name, authority,
+                "Permits & Park Fees", start_date or "TBC", pax, "", "",
+                descriptions, "draft", datetime.now().isoformat()
+            ))
+            created_vouchers.append({"id": vch_id, "voucher_number": vch_number, "supplier": authority, "type": "Permits"})
+
+    return {"created": len(created_vouchers), "vouchers": created_vouchers}
+
+
+@app.get("/api/vouchers")
+def list_vouchers(booking_ref: str = Query(None)):
+    with db_session() as conn:
+        if booking_ref:
+            rows = conn.execute(
+                "SELECT * FROM vouchers WHERE booking_ref = ? ORDER BY created_at ASC", (booking_ref,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM vouchers ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/vouchers/{voucher_id}/pdf")
+def get_voucher_pdf(voucher_id: str):
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM vouchers WHERE id = ? OR voucher_number = ?", (voucher_id, voucher_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+    vch = dict(row)
+    pdf_bytes = generate_voucher_pdf(vch)
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="TRVE_Voucher_{vch["voucher_number"]}.pdf"'},
+    )
+
+
+@app.patch("/api/vouchers/{voucher_id}/status")
+def update_voucher_status(voucher_id: str, updates: dict):
+    new_status = updates.get("status")
+    if new_status not in ("draft", "sent"):
+        raise HTTPException(status_code=400, detail="status must be 'draft' or 'sent'")
+    with db_session() as conn:
+        row = conn.execute("SELECT id FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Voucher not found")
+        conn.execute("UPDATE vouchers SET status = ? WHERE id = ?", (new_status, voucher_id))
+    return {"ok": True, "status": new_status}
 
 
 # --- Sync ---

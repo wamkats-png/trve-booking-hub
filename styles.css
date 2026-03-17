@@ -1605,3 +1605,53 @@ tr:hover td { background: var(--bg-subtle); }
 #pricingChildren {
   border-left-color: var(--brand-gold);
 }
+
+/* ── Payment progress bar on kanban cards ─────────────────── */
+.kanban-pay-bar {
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: var(--space-2);
+}
+.kanban-pay-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.35s ease;
+}
+
+/* ── Invoices & Vouchers view tabs ────────────────────────── */
+.inv-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: var(--space-4);
+  border-bottom: 2px solid var(--border);
+}
+.inv-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+.inv-tab:hover { color: var(--text-primary); }
+.inv-tab.active {
+  color: var(--brand-green);
+  border-bottom-color: var(--brand-green);
+}
+.inv-panel { }
+
+/* badge variants for invoices */
+.badge-quot-draft  { background: var(--bg-surface); color: var(--text-muted); border: 1px solid var(--border); }
+.badge-quot-sent   { background: #dbeafe; color: #1d4ed8; }
+.badge-quot-accepted { background: #d1fae5; color: #065f46; }
+.badge-quot-expired  { background: #fee2e2; color: #991b1b; }
