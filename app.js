@@ -5013,7 +5013,7 @@
         const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
                 || (lodgeData?.room_types || [])[0];
         const rate = rt?.net_rate_usd || 0;
-        if (rate > 0) priceItems.push({ roomType, rooms, rate });
+        if (rate > 0) priceItems.push({ roomType, rooms, rate, rateMealPlan: rt?.meal_plan || '' });
       } else {
         entries.forEach(entry => {
           const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
@@ -5021,7 +5021,7 @@
           const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
                   || (lodgeData?.room_types || [])[0];
           const rate = rt?.net_rate_usd || 0;
-          if (rate > 0) priceItems.push({ roomType, rooms, rate });
+          if (rate > 0) priceItems.push({ roomType, rooms, rate, rateMealPlan: rt?.meal_plan || '' });
         });
       }
       if (priceItems.length === 0) return;
@@ -5029,17 +5029,31 @@
       const mealLabel = MEAL_PLAN_LABELS[mealPlan] || mealPlan;
       const isRO = mealPlan === 'RO';
 
-      // Adult meal cost per person per night
-      const adultMealCost = isRO ? 0 : (
-        mealPlan === 'HB' ? 35 :
-        mealPlan === 'FB' ? 65 :
-        mealPlan === 'AI' ? 85 : 0
-      );
+      // Meal plan hierarchy: only charge a surcharge when the booking requests a more
+      // inclusive plan than what the lodge rate already includes. Safari lodge rates
+      // are typically quoted inclusive of their stated meal plan (HB, FB, etc.),
+      // so selecting the matching plan should never add an extra per-person charge.
+      const MEAL_RANK           = { RO: 0, BB: 1, HB: 2, FB: 3, AI: 4 };
+      const MEAL_SURCHARGE_RATES = { BB: 0, HB: 35, FB: 65, AI: 85 };
+      const dominantRatePlan = (() => {
+        const s = (priceItems[0]?.rateMealPlan || '').toLowerCase();
+        if (s.includes('all incl'))              return 'AI';
+        if (s === 'fb' || s.includes('full'))    return 'FB';
+        if (s === 'hb' || s.includes('half'))    return 'HB';
+        if (s === 'bb' || s.includes('bed'))     return 'BB';
+        if (s === 'ro' || s.includes('room only')) return 'RO';
+        return 'BB';
+      })();
+      const rateRank    = MEAL_RANK[dominantRatePlan] ?? 1;
+      const bookingRank = MEAL_RANK[mealPlan]         ?? 1;
+      // Surcharge = difference between plans; zero when rate already covers the plan
+      const adultMealCost = bookingRank > rateRank
+        ? (MEAL_SURCHARGE_RATES[mealPlan] || 0) - (MEAL_SURCHARGE_RATES[dominantRatePlan] || 0)
+        : 0;
 
       // Age-banded child costs — room rate + meal supplement split by age tier
       const lodgePolicy = _getLodgeChildPolicy(lodge);
       let childLinesHTML = '';
-      let childRoomTotal = 0;
       let childMealTotal = 0;
       const childGuests = (state.guestPool || []).filter(g => g.type === 'child');
       if (childGuests.length > 0) {
@@ -5050,26 +5064,25 @@
           if (!tierGroups[key]) tierGroups[key] = { tier, count: 0 };
           tierGroups[key].count++;
         });
-        // Compute average room rate across all room-type-entries for child room rate calculation
-        const avgRoomRate = priceItems.length > 0
-          ? priceItems.reduce((s, i) => s + i.rate, 0) / priceItems.length
-          : 0;
         Object.values(tierGroups).forEach(({ tier, count }) => {
-          const roomPerNight  = tier.free ? 0 : avgRoomRate * tier.multiplier;
-          const mealPerNight  = isRO ? 0 : adultMealCost * tier.multiplier;
-          const roomSub       = nights * count * roomPerNight;
-          const mealSub       = nights * count * mealPerNight;
-          childRoomTotal     += roomSub;
-          childMealTotal     += mealSub;
-          const total         = roomSub + mealSub;
-          const confirmMark   = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
+          // Room is already covered by the adult room rate lines above — children
+          // sharing a room do not pay room cost again. They pay only a meal
+          // supplement at their tier rate, and only when the rate does not already
+          // include the selected meal plan (adultMealCost > 0 after Fix 1).
+          const mealPerNight = tier.free ? 0 : adultMealCost * tier.multiplier;
+          const mealSub      = nights * count * mealPerNight;
+          childMealTotal    += mealSub;
+          const total        = mealSub;
+          const confirmMark  = tier.confirmNeeded ? ' <span style="color:var(--brand-gold,#f59e0b)">⚑ confirm</span>' : '';
           const pricingDetail = tier.free
             ? 'FREE (cot only)'
-            : `${fmtMoney(roomPerNight + mealPerNight)}/night`;
+            : mealPerNight > 0
+              ? `$${mealPerNight.toFixed(2)}/night meal supplement`
+              : 'Included — sharing with adult';
           childLinesHTML += `
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding-left:12px">
               <span>Children ×${count} — ${tier.label}${confirmMark} (${pricingDetail})</span>
-              <span style="font-family:var(--font-mono)">${tier.free ? 'FREE' : fmtMoney(total)}</span>
+              <span style="font-family:var(--font-mono)">${tier.free ? 'FREE' : total > 0 ? fmtMoney(total) : 'Included'}</span>
             </div>`;
         });
       }
@@ -5089,7 +5102,7 @@
 
       // Adult meal supplement (if not RO)
       const adultMealTotal = isRO ? 0 : nights * globalAdults * adultMealCost;
-      const rowTotal  = roomCost + adultMealTotal + childRoomTotal + childMealTotal;
+      const rowTotal  = roomCost + adultMealTotal + childMealTotal;
       guestTotal     += rowTotal;
 
       // Cot requirements across all rooms

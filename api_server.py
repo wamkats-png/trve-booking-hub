@@ -4108,9 +4108,21 @@ def calculate_price(body: PricingRequest):
     # Auto-derive trip nights — formula: nights = days − 1
     trip_nights = max(0, days - 1)
 
-    # Meal plan surcharges per person per night (USD, on top of room rate)
-    # BB = Bed & Breakfast (base), HB = Half Board, FB = Full Board
-    MEAL_SURCHARGE = {"BB": 0, "HB": 35, "FB": 65}
+    # Meal plan surcharges per person per night (USD).
+    # A surcharge only applies when the booking requests a more inclusive plan
+    # than what the lodge rate already includes. Safari rates are quoted inclusive
+    # of their stated meal plan, so matching plans carry no extra charge.
+    MEAL_SURCHARGE = {"BB": 0, "HB": 35, "FB": 65, "AI": 85}
+    MEAL_RANK_BE   = {"RO": 0, "BB": 1, "HB": 2, "FB": 3, "AI": 4}
+
+    def _meal_code(s: str) -> str:
+        s = (s or "").lower()
+        if "all incl" in s:             return "AI"
+        if s == "fb" or "full" in s:    return "FB"
+        if s == "hb" or "half" in s:    return "HB"
+        if s == "bb" or "bed" in s:     return "BB"
+        if s == "ro" or "room only" in s: return "RO"
+        return "BB"
 
     # 1. Accommodation
     accommodation_total = 0.0
@@ -4131,37 +4143,46 @@ def calculate_price(body: PricingRequest):
                 # Per-row guest breakdown (if provided by UI); fallback to global
                 acc_adults = acc.get("adults", adults)
                 acc_children = acc.get("children", children)
-                # Meal plan surcharge per person per night
-                meal_surcharge = MEAL_SURCHARGE.get(meal_plan, 0)
-                # Lookup rate from DB (same fallback chain as before)
+                # Lookup rate + meal_plan from DB (same fallback chain as before)
                 row = conn.execute(
-                    "SELECT net_rate_usd FROM lodges WHERE lodge_name = ? AND room_type = ? ORDER BY net_rate_usd ASC LIMIT 1",
+                    "SELECT net_rate_usd, meal_plan FROM lodges WHERE lodge_name = ? AND room_type = ? ORDER BY net_rate_usd ASC LIMIT 1",
                     (lodge_name, room)
                 ).fetchone()
                 if not row:
                     row = conn.execute(
-                        "SELECT net_rate_usd FROM lodges WHERE lodge_name = ? AND room_type LIKE ? ORDER BY net_rate_usd ASC LIMIT 1",
+                        "SELECT net_rate_usd, meal_plan FROM lodges WHERE lodge_name = ? AND room_type LIKE ? ORDER BY net_rate_usd ASC LIMIT 1",
                         (lodge_name, f"%{room}%")
                     ).fetchone()
                 if not row:
                     row = conn.execute(
-                        "SELECT net_rate_usd FROM lodges WHERE lodge_name = ? "
+                        "SELECT net_rate_usd, meal_plan FROM lodges WHERE lodge_name = ? "
                         "ORDER BY CASE WHEN lower(room_type) LIKE '%double%' OR lower(room_type) LIKE '%twin%' THEN 0 ELSE 1 END, net_rate_usd ASC LIMIT 1",
                         (lodge_name,)
                     ).fetchone()
                 if not row:
                     row = conn.execute(
-                        "SELECT net_rate_usd FROM lodges WHERE lodge_name LIKE ? ORDER BY net_rate_usd ASC LIMIT 1",
+                        "SELECT net_rate_usd, meal_plan FROM lodges WHERE lodge_name LIKE ? ORDER BY net_rate_usd ASC LIMIT 1",
                         (f"%{lodge_name}%",)
                     ).fetchone()
                 if row:
-                    rate = dict(row)["net_rate_usd"]
+                    row_dict       = dict(row)
+                    rate           = row_dict["net_rate_usd"]
+                    rate_plan_code = _meal_code(row_dict.get("meal_plan", ""))
                 else:
-                    rate = acc.get("rate_per_night", 0)
+                    rate           = acc.get("rate_per_night", 0)
+                    rate_plan_code = "BB"
+                # Only apply a meal surcharge when the booking requests a more inclusive
+                # plan than the rate already includes (e.g. BB rate + FB booking).
+                rate_rank    = MEAL_RANK_BE.get(rate_plan_code, 1)
+                booking_rank = MEAL_RANK_BE.get(meal_plan, 1)
+                meal_surcharge = (
+                    max(0, MEAL_SURCHARGE.get(meal_plan, 0) - MEAL_SURCHARGE.get(rate_plan_code, 0))
+                    if booking_rank > rate_rank else 0
+                )
                 name = lodge_name or "Lodge"
-                # Adults at full rate + meal surcharge; children at 50% room rate + full meal surcharge
-                adult_rate_total = acc_adults * (rate + meal_surcharge)
-                child_rate_total = acc_children * (rate * 0.5 + meal_surcharge)
+                # Adults: full rate per person; children: 50% of adult per-person rate
+                adult_rate_total = acc_adults  * (rate + meal_surcharge)
+                child_rate_total = acc_children * (rate + meal_surcharge) * 0.5
                 line_total = rooms * nights * (adult_rate_total + child_rate_total)
                 accommodation_total += line_total
                 meal_label = f" [{meal_plan}]" if meal_plan != "BB" else ""
