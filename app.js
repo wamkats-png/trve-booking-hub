@@ -2256,6 +2256,9 @@
     document.getElementById('approvalNotes').value = '';
     document.getElementById('approvedBy').value = '';
 
+    // Clear any lingering validation errors from a previous attempt
+    panel.querySelector('.approval-validation-error')?.remove();
+
     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
@@ -2274,6 +2277,77 @@
       return;
     }
 
+    const panel = document.getElementById('approvalPanel');
+
+    // ── Pre-approval validation ─────────────────────────────────────────────
+    // 1. Nationality tier must be set on the linked enquiry.
+    //    UWA permit rates differ by up to 9× across tiers (FNR / FR / ROA / EAC / Ugandan).
+    const approvedEnq = state.enquiries.find(
+      e => String(e.id) === String(state.curation.enquiryId) ||
+           e.booking_ref === String(state.curation.enquiryId)
+    );
+    if (!approvedEnq?.nationality_tier?.trim()) {
+      panel.querySelector('.approval-validation-error')?.remove();
+      const errBanner = document.createElement('div');
+      errBanner.className = 'approval-validation-error';
+      errBanner.style.cssText = 'margin-top:14px;padding:12px 14px;background:rgba(220,38,38,.05);border:1px solid rgba(220,38,38,.35);border-radius:var(--radius-md);font-size:var(--text-xs)';
+      errBanner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:6px;font-weight:700;color:var(--danger);margin-bottom:6px">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 3.5v3.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6.5" cy="9" r=".6" fill="currentColor"/></svg>
+          Approval blocked: nationality tier required
+        </div>
+        <div style="color:var(--text-secondary);margin-bottom:10px;line-height:1.5">
+          The linked enquiry has no nationality tier set. UWA permit rates differ by
+          up to 9× across tiers (FNR&nbsp;$800 vs EAC&nbsp;$83 for gorilla tracking).
+          Open the enquiry and set the nationality before approving.
+        </div>
+        <button class="btn btn-primary" style="font-size:var(--text-xs)" onclick="window.TRVE.navigate('enquiries')">
+          Go to Enquiries — Set Nationality Tier
+        </button>
+      `;
+      panel.appendChild(errBanner);
+      toast('error', 'Approval blocked', 'Set nationality tier on the enquiry first.');
+      return;
+    }
+
+    // 2. Validate selected itinerary is compatible with the enquiry's nationality tier.
+    const selectedItn = state.curation.suggestions?.find(
+      s => String(s.itinerary_id) === String(state.curation.selectedItineraryId)
+    );
+    if (selectedItn?.itinerary?.nationality_tiers?.length > 0 &&
+        !selectedItn.itinerary.nationality_tiers.includes(approvedEnq.nationality_tier)) {
+      panel.querySelector('.approval-validation-error')?.remove();
+      const warnBanner = document.createElement('div');
+      warnBanner.className = 'approval-validation-error';
+      warnBanner.style.cssText = 'margin-top:14px;padding:12px 14px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.4);border-radius:var(--radius-md);font-size:var(--text-xs)';
+      warnBanner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:6px;font-weight:700;color:var(--brand-gold-dark,#b45309);margin-bottom:6px">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1.5L12 11.5H1L6.5 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.5 5v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="6.5" cy="9.5" r=".5" fill="currentColor"/></svg>
+          Tier compatibility warning
+        </div>
+        <div style="color:var(--text-secondary);margin-bottom:10px;line-height:1.5">
+          This itinerary is not listed as compatible with <strong>${escapeHtml(approvedEnq.nationality_tier)}</strong>.
+          Compatible tiers: <strong>${escapeHtml(selectedItn.itinerary.nationality_tiers.join(', '))}</strong>.
+          You can still proceed — coordinator will need to verify permit availability.
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" style="font-size:var(--text-xs)" id="btnProceedAnyway">Proceed Anyway</button>
+          <button class="btn btn-ghost" style="font-size:var(--text-xs)" onclick="this.closest('.approval-validation-error').remove()">Cancel</button>
+        </div>
+      `;
+      panel.appendChild(warnBanner);
+      // Wire the "Proceed Anyway" button to call approveItinerary after removing the warning
+      warnBanner.querySelector('#btnProceedAnyway').addEventListener('click', () => {
+        warnBanner.remove();
+        approveItinerary();
+      });
+      return;
+    }
+
+    // All validation passed — clear any previous error banners
+    panel.querySelector('.approval-validation-error')?.remove();
+    // ───────────────────────────────────────────────────────────────────────────
+
     const btn = document.getElementById('btnApproveItinerary');
     btn.classList.add('loading');
     btn.disabled = true;
@@ -2289,12 +2363,12 @@
         }
       });
 
-      // Pre-load enquiry data into pricing form fields NOW, before user navigates
-      const approvedEnq = state.enquiries.find(e => e.id === state.curation.enquiryId);
+      // Pre-load enquiry data into pricing form fields NOW, before user navigates.
+      // This prevents the "nationality tier not set" warning when the pricing view opens.
       if (approvedEnq) {
         const natSel = document.getElementById('pricingNationality');
         if (natSel && approvedEnq.nationality_tier) natSel.value = approvedEnq.nationality_tier;
-        const adultsEl = document.getElementById('pricingAdults');
+        const adultsEl   = document.getElementById('pricingAdults');
         const childrenEl = document.getElementById('pricingChildren');
         if (approvedEnq.pax && adultsEl) {
           adultsEl.value = approvedEnq.pax;
@@ -2302,13 +2376,14 @@
         }
         const dateEl = document.getElementById('pricingTravelStartDate');
         if (dateEl && approvedEnq.travel_start_date) dateEl.value = approvedEnq.travel_start_date;
+        const daysEl = document.getElementById('pricingDays');
+        if (daysEl && approvedEnq.duration_days) daysEl.value = approvedEnq.duration_days;
       }
 
-      const tierLabel = approvedEnq && approvedEnq.nationality_tier ? ` · Nationality: ${approvedEnq.nationality_tier}` : '';
+      const tierLabel = approvedEnq.nationality_tier ? ` · Nationality: ${approvedEnq.nationality_tier}` : '';
       toast('success', 'Itinerary approved!', `${state.curation.selectedItineraryName} linked to enquiry${tierLabel}.`);
 
-      // Update approval panel to show confirmed state
-      const panel = document.getElementById('approvalPanel');
+      // Replace approval panel with clean confirmed state — no warning icons
       panel.innerHTML = `
         <div style="text-align:center;padding:var(--space-6)">
           <svg width="48" height="48" viewBox="0 0 48 48" fill="none" style="color:var(--success);margin:0 auto var(--space-4)">
@@ -2316,8 +2391,14 @@
             <path d="M15 24l6 6 12-12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           <div style="font-size:var(--text-xl);font-weight:600;color:var(--success);margin-bottom:var(--space-2)">Approved!</div>
-          <div style="font-size:var(--text-sm);color:var(--text-secondary)">${escapeHtml(state.curation.selectedItineraryName)} has been approved by ${escapeHtml(approvedBy)}.</div>
-          <button class="btn btn-gold" style="margin-top:var(--space-4)" onclick="window.TRVE.navigate('pricing')">
+          <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:4px">
+            ${escapeHtml(state.curation.selectedItineraryName)} approved by ${escapeHtml(approvedBy)}.
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-4)">
+            Nationality: <strong>${escapeHtml(approvedEnq.nationality_tier)}</strong>
+            &nbsp;·&nbsp; Pricing form pre-loaded ✓
+          </div>
+          <button class="btn btn-gold" onclick="window.TRVE.navigate('pricing')">
             Proceed to Pricing Calculator
           </button>
         </div>
@@ -2533,41 +2614,16 @@
           </select>
         </div>
 
-        <!-- ③ Room type -->
-        <div style="margin-bottom:8px">
-          <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Room Type</label>
-          <select class="form-control" name="room_type_${idx}" style="font-size:var(--text-xs)">
-            <option value="">— select lodge first —</option>
-          </select>
-          <div id="lodge_rate_freshness_${idx}" style="display:none;font-size:var(--text-xs);margin-top:4px"></div>
-        </div>
-
-        <!-- ④ Room configuration: Rooms · Nights · Meal Plan -->
-        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:10px;align-items:end;margin-bottom:10px">
+        <!-- ③ Nights at this lodge + Meal Plan (shared across all room types) -->
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:end;margin-bottom:10px">
           <div>
-            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Rooms</label>
-            <div style="display:flex;align-items:center;gap:4px">
-              <button type="button" class="btn btn-xs lodge-dec-room"
-                style="width:24px;height:30px;padding:0;font-size:14px;line-height:1;background:var(--bg-surface);border:1px solid var(--border)"
-                onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'), -1)"
-                title="Remove one room">−</button>
-              <input type="number" name="rooms_${idx}" class="form-control" min="1" value="${initRooms}"
-                style="width:44px;height:30px;font-size:var(--text-sm);font-weight:600;text-align:center"
-                title="Number of identical rooms">
-              <button type="button" class="btn btn-xs lodge-inc-room"
-                style="width:24px;height:30px;padding:0;font-size:14px;line-height:1;background:var(--bg-surface);border:1px solid var(--border)"
-                onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'), +1)"
-                title="Add one room">+</button>
-            </div>
-          </div>
-          <div>
-            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Nights</label>
+            <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Nights at this lodge</label>
             <div class="lodge-nights-pill" style="display:flex;align-items:center;gap:4px">
               <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v1.5M5.5 8.5V10M1 5.5h1.5M8.5 5.5H10M2.6 2.6l1 1M7.4 7.4l1 1M2.6 8.4l1-1M7.4 3.6l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="5.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
               <input type="number" name="nights_${idx}" class="lodge-nights-input form-control" min="1" value="${initNights}"
                 style="width:52px;height:30px;font-size:var(--text-sm);font-weight:600;text-align:center"
-                title="Nights = check-out − check-in. Adjust for multi-lodge splits."
-                oninput="window.TRVE._updateLodgeRowDates(this.closest('.lodge-item'))">
+                title="Nights at this lodge. Multi-lodge trips: allocate total nights across all lodges."
+                oninput="window.TRVE._updateLodgeRowDates(this.closest('.lodge-item'));window.TRVE._validateAndShowNightsSummary()">
               <span class="lodge-nights-hint" style="font-size:var(--text-xs);color:var(--text-muted)">nights</span>
             </div>
           </div>
@@ -2583,18 +2639,68 @@
           </div>
         </div>
 
-        <!-- ⑤ Computed occupancy summary (read-only, derived from Basic Details) -->
-        <div class="lodge-computed-occ" style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 10px;margin-bottom:10px;font-size:var(--text-xs);color:var(--text-secondary)">
-          Occupancy computed from Basic Details guest count.
-        </div>
-
-        <!-- ⑥ Room distribution cards -->
-        <div class="lodge-guest-assign" style="margin-top:4px">
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">
-            Room Occupancy
-            <span class="lodge-occupancy-badge" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:9px;background:var(--bg-surface);color:var(--text-muted);text-transform:none;font-weight:600">—</span>
+        <!-- ④ Room Types section (Task 3: nested room type entries) -->
+        <div class="lodge-room-type-section" style="margin-bottom:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Room Types</span>
+            <span class="lodge-occupancy-badge" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:9px;background:var(--bg-surface);color:var(--text-muted);font-weight:600">—</span>
           </div>
-          <div class="lodge-guest-assign-list"></div>
+
+          <!-- Room type entries container -->
+          <div class="room-type-entries">
+
+            <!-- First room type entry (index 0) — uses legacy name attributes for backward compat -->
+            <div class="room-type-entry" data-rt-idx="0"
+              style="border:1px solid var(--border);border-radius:var(--radius-md);padding:10px;margin-bottom:8px;background:var(--bg-surface)">
+              <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-bottom:8px">
+                <div>
+                  <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Room Type</label>
+                  <select class="form-control room-type-select" name="room_type_${idx}" style="font-size:var(--text-xs)">
+                    <option value="">— select lodge first —</option>
+                  </select>
+                  <div class="lodge-rate-freshness" style="display:none;font-size:var(--text-xs);margin-top:4px"></div>
+                </div>
+                <div>
+                  <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Rooms</label>
+                  <div style="display:flex;align-items:center;gap:4px">
+                    <button type="button" class="btn btn-xs"
+                      style="width:24px;height:30px;padding:0;font-size:14px;line-height:1;background:var(--bg-subtle);border:1px solid var(--border)"
+                      onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'),-1)" title="Remove one room">−</button>
+                    <input type="number" name="rooms_${idx}" class="form-control rooms-input" min="1" value="${initRooms}"
+                      style="width:44px;height:30px;font-size:var(--text-sm);font-weight:600;text-align:center"
+                      title="Number of rooms of this type">
+                    <button type="button" class="btn btn-xs"
+                      style="width:24px;height:30px;padding:0;font-size:14px;line-height:1;background:var(--bg-subtle);border:1px solid var(--border)"
+                      onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'),+1)" title="Add one room">+</button>
+                  </div>
+                </div>
+              </div>
+              <!-- Occupancy hint for this room type entry -->
+              <div class="lodge-computed-occ" style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:6px 10px;margin-bottom:8px;font-size:var(--text-xs);color:var(--text-secondary)">
+                Occupancy computed from Basic Details guest count.
+              </div>
+              <!-- Guest assignment cards for this room type entry -->
+              <div class="lodge-guest-assign" style="margin-top:4px">
+                <div class="lodge-guest-assign-list"></div>
+              </div>
+            </div>
+
+          </div><!-- /.room-type-entries -->
+
+          <!-- Add Room Type button -->
+          <button type="button" class="btn btn-ghost"
+            style="width:100%;font-size:var(--text-xs);border:1px dashed var(--border);padding:6px;color:var(--text-muted)"
+            onclick="window.TRVE._addRoomTypeEntry(this.closest('.lodge-item'))">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="vertical-align:-1px"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+            Add Room Type
+          </button>
+        </div><!-- /.lodge-room-type-section -->
+
+        <!-- ⑤ Assignment footer and special requirements -->
+        <div class="lodge-assignment-footer" style="font-size:10px;color:var(--text-secondary);text-align:right;margin-bottom:8px">
+          Assigned to this lodge: <strong class="assigned-count">0</strong>
+        </div>
+        <div class="lodge-special-requirements" style="margin-top:6px;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md)">
         </div>
 
       </div>
@@ -2605,30 +2711,38 @@
     `;
     container.appendChild(el);
 
-    // ② Lodge → populate room types
-    const lodgeSelect    = el.querySelector(`[name^="lodge_name_"]`);
-    const roomTypeSelect = el.querySelector(`[name^="room_type_"]`);
-    if (lodgeSelect && roomTypeSelect) {
+    // Lodge → populate room types in ALL room-type-entry selects within this lodge row
+    const lodgeSelect = el.querySelector(`[name^="lodge_name_"]`);
+    if (lodgeSelect) {
       lodgeSelect.addEventListener('change', function() {
         _accomPushHistory();
-        populateRoomTypes(this.value, roomTypeSelect);
-        _autoSyncRoomGuests(el);
-      });
-      roomTypeSelect.addEventListener('change', function() {
-        _accomPushHistory();
+        _getRoomTypeEntries(el).forEach(entry => {
+          const rtSel = entry.querySelector('.room-type-select');
+          if (rtSel) populateRoomTypes(this.value, rtSel);
+        });
         _autoSyncRoomGuests(el);
       });
     }
 
-    // ④ Rooms input → push history on change + re-render
-    const roomsInput = el.querySelector(`[name^="rooms_"]`);
-    if (roomsInput) {
-      roomsInput.addEventListener('change', () => {
-        _accomPushHistory();
-        _autoSyncRoomGuests(el);
-      });
-      roomsInput.addEventListener('input', () => _autoSyncRoomGuests(el));
+    // Wire each room-type-entry's select and rooms input
+    function _wireRoomTypeEntry(entry) {
+      const rtSel = entry.querySelector('.room-type-select');
+      if (rtSel) {
+        rtSel.addEventListener('change', function() {
+          _accomPushHistory();
+          _autoSyncRoomGuests(el);
+          _showRateFreshnessForEntry(entry, el.querySelector('[name^="lodge_name_"]')?.value, this.value);
+        });
+      }
+      const roomsInp = entry.querySelector('[name^="rooms_"]');
+      if (roomsInp) {
+        roomsInp.addEventListener('change', () => { _accomPushHistory(); _autoSyncRoomGuests(el); });
+        roomsInp.addEventListener('input',  () => _autoSyncRoomGuests(el));
+      }
     }
+    _getRoomTypeEntries(el).forEach(entry => _wireRoomTypeEntry(entry));
+    // Expose the wiring helper so _addRoomTypeEntry can reuse it
+    el._wireRoomTypeEntry = _wireRoomTypeEntry;
 
     // Custom dates toggle
     const customToggle  = el.querySelector('.lodge-custom-dates-toggle');
@@ -2652,43 +2766,81 @@
     // Restore from snapshot: set lodge + room type values
     if (cfg.lodgeName && lodgeSelect) {
       lodgeSelect.value = cfg.lodgeName;
-      populateRoomTypes(cfg.lodgeName, roomTypeSelect);
-      if (cfg.roomType && roomTypeSelect) roomTypeSelect.value = cfg.roomType;
+      _getRoomTypeEntries(el).forEach(entry => {
+        const rtSel = entry.querySelector('.room-type-select');
+        if (rtSel) populateRoomTypes(cfg.lodgeName, rtSel);
+      });
+      const firstEntry = _getRoomTypeEntries(el)[0];
+      const firstRtSel = firstEntry?.querySelector('.room-type-select');
+      if (cfg.roomType && firstRtSel) firstRtSel.value = cfg.roomType;
     }
 
     // Initial render
     _autoSyncRoomGuests(el);
     if (!cfg.skipRender) _renderAccommPricingSummary();
+    _validateAndShowNightsSummary();
   }
 
-  // Update the computed-occupancy summary bar on a lodge row.
-  // Derives per-room occupant count from Basic Details total ÷ rooms.
+  // Update the computed-occupancy summary bar on each room-type-entry in a lodge row.
+  // For multi-room-type lodges, each entry shows its own per-room occupancy hint.
   function _updateLodgeTotalGuestsHint(row) {
-    const occEl = row.querySelector('.lodge-computed-occ');
-    if (!occEl) return;
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
-    const totalGuests   = totalAdults + totalChildren;
-    const rooms         = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
-    const perRoom       = totalGuests > 0 ? Math.ceil(totalGuests / rooms) : 0;
-    const maxOcc        = _getMaxOccupancy(
-      row.querySelector('[name^="room_type_"]')?.value,
-      row.querySelector('[name^="lodge_name_"]')?.value
-    ) || 2;
-    const overcrowded   = perRoom > maxOcc && !_childSharingApplies(
-      Math.ceil(totalAdults / rooms), Math.ceil(totalChildren / rooms), maxOcc
-    );
-    occEl.style.borderColor = overcrowded ? 'var(--danger)' : 'var(--border)';
-    occEl.style.background  = overcrowded ? 'rgba(220,38,38,.05)' : 'var(--bg-subtle)';
-    occEl.innerHTML = totalGuests === 0
-      ? '<em style="color:var(--text-muted)">Set guest count in Basic Details above.</em>'
-      : `<span style="color:var(--text-muted)">
-           <strong style="color:var(--text-secondary)">${totalGuests} guests</strong>
-           from Basic Details
-           &nbsp;·&nbsp; ${rooms} room${rooms !== 1 ? 's' : ''}
-           &nbsp;·&nbsp; <strong style="${overcrowded ? 'color:var(--danger)' : ''}">${perRoom} per room needed</strong>
-           (max ${maxOcc})
-           ${overcrowded ? '<span style="margin-left:4px;color:var(--danger);font-weight:700">⚠ Overcrowded</span>' : ''}
-         </span>`;
+    const totalGuests = totalAdults + totalChildren;
+    const lodgeName   = row.querySelector('[name^="lodge_name_"]')?.value || '';
+    const entries     = _getRoomTypeEntries(row);
+
+    // Helper to update a single entry's .lodge-computed-occ element
+    const updateEntryOcc = (entry, rooms, roomType) => {
+      const occEl  = entry.querySelector('.lodge-computed-occ');
+      if (!occEl) return;
+      const maxOcc = _getMaxOccupancy(roomType, lodgeName) || 2;
+      const perRoom = rooms > 0 && totalGuests > 0 ? Math.ceil(totalGuests / rooms) : 0;
+      const overcrowded = perRoom > maxOcc && !_childSharingApplies(
+        Math.ceil(totalAdults / rooms), Math.ceil(totalChildren / rooms), maxOcc
+      );
+      occEl.style.borderColor = overcrowded ? 'var(--danger)' : 'var(--border)';
+      occEl.style.background  = overcrowded ? 'rgba(220,38,38,.05)' : 'var(--bg-subtle)';
+      occEl.innerHTML = totalGuests === 0
+        ? '<em style="color:var(--text-muted)">Set guest count in Basic Details above.</em>'
+        : `<span style="color:var(--text-muted)">
+             <strong style="color:var(--text-secondary)">${totalGuests} guests</strong>
+             &nbsp;·&nbsp; ${rooms} room${rooms !== 1 ? 's' : ''} of this type
+             &nbsp;·&nbsp; <strong style="${overcrowded ? 'color:var(--danger)' : ''}">${perRoom} per room</strong>
+             (max ${maxOcc})
+             ${overcrowded ? '<span style="margin-left:4px;color:var(--danger);font-weight:700">⚠ Overcrowded</span>' : ''}
+           </span>`;
+    };
+
+    if (entries.length === 0) {
+      // Legacy: single room type from row-level fields
+      const occEl = row.querySelector('.lodge-computed-occ');
+      if (occEl) {
+        const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+        const roomType = row.querySelector('[name^="room_type_"]')?.value || '';
+        const maxOcc   = _getMaxOccupancy(roomType, lodgeName) || 2;
+        const perRoom  = rooms > 0 && totalGuests > 0 ? Math.ceil(totalGuests / rooms) : 0;
+        const overcrowded = perRoom > maxOcc;
+        occEl.style.borderColor = overcrowded ? 'var(--danger)' : 'var(--border)';
+        occEl.style.background  = overcrowded ? 'rgba(220,38,38,.05)' : 'var(--bg-subtle)';
+        occEl.innerHTML = totalGuests === 0
+          ? '<em style="color:var(--text-muted)">Set guest count in Basic Details above.</em>'
+          : `<span style="color:var(--text-muted)">
+               <strong style="color:var(--text-secondary)">${totalGuests} guests</strong>
+               from Basic Details
+               &nbsp;·&nbsp; ${rooms} room${rooms !== 1 ? 's' : ''}
+               &nbsp;·&nbsp; <strong style="${overcrowded ? 'color:var(--danger)' : ''}">${perRoom} per room needed</strong>
+               (max ${maxOcc})
+               ${overcrowded ? '<span style="margin-left:4px;color:var(--danger);font-weight:700">⚠ Overcrowded</span>' : ''}
+             </span>`;
+      }
+      return;
+    }
+
+    entries.forEach(entry => {
+      const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+      const roomType = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
+      updateEntryOcc(entry, rooms, roomType);
+    });
   }
 
   // Refresh all derived display for a lodge row.
@@ -2699,17 +2851,6 @@
     _updateRoomOccupancyBadge(row, rowIdx);
     _checkCapacityMismatch();
   }
-
-  // Increment or decrement the rooms count on a lodge row with undo support.
-  function _changeRoomsCount(row, delta) {
-    _accomPushHistory();
-    const inp = row.querySelector('[name^="rooms_"]');
-    if (!inp) return;
-    const newVal = Math.max(1, (parseInt(inp.value) || 1) + delta);
-    inp.value = newVal;
-    _autoSyncRoomGuests(row);
-  }
-  window.TRVE._changeRoomsCount = _changeRoomsCount;
 
   // Remove a lodge row with undo support.
   function _removeLodgeItem(el) {
@@ -2722,22 +2863,250 @@
     _syncLodgeGuestAssignments();
     _checkCapacityMismatch();
     _renderAccommPricingSummary();
+    _validateAndShowNightsSummary();
   }
   window.TRVE._removeLodgeItem = _removeLodgeItem;
   window.TRVE.addLodgeItem     = addLodgeItem;
 
-  // When trip days change, auto-update nights in all lodge rows (single-lodge path)
+  // ── Task 3: Room type entry management ──────────────────────────────────────
+
+  // Add a new room type entry to a lodge row.
+  function _addRoomTypeEntry(lodgeRow) {
+    _accomPushHistory();
+    const entriesContainer = lodgeRow.querySelector('.room-type-entries');
+    if (!entriesContainer) return;
+    const lodgeName = lodgeRow.querySelector('[name^="lodge_name_"]')?.value || '';
+    const rowIdx    = parseInt(lodgeRow.dataset.idx);
+    const rtIdx     = entriesContainer.children.length; // next index
+
+    const entry = document.createElement('div');
+    entry.className = 'room-type-entry';
+    entry.dataset.rtIdx = rtIdx;
+    entry.style.cssText = 'border:1px solid var(--border);border-radius:var(--radius-md);padding:10px;margin-bottom:8px;background:var(--bg-surface);position:relative';
+
+    entry.innerHTML = `
+      <button type="button" class="btn btn-ghost btn-icon"
+        style="position:absolute;top:6px;right:6px;width:20px;height:20px;padding:0;font-size:11px"
+        onclick="window.TRVE._removeRoomTypeEntry(this.closest('.room-type-entry'))" title="Remove this room type">×</button>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-bottom:8px;padding-right:24px">
+        <div>
+          <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Room Type</label>
+          <select class="form-control room-type-select" name="room_type_${rowIdx}_rt${rtIdx}" style="font-size:var(--text-xs)">
+            <option value="">— select room type —</option>
+          </select>
+          <div class="lodge-rate-freshness" style="display:none;font-size:var(--text-xs);margin-top:4px"></div>
+        </div>
+        <div>
+          <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Rooms</label>
+          <div style="display:flex;align-items:center;gap:4px">
+            <button type="button" class="btn btn-xs"
+              style="width:24px;height:30px;padding:0;font-size:14px;line-height:1;background:var(--bg-subtle);border:1px solid var(--border)"
+              onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'),-1)">−</button>
+            <input type="number" name="rooms_${rowIdx}_rt${rtIdx}" class="form-control rooms-input" min="1" value="1"
+              style="width:44px;height:30px;font-size:var(--text-sm);font-weight:600;text-align:center">
+            <button type="button" class="btn btn-xs"
+              style="width:24px;height:30px;padding:0;font-size:14px;line-height:1;background:var(--bg-subtle);border:1px solid var(--border)"
+              onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'),+1)">+</button>
+          </div>
+        </div>
+      </div>
+      <!-- Occupancy hint -->
+      <div class="lodge-computed-occ" style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:6px 10px;margin-bottom:8px;font-size:var(--text-xs);color:var(--text-secondary)">
+        Select room type above, then assign guests.
+      </div>
+      <!-- Guest assignment cards -->
+      <div class="lodge-guest-assign" style="margin-top:4px">
+        <div class="lodge-guest-assign-list"></div>
+      </div>
+    `;
+
+    entriesContainer.appendChild(entry);
+
+    // Populate room types dropdown from current lodge selection
+    const rtSel = entry.querySelector('.room-type-select');
+    if (lodgeName && rtSel) populateRoomTypes(lodgeName, rtSel);
+
+    // Wire events
+    if (lodgeRow._wireRoomTypeEntry) lodgeRow._wireRoomTypeEntry(entry);
+    else {
+      rtSel?.addEventListener('change', () => { _accomPushHistory(); _autoSyncRoomGuests(lodgeRow); });
+      entry.querySelector('[name^="rooms_"]')?.addEventListener('change', () => { _accomPushHistory(); _autoSyncRoomGuests(lodgeRow); });
+      entry.querySelector('[name^="rooms_"]')?.addEventListener('input',  () => _autoSyncRoomGuests(lodgeRow));
+    }
+
+    _autoSyncRoomGuests(lodgeRow);
+    _renderAccommPricingSummary();
+  }
+  window.TRVE._addRoomTypeEntry = _addRoomTypeEntry;
+
+  // Remove a room type entry (not the first one — it can be cleared but not removed).
+  function _removeRoomTypeEntry(entry) {
+    const lodgeRow = entry.closest('.lodge-item');
+    if (!lodgeRow) return;
+    const entriesContainer = lodgeRow.querySelector('.room-type-entries');
+    // Don't remove the last entry
+    if (entriesContainer && entriesContainer.children.length <= 1) {
+      toast('warning', 'At least one room type required', 'Cannot remove the only room type entry. Clear the selection instead.');
+      return;
+    }
+    _accomPushHistory();
+    // Remove room assignments that were in this entry
+    const rtIdx = parseInt(entry.dataset.rtIdx);
+    const rowIdx = parseInt(lodgeRow.dataset.idx);
+    const prefix = `${rowIdx}:${rtIdx}:`;
+    for (const gid of Object.keys(state.roomAssignments || {})) {
+      if ((state.roomAssignments[gid] || '').startsWith(prefix)) {
+        delete state.roomAssignments[gid];
+      }
+    }
+    entry.remove();
+    // Re-index remaining entries so their data-rt-idx is contiguous
+    const remaining = lodgeRow.querySelectorAll('.room-type-entry');
+    remaining.forEach((e, i) => { e.dataset.rtIdx = i; });
+    _autoSyncRoomGuests(lodgeRow);
+    _renderAccommPricingSummary();
+    _checkCapacityMismatch();
+  }
+  window.TRVE._removeRoomTypeEntry = _removeRoomTypeEntry;
+
+  // Increment / decrement rooms count on a single room-type-entry.
+  function _changeRoomTypeEntryCount(entry, delta) {
+    _accomPushHistory();
+    const inp = entry.querySelector('[name^="rooms_"]');
+    if (!inp) return;
+    inp.value = Math.max(1, (parseInt(inp.value) || 1) + delta);
+    const lodgeRow = entry.closest('.lodge-item');
+    if (lodgeRow) _autoSyncRoomGuests(lodgeRow);
+  }
+  window.TRVE._changeRoomTypeEntryCount = _changeRoomTypeEntryCount;
+
+  // Show rate freshness hint for a specific room-type-entry.
+  function _showRateFreshnessForEntry(entry, lodgeName, roomType) {
+    const freshnessEl = entry.querySelector('.lodge-rate-freshness');
+    if (!freshnessEl) return;
+    if (!lodgeName || !roomType) { freshnessEl.style.display = 'none'; return; }
+    const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+    if (!lodge) { freshnessEl.style.display = 'none'; return; }
+    const rt = (lodge.room_types || []).find(r => r.room_type === roomType);
+    if (!rt?.source_email_date) { freshnessEl.style.display = 'none'; return; }
+    const ageDays = Math.floor((Date.now() - new Date(rt.source_email_date).getTime()) / 86400000);
+    if (ageDays > 90) {
+      freshnessEl.style.display = '';
+      freshnessEl.style.color = 'var(--danger)';
+      freshnessEl.textContent = `⚠ Rate from email ${ageDays} days ago — may be outdated`;
+    } else {
+      freshnessEl.style.display = '';
+      freshnessEl.style.color = 'var(--text-muted)';
+      freshnessEl.textContent = `Rate sourced from email dated ${rt.source_email_date}`;
+    }
+  }
+  window.TRVE._showRateFreshnessForEntry = _showRateFreshnessForEntry;
+
+  // Keep _changeRoomsCount as backward-compat alias — increments first room type entry
+  function _changeRoomsCount(row, delta) {
+    _accomPushHistory();
+    const firstEntry = _getRoomTypeEntries(row)[0];
+    const inp = firstEntry
+      ? firstEntry.querySelector('[name^="rooms_"]')
+      : row.querySelector('[name^="rooms_"]');
+    if (!inp) return;
+    inp.value = Math.max(1, (parseInt(inp.value) || 1) + delta);
+    _autoSyncRoomGuests(row);
+  }
+  window.TRVE._changeRoomsCount = _changeRoomsCount;
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // When trip days change, auto-update nights in all lodge rows (single-lodge path only).
+  // With multiple lodge rows, nights are distributed manually — only reset if just one row.
   function _syncLodgeNightsFromDays(days) {
     const nights = Math.max(1, days - 1);
     const rows = document.querySelectorAll('#lodgeItems .lodge-item');
-    rows.forEach(row => {
-      const nightsInput = row.querySelector('.lodge-nights-input');
-      const nightsHint = row.querySelector('.lodge-nights-hint');
-      if (nightsInput) nightsInput.value = nights;
-      if (nightsHint) nightsHint.textContent = `(= ${days} days − 1)`;
-    });
+    if (rows.length <= 1) {
+      // Single lodge: auto-set to full trip nights
+      rows.forEach(row => {
+        const nightsInput = row.querySelector('.lodge-nights-input');
+        const nightsHint = row.querySelector('.lodge-nights-hint');
+        if (nightsInput) nightsInput.value = nights;
+        if (nightsHint) nightsHint.textContent = `nights`;
+      });
+    }
     _updateAccommodationDates();
+    _validateAndShowNightsSummary();
   }
+
+  // ── Task 2: Nights validation ───────────────────────────────────────────────
+  // Computes expected nights (trip duration − 1), sums lodge nights, shows
+  // a real-time summary banner, and returns true if totals match.
+  function _validateAndShowNightsSummary() {
+    const days = parseInt(document.getElementById('pricingDays')?.value) || 0;
+    const expected = days > 0 ? Math.max(1, days - 1) : null;
+
+    // Sum all lodge nights
+    let assigned = 0;
+    const rows = document.querySelectorAll('#lodgeItems .lodge-item');
+    rows.forEach(row => {
+      assigned += parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
+    });
+
+    // Get or create the banner element
+    let banner = document.getElementById('nightsSummaryBanner');
+    if (!banner) {
+      const lodgeItems = document.getElementById('lodgeItems');
+      if (!lodgeItems) return expected === null || assigned === expected;
+      banner = document.createElement('div');
+      banner.id = 'nightsSummaryBanner';
+      banner.style.cssText = 'margin-top:8px;margin-bottom:4px';
+      lodgeItems.parentNode.insertBefore(banner, lodgeItems.nextSibling);
+    }
+
+    // Hide banner if no data yet
+    if (rows.length === 0 || expected === null) {
+      banner.style.display = 'none';
+      return true;
+    }
+
+    const match = assigned === expected;
+    const diff  = assigned - expected;
+    const sign  = diff > 0 ? '+' : '';
+
+    if (match) {
+      banner.style.display = '';
+      banner.innerHTML = `
+        <div style="display:flex;align-items:center;gap:6px;padding:7px 12px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius-md);font-size:var(--text-xs)">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="var(--success)" stroke-width="1.3"/><path d="M3.5 6l2 2 3-3" stroke="var(--success)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span style="color:var(--success);font-weight:700">Nights match</span>
+          <span style="color:var(--text-secondary)">Total nights assigned: <strong>${assigned}</strong> = expected (${days} days − 1)</span>
+        </div>`;
+    } else {
+      const overUnder = diff > 0 ? 'over by' : 'short by';
+      const absD = Math.abs(diff);
+      banner.style.display = '';
+      banner.innerHTML = `
+        <div style="display:flex;align-items:start;gap:8px;padding:10px 12px;background:rgba(220,38,38,.05);border:1px solid rgba(220,38,38,.35);border-radius:var(--radius-md);font-size:var(--text-xs)">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style="flex-shrink:0;margin-top:1px"><circle cx="6.5" cy="6.5" r="5.5" stroke="var(--danger)" stroke-width="1.3"/><path d="M6.5 3.5v3.2" stroke="var(--danger)" stroke-width="1.5" stroke-linecap="round"/><circle cx="6.5" cy="9" r=".6" fill="var(--danger)"/></svg>
+          <div>
+            <div style="font-weight:700;color:var(--danger);margin-bottom:3px">Nights mismatch — pricing and quotation blocked</div>
+            <div style="color:var(--text-secondary);margin-bottom:4px">
+              Total nights assigned: <strong>${assigned}</strong>
+              &nbsp;·&nbsp; Expected: <strong>${expected}</strong> (${days} days − 1)
+              &nbsp;·&nbsp; <strong style="color:var(--danger)">${overUnder} ${absD} night${absD !== 1 ? 's' : ''}</strong>
+            </div>
+            <div style="color:var(--text-muted)">
+              ${rows.length > 1
+                ? `Adjust lodge nights so they sum to ${expected}. Current: ${Array.from(rows).map((r, i) => {
+                    const n = parseInt(r.querySelector('.lodge-nights-input')?.value) || 0;
+                    const lname = r.querySelector('[name^="lodge_name_"]')?.value || `Lodge ${i+1}`;
+                    return `${lname.split(' ')[0]} = ${n}`;
+                  }).join(' + ')} = ${assigned}.`
+                : `Set this lodge's nights to ${expected} to match the ${days}-day trip.`}
+            </div>
+          </div>
+        </div>`;
+    }
+    return match;
+  }
+  window.TRVE._validateAndShowNightsSummary = _validateAndShowNightsSummary;
+  // ─────────────────────────────────────────────────────────────────────────────
 
   // ---------------------------------------------------------------------------
   // ACCOMMODATION DATE AUTO-POPULATION
@@ -2786,6 +3155,9 @@
     document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
       _updateLodgeRowDates(row);
     });
+
+    // Re-validate nights totals whenever dates/duration change
+    _validateAndShowNightsSummary();
   }
 
   function _updateLodgeRowDates(row) {
@@ -3170,9 +3542,51 @@
     _distCache.clear();
   }
 
-  function _getGuestsInRoom(rowIdx, roomIdx) {
-    const key = `${rowIdx}:${roomIdx}`;
-    return (state.guestPool || []).filter(g => state.roomAssignments[g.id] === key);
+  // ── Task 3: Room key helpers ──────────────────────────────────────────────
+  // Room assignment keys include a room-type-entry index (rtIdx) so that
+  // multiple room types within one lodge can each have independent rooms.
+  // Format: "lodgeIdx:rtIdx:roomIdx"   (3 parts — new format)
+  // Legacy: "lodgeIdx:roomIdx"         (2 parts — treated as rtIdx=0)
+  function _makeRoomKey(rowIdx, rtIdx, roomIdx) {
+    return `${rowIdx}:${rtIdx}:${roomIdx}`;
+  }
+  function _parseRoomKey(key) {
+    const p = (key || '').split(':');
+    if (p.length === 3) return { rowIdx: +p[0], rtIdx: +p[1], roomIdx: +p[2] };
+    if (p.length === 2) return { rowIdx: +p[0], rtIdx: 0, roomIdx: +p[1] }; // legacy
+    return null;
+  }
+  // Returns the .room-type-entry element at rtIdx within a lodge row, or null.
+  function _getRoomTypeEntry(row, rtIdx) {
+    return row.querySelector(`.room-type-entry[data-rt-idx="${rtIdx}"]`) || null;
+  }
+  // Returns all .room-type-entry elements for a lodge row, in order.
+  function _getRoomTypeEntries(row) {
+    return Array.from(row.querySelectorAll('.room-type-entry'));
+  }
+  // Read room type string for a specific entry (falls back to legacy selector).
+  function _getRoomTypeForEntry(row, rtIdx) {
+    const entry = _getRoomTypeEntry(row, rtIdx);
+    if (entry) return entry.querySelector('[class~="room-type-select"]')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
+    return row.querySelector('[name^="room_type_"]')?.value || ''; // legacy
+  }
+  // Read rooms count for a specific entry.
+  function _getRoomsCountForEntry(row, rtIdx) {
+    const entry = _getRoomTypeEntry(row, rtIdx);
+    if (entry) return parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+    return parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1; // legacy
+  }
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Returns guests assigned to a specific room (supports rtIdx).
+  function _getGuestsInRoom(rowIdx, rtIdx, roomIdx) {
+    const newKey = _makeRoomKey(rowIdx, rtIdx, roomIdx);
+    // Also match legacy 2-part keys when rtIdx=0
+    const legacyKey = rtIdx === 0 ? `${rowIdx}:${roomIdx}` : null;
+    return (state.guestPool || []).filter(g => {
+      const k = state.roomAssignments[g.id];
+      return k === newKey || (legacyKey && k === legacyKey);
+    });
   }
 
   function _getUnassignedGuests() {
@@ -3186,19 +3600,22 @@
   //   - Standard: max 2 adults per room
   //   - Older children (5+) count toward maxOcc
   //   - U5 children need cots; under-2 need high chairs
-  function _validateDrop(guestId, rowIdx, roomIdx) {
+  // rtIdx is the room-type-entry index within the lodge row (default 0).
+  function _validateDrop(guestId, rowIdx, rtIdx, roomIdx) {
+    // Handle 3-arg legacy calls (no rtIdx): _validateDrop(guestId, rowIdx, roomIdx)
+    if (arguments.length === 3) { roomIdx = rtIdx; rtIdx = 0; }
     const row = document.querySelector(`#lodgeItems .lodge-item[data-idx="${rowIdx}"]`);
     if (!row) return { error: 'Room not found' };
-    const roomType  = row.querySelector('[name^="room_type_"]')?.value || '';
+    const roomType  = _getRoomTypeForEntry(row, rtIdx);
     const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
     const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
-    const roomCount = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+    const roomCount = _getRoomsCountForEntry(row, rtIdx);
     if (roomIdx >= roomCount) return { error: 'Room index out of range' };
     const guest = (state.guestPool || []).find(g => g.id === guestId);
     if (!guest) return { error: 'Guest not found' };
 
     // Current room occupants, excluding the guest being moved
-    const current        = _getGuestsInRoom(rowIdx, roomIdx).filter(g => g.id !== guestId);
+    const current        = _getGuestsInRoom(rowIdx, rtIdx, roomIdx).filter(g => g.id !== guestId);
     const curAdults      = current.filter(g => g.type === 'adult').length;
     const curU5          = current.filter(g => _isU5(g)).length;
     const curOlderChild  = current.filter(g => g.type === 'child' && !_isU5(g)).length;
@@ -3244,11 +3661,13 @@
   }
 
   // Assign guest to room; validates, records history, re-renders.
-  function _assignGuest(guestId, rowIdx, roomIdx) {
+  // rtIdx (room-type-entry index) defaults to 0 for backward compatibility.
+  function _assignGuest(guestId, rowIdx, rtIdx, roomIdx) {
+    if (arguments.length === 3) { roomIdx = rtIdx; rtIdx = 0; } // legacy 3-arg call
     if (!state.roomAssignments) state.roomAssignments = {};
-    const v = _validateDrop(guestId, rowIdx, roomIdx);
+    const v = _validateDrop(guestId, rowIdx, rtIdx, roomIdx);
     if (v.error) {
-      _showAssignmentError(v.error, v.suggestions || [], rowIdx, roomIdx);
+      _showAssignmentError(v.error, v.suggestions || [], rowIdx, rtIdx, roomIdx);
       return false;
     }
     if (v.warnings && v.warnings.length > 0) {
@@ -3256,7 +3675,7 @@
       setTimeout(() => v.warnings.forEach(w => toast('info', 'Room note', w)), 100);
     }
     _accomPushHistory();
-    state.roomAssignments[guestId] = `${rowIdx}:${roomIdx}`;
+    state.roomAssignments[guestId] = _makeRoomKey(rowIdx, rtIdx, roomIdx);
     _renderGuestAssignmentUI();
     _renderAccommPricingSummary();
     _checkCapacityMismatch();
@@ -3295,13 +3714,27 @@
     if (totalGuests === 0) return;
     const rooms = [];
     document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, rowIdx) => {
-      const roomCount = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
       const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
-      const roomType  = row.querySelector('[name^="room_type_"]')?.value  || '';
-      const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
-      for (let r = 0; r < roomCount; r++) {
-        rooms.push({ rowIdx, roomIdx: r, maxOcc, key: `${rowIdx}:${r}` });
+      // Iterate all room type entries within this lodge row
+      const entries = _getRoomTypeEntries(row);
+      if (entries.length === 0) {
+        // Legacy: single room type from row-level fields
+        const roomCount = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+        const roomType  = row.querySelector('[name^="room_type_"]')?.value  || '';
+        const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+        for (let r = 0; r < roomCount; r++) {
+          rooms.push({ rowIdx, rtIdx: 0, roomIdx: r, maxOcc, key: _makeRoomKey(rowIdx, 0, r) });
+        }
+        return;
       }
+      entries.forEach((entry, rtIdx) => {
+        const roomCount = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+        const roomType  = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
+        const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
+        for (let r = 0; r < roomCount; r++) {
+          rooms.push({ rowIdx, rtIdx, roomIdx: r, maxOcc, key: _makeRoomKey(rowIdx, rtIdx, r) });
+        }
+      });
     });
     if (rooms.length === 0) return;
     _accomPushHistory();
@@ -3387,11 +3820,13 @@
   }
   window.TRVE._onGuestDragStart = _onGuestDragStart;
 
-  function _onRoomDrop(event, rowIdx, roomIdx) {
+  // rtIdx defaults to 0 for legacy calls: _onRoomDrop(event, rowIdx, roomIdx)
+  function _onRoomDrop(event, rowIdx, rtIdx, roomIdx) {
+    if (arguments.length === 3) { roomIdx = rtIdx; rtIdx = 0; }
     event.preventDefault();
     event.currentTarget.style.background = '';
     const guestId = event.dataTransfer.getData('guestId');
-    if (guestId) _assignGuest(guestId, rowIdx, roomIdx);
+    if (guestId) _assignGuest(guestId, rowIdx, rtIdx, roomIdx);
   }
   window.TRVE._onRoomDrop = _onRoomDrop;
 
@@ -3415,10 +3850,14 @@
   window.TRVE._onDragLeave = _onDragLeave;
 
   // Show a short-lived error balloon on the room card.
-  function _showAssignmentError(message, suggestions, rowIdx, roomIdx) {
+  // rtIdx identifies which room-type-entry's card to annotate (defaults to 0).
+  function _showAssignmentError(message, suggestions, rowIdx, rtIdx, roomIdx) {
+    if (arguments.length === 4) { roomIdx = rtIdx; rtIdx = 0; } // legacy 4-arg call
     const row = document.querySelector(`#lodgeItems .lodge-item[data-idx="${rowIdx}"]`);
     if (!row) return;
-    const card = row.querySelectorAll('.room-assignment-card')[roomIdx];
+    // Find the correct .room-assignment-card within the right room-type-entry
+    const entry = _getRoomTypeEntry(row, rtIdx) || row;
+    const card = entry.querySelectorAll('.room-assignment-card')[roomIdx];
     if (!card) return;
     let errEl = card.querySelector('.assignment-error');
     if (!errEl) {
@@ -3428,8 +3867,8 @@
       card.appendChild(errEl);
     }
     const actions = (suggestions || []).map(s => {
-      if (s === 'add-room')  return `<button type="button" onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'),+1)" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">+ Add Room</button>`;
-      if (s === 'upgrade')   return `<button type="button" onclick="window.TRVE._suggestRoomUpgrade(${rowIdx},'',0,0)" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">Upgrade Room Type</button>`;
+      if (s === 'add-room')  return `<button type="button" onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'),+1)" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">+ Add Room</button>`;
+      if (s === 'upgrade')   return `<button type="button" onclick="window.TRVE._suggestRoomUpgrade(${rowIdx},${rtIdx},'',0,0)" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">Upgrade Room Type</button>`;
       if (s === 'reassign')  return `<button type="button" onclick="window.TRVE._autoAssignGuests()" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border);border-radius:4px;cursor:pointer;margin-top:4px">Auto Reassign</button>`;
       return '';
     }).join(' ');
@@ -3510,28 +3949,24 @@
     });
   }
 
-  // Render drag-drop room cards inside one lodge row.
-  function _renderLodgeRoomCards(row, rowIdx) {
-    const container = row.querySelector('.lodge-guest-assign-list');
-    if (!container) return;
-    const rooms     = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
-    const roomType  = row.querySelector('[name^="room_type_"]')?.value || '';
-    const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
+  // Helper: render room assignment cards for one room-type-entry.
+  // container = the .lodge-guest-assign-list element inside the entry.
+  function _renderRoomCardsForEntry(container, rowIdx, rtIdx, roomType, lodgeName, rooms) {
     const maxOcc    = _getMaxOccupancy(roomType, lodgeName) || 2;
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
     if (totalGuests === 0 || !roomType) {
-      container.innerHTML = `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">${!roomType ? 'Select lodge and room type above to enable guest assignment.' : 'Set guest count in Basic Details.'}</span>`;
-      return;
+      container.innerHTML = `<span style="font-size:var(--text-xs);color:var(--text-muted);font-style:italic">${!roomType ? 'Select room type to enable guest assignment.' : 'Set guest count in Basic Details.'}</span>`;
+      return 0;
     }
     let html = '';
-    let assignedInRow = 0;
+    let assignedCount = 0;
     for (let r = 0; r < rooms; r++) {
-      const guests    = _getGuestsInRoom(rowIdx, r);
+      const guests    = _getGuestsInRoom(rowIdx, rtIdx, r);
       const nAdults   = guests.filter(g => g.type === 'adult').length;
       const nChildren = guests.filter(g => g.type === 'child').length;
       const n         = guests.length;
-      assignedInRow  += n;
+      assignedCount  += n;
       const childBeds   = Math.ceil(nChildren / 2);
       const sharingOk   = nAdults <= 1 && nChildren <= 2 && (nAdults + childBeds) <= maxOcc;
       const adultOver   = nAdults > 2;
@@ -3551,9 +3986,9 @@
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:5px">
             <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--brand-green);color:#fff;border:none"
-              onclick="window.TRVE._changeRoomsCount(this.closest('.lodge-item'), +1)">+ Add Room</button>
+              onclick="window.TRVE._changeRoomTypeEntryCount(this.closest('.room-type-entry'), +1)">+ Add Room</button>
             <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
-              onclick="window.TRVE._suggestRoomUpgrade(${rowIdx},'${escapeHtml(roomType)}',${n},${maxOcc})">Upgrade Room Type</button>
+              onclick="window.TRVE._suggestRoomUpgrade(${rowIdx},${rtIdx},'${escapeHtml(roomType)}',${n},${maxOcc})">Upgrade Room Type</button>
             <button type="button" class="btn btn-xs" style="font-size:10px;padding:2px 8px;background:var(--bg-surface);border:1px solid var(--border)"
               onclick="window.TRVE._autoAssignGuests()">Auto Reassign</button>
           </div>
@@ -3563,7 +3998,6 @@
           <span style="font-size:10px;color:var(--brand-gold-dark,#b45309);font-weight:600">Child-sharing:</span>
           <span style="font-size:10px;color:var(--text-secondary)"> ${nAdults} adult + ${nChildren} children — 2 children share 1 bed ✓</span>
         </div>` : '';
-      // Cot / high chair extras (auto-flag for U5 children — Section 2 Step 5)
       const u5InRoom     = guests.filter(g => _isU5(g));
       const under2InRoom = guests.filter(g => g.type === 'child' && g.age !== null && g.age < 2);
       const extrasHTML   = u5InRoom.length > 0 ? `
@@ -3591,23 +4025,61 @@
             style="padding:8px 10px;min-height:44px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;transition:background .12s"
             ondragover="window.TRVE._onDragOver(event)"
             ondragleave="window.TRVE._onDragLeave(event)"
-            ondrop="window.TRVE._onRoomDrop(event, ${rowIdx}, ${r})">
+            ondrop="window.TRVE._onRoomDrop(event, ${rowIdx}, ${rtIdx}, ${r})">
             ${chipsHTML}
           </div>
           ${warningHTML}${sharingHTML}${extrasHTML}
         </div>`;
     }
-    // Dietary + special requests per lodge row
-    const mealPlan    = row.querySelector('[name^="meal_plan_"]')?.value || 'BB';
-    const rowKey      = `row-${rowIdx}`;
-    const extras      = (state.roomExtras || {})[rowKey] || {};
-    const showPacked  = mealPlan === 'HB' || mealPlan === 'FB';
-    const footerColor = assignedInRow === totalGuests ? 'var(--text-muted)' : 'var(--text-secondary)';
-    html += `
-      <div style="font-size:10px;color:${footerColor};text-align:right;margin-top:2px;margin-bottom:8px">
-        Assigned to this lodge: <strong>${assignedInRow}</strong>
-      </div>
-      <div style="margin-top:6px;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md)">
+    container.innerHTML = html;
+    return assignedCount;
+  }
+
+  // Render drag-drop room cards inside one lodge row.
+  // Iterates all .room-type-entry elements within the row.
+  function _renderLodgeRoomCards(row, rowIdx) {
+    const { adults: totalAdults, children: totalChildren } = _getBasicPax();
+    const totalGuests = totalAdults + totalChildren;
+    const lodgeName   = row.querySelector('[name^="lodge_name_"]')?.value || '';
+    const entries     = _getRoomTypeEntries(row);
+    let totalAssignedInRow = 0;
+
+    if (entries.length === 0) {
+      // Legacy path: single room type from row-level fields
+      const container = row.querySelector('.lodge-guest-assign-list');
+      if (!container) return;
+      const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+      const roomType = row.querySelector('[name^="room_type_"]')?.value || '';
+      totalAssignedInRow = _renderRoomCardsForEntry(container, rowIdx, 0, roomType, lodgeName, rooms);
+    } else {
+      // Multi room type path: render each entry's cards into its own container
+      entries.forEach((entry, rtIdx) => {
+        const container = entry.querySelector('.lodge-guest-assign-list');
+        if (!container) return;
+        const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+        const roomType = entry.querySelector('.room-type-select')?.value
+                      || entry.querySelector('[name^="room_type_"]')?.value || '';
+        totalAssignedInRow += _renderRoomCardsForEntry(container, rowIdx, rtIdx, roomType, lodgeName, rooms);
+      });
+    }
+
+    // Update the overall "assigned to lodge" footer
+    const mealPlan  = row.querySelector('[name^="meal_plan_"]')?.value || 'BB';
+    const rowKey    = `row-${rowIdx}`;
+    const extras    = (state.roomExtras || {})[rowKey] || {};
+    const showPacked = mealPlan === 'HB' || mealPlan === 'FB';
+    const footerColor = totalAssignedInRow === totalGuests ? 'var(--text-muted)' : 'var(--text-secondary)';
+    const footerEl = row.querySelector('.lodge-assignment-footer');
+    if (footerEl) {
+      footerEl.style.color = footerColor;
+      footerEl.querySelector('.assigned-count')
+        && (footerEl.querySelector('.assigned-count').textContent = totalAssignedInRow);
+    }
+
+    // Render dietary / special requirements block (in overall container below entries)
+    const reqContainer = row.querySelector('.lodge-special-requirements');
+    if (reqContainer) {
+      reqContainer.innerHTML = `
         <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Special Requirements</div>
         <div style="display:flex;flex-direction:column;gap:6px">
           <div>
@@ -3624,9 +4096,8 @@
               style="width:13px;height:13px">
             Request packed lunch on excursion days (${MEAL_PLAN_LABELS[mealPlan] || mealPlan})
           </label>` : ''}
-        </div>
-      </div>`;
-    container.innerHTML = html;
+        </div>`;
+    }
   }
 
   function _confirmChildSharing(roomKey, confirmed) {
@@ -3855,20 +4326,37 @@
     document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, rowIdx) => {
       const lodge    = row.querySelector('[name^="lodge_name_"]')?.value;
       if (!lodge) return;
-      const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1;
       const nights   = parseInt(row.querySelector('[name^="nights_"]')?.value) || 1;
-      const roomType = row.querySelector('[name^="room_type_"]')?.value        || '';
       const mealPlan = row.querySelector('[name^="meal_plan_"]')?.value        || 'BB';
       const lodgeData = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodge);
-      const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
-              || (lodgeData?.room_types || [])[0];
-      const rate = rt?.net_rate_usd || 0;
-      if (!rate) return;
+      const entries   = _getRoomTypeEntries(row);
+
+      // Build a list of {roomType, rooms, rate} items to price — one per room-type-entry
+      const priceItems = [];
+      if (entries.length === 0) {
+        // Legacy: single room type from row-level fields
+        const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1;
+        const roomType = row.querySelector('[name^="room_type_"]')?.value        || '';
+        const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
+                || (lodgeData?.room_types || [])[0];
+        const rate = rt?.net_rate_usd || 0;
+        if (rate > 0) priceItems.push({ roomType, rooms, rate });
+      } else {
+        entries.forEach(entry => {
+          const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+          const roomType = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
+          const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
+                  || (lodgeData?.room_types || [])[0];
+          const rate = rt?.net_rate_usd || 0;
+          if (rate > 0) priceItems.push({ roomType, rooms, rate });
+        });
+      }
+      if (priceItems.length === 0) return;
 
       const mealLabel = MEAL_PLAN_LABELS[mealPlan] || mealPlan;
       const isRO = mealPlan === 'RO';
 
-      // Adult meal cost
+      // Adult meal cost per person per night
       const adultMealCost = isRO ? 0 : (
         mealPlan === 'HB' ? 35 :
         mealPlan === 'FB' ? 65 :
@@ -3879,7 +4367,6 @@
       let childLinesHTML = '';
       let childMealTotal = 0;
       const childGuests = (state.guestPool || []).filter(g => g.type === 'child');
-
       if (childGuests.length > 0) {
         const tierGroups = {};
         childGuests.forEach(g => {
@@ -3901,8 +4388,19 @@
         });
       }
 
-      // Room accommodation cost (rate per room × rooms × nights)
-      const roomCost  = rooms * nights * rate;
+      // Room accommodation cost: sum across all room-type-entries
+      let roomCostLines = '';
+      let roomCost = 0;
+      priceItems.forEach(item => {
+        const itemCost = item.rooms * nights * item.rate;
+        roomCost += itemCost;
+        roomCostLines += `
+          <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:2px">
+            <span>${escapeHtml(item.roomType || 'Standard')} × ${item.rooms} room${item.rooms !== 1 ? 's' : ''} (${item.rooms} × ${nights}n × ${fmtMoney(item.rate)})</span>
+            <span style="font-family:var(--font-mono)">${fmtMoney(itemCost)}</span>
+          </div>`;
+      });
+
       // Adult meal supplement (if not RO)
       const adultMealTotal = isRO ? 0 : nights * globalAdults * adultMealCost;
       const rowTotal  = roomCost + adultMealTotal + childMealTotal;
@@ -3912,18 +4410,19 @@
       const u5Total    = (state.guestPool || []).filter(g => _isU5(g)).length;
       const under2Total = (state.guestPool || []).filter(g => g.type === 'child' && g.age !== null && g.age < 2).length;
 
+      // Summary label for the lodge header
+      const totalRooms = priceItems.reduce((s, i) => s + i.rooms, 0);
+      const rtSummary  = priceItems.map(i => `${escapeHtml(i.roomType || 'Standard')}×${i.rooms}`).join(' + ');
+
       rowsHTML += `
         <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border)">
           <div style="font-size:var(--text-xs);font-weight:700;color:var(--text-secondary);margin-bottom:4px">
-            ${escapeHtml(lodge)} — ${escapeHtml(roomType) || 'Standard'} × ${rooms} room${rooms !== 1 ? 's' : ''}
+            ${escapeHtml(lodge)} — ${rtSummary} (${totalRooms} room${totalRooms !== 1 ? 's' : ''} total)
           </div>
           <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px">
             ${mealLabel} · ${nights} night${nights !== 1 ? 's' : ''}
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);margin-bottom:2px">
-            <span>Room rate (${rooms} × ${nights}n × ${fmtMoney(rate)})</span>
-            <span style="font-family:var(--font-mono)">${fmtMoney(roomCost)}</span>
-          </div>
+          ${roomCostLines}
           ${!isRO && adultMealTotal > 0 ? `
           <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-bottom:2px;padding-left:12px">
             <span>Adults ×${globalAdults} meal plan — $${adultMealCost}/pax/night</span>
@@ -3993,37 +4492,54 @@
   }
 
   // Badge derived entirely from Basic Details ÷ rooms vs maxOcc — no manual inputs.
+  // Update the lodge-level occupancy badge — sums across all room-type-entries.
   function _updateRoomOccupancyBadge(row, rowIdx) {
     const badge = row.querySelector('.lodge-occupancy-badge');
     if (!badge) return;
-    const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
-    const maxOcc = _getMaxOccupancy(
-      row.querySelector('[name^="room_type_"]')?.value,
-      row.querySelector('[name^="lodge_name_"]')?.value
-    ) || 2;
+    const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
+    const entries   = _getRoomTypeEntries(row);
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
-    // Use actual assigned count if assignments exist, else fall back to computed
-    let assignedInRow = 0;
-    for (let r = 0; r < rooms; r++) assignedInRow += _getGuestsInRoom(rowIdx, r).length;
-    const hasAssignments = assignedInRow > 0 || Object.keys(state.roomAssignments || {}).length > 0;
-    const displayed = hasAssignments ? assignedInRow : totalGuests;
-    const perRoom   = rooms > 0 ? Math.ceil(displayed / rooms) : 0;
-    const isOver    = perRoom > maxOcc;
+
+    // Sum capacity and assigned guests across all entries
+    let totalCapacity   = 0;
+    let assignedInRow   = 0;
+    let anyOver         = false;
+
+    if (entries.length === 0) {
+      // Legacy path
+      const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+      const maxOcc = _getMaxOccupancy(row.querySelector('[name^="room_type_"]')?.value, lodgeName) || 2;
+      totalCapacity = rooms * maxOcc;
+      for (let r = 0; r < rooms; r++) assignedInRow += _getGuestsInRoom(rowIdx, 0, r).length;
+      anyOver = assignedInRow > totalCapacity;
+    } else {
+      entries.forEach((entry, rtIdx) => {
+        const rooms  = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+        const rt     = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
+        const maxOcc = _getMaxOccupancy(rt, lodgeName) || 2;
+        totalCapacity += rooms * maxOcc;
+        for (let r = 0; r < rooms; r++) assignedInRow += _getGuestsInRoom(rowIdx, rtIdx, r).length;
+        if (rooms * maxOcc < assignedInRow) anyOver = true;
+      });
+    }
+
+    const hasAssignments = Object.keys(state.roomAssignments || {}).length > 0;
+    const displayed = hasAssignments ? assignedInRow : Math.min(totalGuests, totalCapacity);
+    const isOver    = anyOver || (assignedInRow > totalCapacity);
 
     badge.textContent = totalGuests > 0
-      ? `${displayed}/${totalGuests} guests · ${perRoom}/${maxOcc} per room`
+      ? `${assignedInRow}/${totalGuests} assigned · capacity ${totalCapacity}`
       : '—';
     badge.style.background = isOver
       ? 'var(--danger)'
       : totalGuests > 0 ? 'var(--success)' : 'var(--bg-surface)';
     badge.style.color      = totalGuests > 0 ? '#fff' : 'var(--text-muted)';
-    badge.style.borderColor = isOver
-      ? 'var(--danger)'
+    badge.style.borderColor = isOver ? 'var(--danger)'
       : totalGuests > 0 ? 'var(--success)' : 'var(--border)';
     badge.title = isOver
-      ? `Overcrowded! ${perRoom} per room but max is ${maxOcc}.`
-      : `${displayed} of ${totalGuests} guests assigned across ${rooms} room${rooms !== 1 ? 's' : ''}.`;
+      ? `Over capacity! ${assignedInRow} guests vs capacity ${totalCapacity}.`
+      : `${assignedInRow} of ${totalGuests} guests assigned. Capacity: ${totalCapacity}.`;
   }
 
   function _getMaxOccupancy(roomType, lodgeName) {
@@ -4051,16 +4567,26 @@
 
     if (totalGuests === 0) { alertEl.style.display = 'none'; return; }
 
-    // Capacity = sum of (rooms × maxOcc) across all rows
+    // Capacity = sum of (rooms × maxOcc) across ALL room-type-entries in all rows
     let totalCapacity = 0;
     let hasAnyRow = false;
     document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
-      const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
-      const maxOcc = _getMaxOccupancy(
-        row.querySelector('[name^="room_type_"]')?.value,
-        row.querySelector('[name^="lodge_name_"]')?.value
-      ) || 2;
-      totalCapacity += rooms * maxOcc;
+      const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
+      const entries = _getRoomTypeEntries(row);
+      if (entries.length === 0) {
+        // Legacy: single room type from row-level fields
+        const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+        const maxOcc = _getMaxOccupancy(row.querySelector('[name^="room_type_"]')?.value, lodgeName) || 2;
+        totalCapacity += rooms * maxOcc;
+        hasAnyRow = true;
+        return;
+      }
+      entries.forEach(entry => {
+        const rooms  = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+        const rt     = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
+        const maxOcc = _getMaxOccupancy(rt, lodgeName) || 2;
+        totalCapacity += rooms * maxOcc;
+      });
       hasAnyRow = true;
     });
 
@@ -5199,6 +5725,22 @@
       return;
     }
 
+    // Validate nights totals match trip duration before proceeding (Task 2).
+    if (!_validateAndShowNightsSummary()) {
+      const days = parseInt(document.getElementById('pricingDays')?.value) || 0;
+      const expected = days > 0 ? Math.max(1, days - 1) : 0;
+      let assigned = 0;
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
+        assigned += parseInt(row.querySelector('.lodge-nights-input')?.value) || 0;
+      });
+      toast('error', 'Nights mismatch — calculation blocked',
+        `Lodge nights total (${assigned}) must equal trip nights (${expected} = ${days} days − 1). Adjust nights before calculating.`);
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      btn.innerHTML = originalBtnText;
+      return;
+    }
+
     // Validate accommodation covers all guests before proceeding.
     // Uses computed model: capacity = rooms × maxOcc per row.
     {
@@ -5208,17 +5750,32 @@
       let   hasRooms    = false;
       let   hasOvercrowded = false;
       document.querySelectorAll('#lodgeItems .lodge-item').forEach(row => {
-        const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
-        const maxOcc = _getMaxOccupancy(row.querySelector('[name^="room_type_"]')?.value,
-                                        row.querySelector('[name^="lodge_name_"]')?.value) || 2;
-        valCapacity += rooms * maxOcc;
-        hasRooms = true;
-        // Check if per-room distribution exceeds capacity
-        const perRoom = valTotal > 0 ? Math.ceil(valTotal / rooms) : 0;
-        const perRoomAdults   = Math.ceil(valAdults   / rooms);
-        const perRoomChildren = Math.ceil(valChildren / rooms);
-        if (perRoom > maxOcc && !_childSharingApplies(perRoomAdults, perRoomChildren, maxOcc)) {
-          hasOvercrowded = true;
+        const lodgeName = row.querySelector('[name^="lodge_name_"]')?.value || '';
+        const entries = _getRoomTypeEntries(row);
+        if (entries.length === 0) {
+          // Legacy single-entry path
+          const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
+          const maxOcc = _getMaxOccupancy(row.querySelector('[name^="room_type_"]')?.value, lodgeName) || 2;
+          valCapacity += rooms * maxOcc;
+          hasRooms = true;
+          const perRoomAdults   = Math.ceil(valAdults   / rooms);
+          const perRoomChildren = Math.ceil(valChildren / rooms);
+          if (Math.ceil(valTotal / rooms) > maxOcc && !_childSharingApplies(perRoomAdults, perRoomChildren, maxOcc)) {
+            hasOvercrowded = true;
+          }
+        } else {
+          entries.forEach(entry => {
+            const rooms  = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+            const rtVal  = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
+            const maxOcc = _getMaxOccupancy(rtVal, lodgeName) || 2;
+            valCapacity += rooms * maxOcc;
+            hasRooms = true;
+            const perRoomAdults   = Math.ceil(valAdults   / rooms);
+            const perRoomChildren = Math.ceil(valChildren / rooms);
+            if (Math.ceil(valTotal / rooms) > maxOcc && !_childSharingApplies(perRoomAdults, perRoomChildren, maxOcc)) {
+              hasOvercrowded = true;
+            }
+          });
         }
       });
       if (valTotal > 0 && hasRooms && valCapacity < valTotal) {
@@ -5244,30 +5801,54 @@
     try {
       const { adults, children } = _getBasicPax();
 
-      // Build accommodations array.
+      // Build accommodations array — one entry per room-type-entry per lodge row.
       // adults/children always come from Basic Details (single source of truth).
       const accommodations = [];
+      const childGuests     = (state.guestPool || []).filter(g => g.type === 'child');
+      const childrenFree    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return t.free; }).length;
+      const childrenHalf    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return !t.free && t.multiplier === 0.5; }).length;
+      const childrenFull    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return !t.free && t.multiplier === 1.0; }).length;
+
       document.querySelectorAll('#lodgeItems .lodge-item').forEach((row) => {
         const lodge    = row.querySelector(`[name^="lodge_name_"]`)?.value;
-        const roomType = row.querySelector(`[name^="room_type_"]`)?.value || 'standard';
+        if (!lodge) return;
         const nights   = parseInt(row.querySelector(`[name^="nights_"]`)?.value) || 1;
-        const rooms    = parseInt(row.querySelector(`[name^="rooms_"]`)?.value)  || 1;
         const mealPlan = row.querySelector(`[name^="meal_plan_"]`)?.value || 'BB';
         const guestLabel = row.querySelector(`[name^="guest_label_"]`)?.value?.trim() || '';
-        // Derive per-room adult/child counts from Basic Details for accurate per-guest pricing
-        const perRoomAdults   = rooms > 0 ? Math.ceil(adults   / rooms) : adults;
-        const perRoomChildren = rooms > 0 ? Math.ceil(children / rooms) : children;
-        // Age-banded child data for meal pricing
-        const childGuests     = (state.guestPool || []).filter(g => g.type === 'child');
-        const childrenFree    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return t.free; }).length;
-        const childrenHalf    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return !t.free && t.multiplier === 0.5; }).length;
-        const childrenFull    = childGuests.filter(g => { const t = _getChildMealTier(g.age); return !t.free && t.multiplier === 1.0; }).length;
-        if (lodge) accommodations.push({
-          lodge, room_type: roomType, nights, rooms,
-          meal_plan: mealPlan,
-          adults: perRoomAdults, children: perRoomChildren,
-          children_free: childrenFree, children_half: childrenHalf, children_full: childrenFull,
-          guest_label: guestLabel,
+        const entries  = _getRoomTypeEntries(row);
+
+        if (entries.length === 0) {
+          // Legacy: single room type from row-level fields
+          const roomType = row.querySelector(`[name^="room_type_"]`)?.value || 'standard';
+          const rooms    = parseInt(row.querySelector(`[name^="rooms_"]`)?.value)  || 1;
+          const perRoomAdults   = rooms > 0 ? Math.ceil(adults   / rooms) : adults;
+          const perRoomChildren = rooms > 0 ? Math.ceil(children / rooms) : children;
+          accommodations.push({
+            lodge, room_type: roomType, nights, rooms, meal_plan: mealPlan,
+            adults: perRoomAdults, children: perRoomChildren,
+            children_free: childrenFree, children_half: childrenHalf, children_full: childrenFull,
+            guest_label: guestLabel,
+          });
+          return;
+        }
+
+        // Multi room type: one accommodation record per room-type-entry
+        const totalRoomsInLodge = entries.reduce((s, e) => s + (parseInt(e.querySelector('[name^="rooms_"]')?.value) || 1), 0);
+        entries.forEach(entry => {
+          const roomType = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || 'standard';
+          const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+          // Apportion adults/children proportionally to room count in this entry
+          const share = totalRoomsInLodge > 0 ? rooms / totalRoomsInLodge : 1;
+          const perRoomAdults   = rooms > 0 ? Math.ceil(adults   * share / rooms) : adults;
+          const perRoomChildren = rooms > 0 ? Math.ceil(children * share / rooms) : children;
+          accommodations.push({
+            lodge, room_type: roomType, nights, rooms, meal_plan: mealPlan,
+            adults: perRoomAdults, children: perRoomChildren,
+            children_free: Math.ceil(childrenFree  * share),
+            children_half: Math.ceil(childrenHalf  * share),
+            children_full: Math.ceil(childrenFull  * share),
+            guest_label: guestLabel,
+          });
         });
       });
 
@@ -5328,6 +5909,29 @@
       };
 
       // Accommodation validation safeguards
+      // Hard-block: lodge name must match supplier database records
+      const unknownLodges = [];
+      document.querySelectorAll('#lodgeItems .lodge-item').forEach((row) => {
+        const lodge = row.querySelector(`[name^="lodge_name_"]`)?.value;
+        if (!lodge) return;
+        const lodgeData = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodge);
+        if (!lodgeData) unknownLodges.push(lodge);
+      });
+      if (unknownLodges.length > 0) {
+        const allNames = (state.lodgeData || []).map(l => l.name || l.lodge_name || '').filter(Boolean);
+        // Suggest closest matches (naive substring search)
+        const suggestions = unknownLodges.map(unknown => {
+          const matches = allNames.filter(n => n.toLowerCase().includes(unknown.toLowerCase().slice(0, 4)));
+          return matches.length > 0 ? `"${unknown}" — did you mean: ${matches.slice(0, 3).join(', ')}?` : `"${unknown}" — not found in supplier database`;
+        });
+        toast('error', 'Lodge not found in supplier database',
+          suggestions.join(' | ') + ' Select a lodge from the dropdown.');
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        btn.innerHTML = originalBtnText;
+        return;
+      }
+
       const accomWarnings = [];
       document.querySelectorAll('#lodgeItems .lodge-item').forEach((row, ri) => {
         const lodge = row.querySelector(`[name^="lodge_name_"]`)?.value;
