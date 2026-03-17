@@ -2884,9 +2884,30 @@
     });
   }
 
+  // Drop any roomAssignments pointing to rooms that no longer exist in this row.
+  // Called whenever rooms count changes so guests reappear in the unassigned pool.
+  function _purgeStaleRoomAssignments(row) {
+    if (!state.roomAssignments) return;
+    const rowIdx  = parseInt(row.dataset.idx);
+    const entries = _getRoomTypeEntries(row);
+    const validKeys = new Set();
+    entries.forEach((entry, rtIdx) => {
+      const rooms = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+      for (let r = 0; r < rooms; r++) {
+        validKeys.add(_makeRoomKey(rowIdx, rtIdx, r));
+        if (rtIdx === 0) validKeys.add(`${rowIdx}:${r}`); // legacy 2-part key
+      }
+    });
+    for (const [gid, key] of Object.entries(state.roomAssignments)) {
+      if (!key.startsWith(`${rowIdx}:`)) continue;
+      if (!validKeys.has(key)) delete state.roomAssignments[gid];
+    }
+  }
+
   // Refresh all derived display for a lodge row.
   function _autoSyncRoomGuests(row) {
     const rowIdx = parseInt(row.dataset.idx);
+    _purgeStaleRoomAssignments(row);
     _updateLodgeTotalGuestsHint(row);
     _renderLodgeRoomCards(row, rowIdx);
     _updateRoomOccupancyBadge(row, rowIdx);
