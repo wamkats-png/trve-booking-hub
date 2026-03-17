@@ -5013,7 +5013,7 @@
         const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
                 || (lodgeData?.room_types || [])[0];
         const rate = rt?.net_rate_usd || 0;
-        if (rate > 0) priceItems.push({ roomType, rooms, rate });
+        if (rate > 0) priceItems.push({ roomType, rooms, rate, rateMealPlan: rt?.meal_plan || '' });
       } else {
         entries.forEach(entry => {
           const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
@@ -5021,7 +5021,7 @@
           const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
                   || (lodgeData?.room_types || [])[0];
           const rate = rt?.net_rate_usd || 0;
-          if (rate > 0) priceItems.push({ roomType, rooms, rate });
+          if (rate > 0) priceItems.push({ roomType, rooms, rate, rateMealPlan: rt?.meal_plan || '' });
         });
       }
       if (priceItems.length === 0) return;
@@ -5029,12 +5029,27 @@
       const mealLabel = MEAL_PLAN_LABELS[mealPlan] || mealPlan;
       const isRO = mealPlan === 'RO';
 
-      // Adult meal cost per person per night
-      const adultMealCost = isRO ? 0 : (
-        mealPlan === 'HB' ? 35 :
-        mealPlan === 'FB' ? 65 :
-        mealPlan === 'AI' ? 85 : 0
-      );
+      // Meal plan hierarchy: only charge a surcharge when the booking requests a more
+      // inclusive plan than what the lodge rate already includes. Safari lodge rates
+      // are typically quoted inclusive of their stated meal plan (HB, FB, etc.),
+      // so selecting the matching plan should never add an extra per-person charge.
+      const MEAL_RANK           = { RO: 0, BB: 1, HB: 2, FB: 3, AI: 4 };
+      const MEAL_SURCHARGE_RATES = { BB: 0, HB: 35, FB: 65, AI: 85 };
+      const dominantRatePlan = (() => {
+        const s = (priceItems[0]?.rateMealPlan || '').toLowerCase();
+        if (s.includes('all incl'))              return 'AI';
+        if (s === 'fb' || s.includes('full'))    return 'FB';
+        if (s === 'hb' || s.includes('half'))    return 'HB';
+        if (s === 'bb' || s.includes('bed'))     return 'BB';
+        if (s === 'ro' || s.includes('room only')) return 'RO';
+        return 'BB';
+      })();
+      const rateRank    = MEAL_RANK[dominantRatePlan] ?? 1;
+      const bookingRank = MEAL_RANK[mealPlan]         ?? 1;
+      // Surcharge = difference between plans; zero when rate already covers the plan
+      const adultMealCost = bookingRank > rateRank
+        ? (MEAL_SURCHARGE_RATES[mealPlan] || 0) - (MEAL_SURCHARGE_RATES[dominantRatePlan] || 0)
+        : 0;
 
       // Age-banded child costs — room rate + meal supplement split by age tier
       const lodgePolicy = _getLodgeChildPolicy(lodge);
