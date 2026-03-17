@@ -483,8 +483,12 @@
     if (el._removing) return;
     el._removing = true;
     el.classList.add('removing');
-    // Use setTimeout as reliable fallback — transitionend can fail if element is hidden
-    setTimeout(() => { if (el.parentNode) el.remove(); }, 250);
+    // Primary: remove immediately when CSS transition ends
+    const cleanup = () => { if (el.parentNode) el.remove(); };
+    el.addEventListener('transitionend', cleanup, { once: true });
+    // Fallback: guarantee DOM removal even if transitionend doesn't fire
+    // (e.g. element scrolled offscreen, tab backgrounded, or transition skipped)
+    setTimeout(cleanup, 300);
   }
 
   /* ============================================================
