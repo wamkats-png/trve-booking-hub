@@ -515,6 +515,7 @@
     curation:   'Itinerary Matching',
     pricing:    'Pricing Calculator',
     quotations: 'Quotations',
+    invoices:   'Invoices & Vouchers',
     sync:       'Sheets Sync'
   };
 
@@ -549,6 +550,7 @@
     if (viewId === 'pricing') loadPricingItineraries(); // handles curation pre-select internally after data loads
     if (viewId === 'tools') initToolsView();
     if (viewId === 'quotations') loadQuotations();
+    if (viewId === 'invoices') loadInvoicesView();
     if (viewId === 'sync') renderSyncView();
     if (viewId === 'lodges') { loadLodgesView(); }
   }
@@ -1227,6 +1229,13 @@
     const channelClass = CHANNEL_BADGE_CLASS[e.channel?.toLowerCase()] || 'badge-ch-direct';
     const startDate = e.travel_start_date ? fmtDate(e.travel_start_date) : null;
 
+    // Payment progress bar for confirmed/in-progress cards
+    const showPayBar = ['Confirmed', 'In_Progress', 'Completed'].includes(e.status);
+    const quoted = parseFloat(e.quoted_usd) || 0;
+    const received = parseFloat(e.revenue_usd) || 0;
+    const payPct = quoted > 0 ? Math.min(100, Math.round((received / quoted) * 100)) : 0;
+    const payBarColor = received >= quoted - 0.01 && quoted > 0 ? 'var(--success)' : received > 0 ? 'var(--brand-gold)' : 'var(--danger)';
+
     return `
       <div class="kanban-card" data-enquiry-id="${escapeHtml(e.id)}" role="button" tabindex="0">
         <div class="kanban-card-ref">${escapeHtml(e.booking_ref || '—')}</div>
@@ -1235,6 +1244,14 @@
           <span class="badge ${channelClass}">${escapeHtml(e.channel || 'direct')}</span>
           ${e.coordinator ? `<span class="badge badge-teal">${escapeHtml(e.coordinator)}</span>` : ''}
         </div>
+        ${showPayBar && quoted > 0 ? `
+        <div class="kanban-pay-bar" title="${payPct}% paid — ${fmtMoney(received)} of ${fmtMoney(quoted)}">
+          <div class="kanban-pay-bar-fill" style="width:${payPct}%;background:${payBarColor}"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:2px;padding:0 1px">
+          <span>${payPct}% paid</span>
+          <span class="mono">${fmtMoney(received)}</span>
+        </div>` : ''}
         <div class="kanban-card-footer">
           <span class="kanban-card-pax">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="5" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M1 10c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="9.5" cy="3.5" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M9 8.5c0-1 .5-2 1.5-2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
@@ -1445,43 +1462,56 @@
       </div>
       <div class="divider"></div>` : ''}
 
-      <!-- Payment Recording -->
-      ${(() => {
-        const invoiceAmt = enquiry.quoted_usd;
-        const reqTransfer = enquiry.required_transfer_amount;
-        const bankChargesOnInvoice = !!enquiry.include_bank_charges_in_invoice;
-        const threshold = bankChargesOnInvoice && reqTransfer ? reqTransfer : invoiceAmt;
-        const received  = enquiry.revenue_usd;
-        const shortfall = threshold && received != null ? round2(threshold - received) : null;
-        const isUnderpaid = shortfall != null && shortfall > 0.01;
-        function round2(v) { return Math.round(v * 100) / 100; }
-        return `
-        <div class="detail-financial-summary mb-4" id="paymentRecordingSection">
-          <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--teal-700);margin-bottom:var(--space-3)">
-            Record Payment
+      <!-- Payment Ledger -->
+      <div class="detail-financial-summary mb-4" id="paymentLedgerSection">
+        <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--teal-700);margin-bottom:var(--space-3);display:flex;align-items:center;justify-content:space-between">
+          <span>Payments Received</span>
+          <button class="btn btn-gold btn-sm" id="btnAddPayment" style="font-size:10px;padding:3px 8px">+ Record Payment</button>
+        </div>
+        <div id="paymentLedgerList" style="font-size:var(--text-xs);color:var(--text-muted)">Loading…</div>
+        <!-- Add payment form (hidden until button clicked) -->
+        <div id="addPaymentForm" style="display:none;margin-top:var(--space-3);background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3)">
+          <div style="font-size:var(--text-xs);font-weight:600;color:var(--teal-700);margin-bottom:var(--space-2)">New Payment</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-2);margin-bottom:var(--space-2)">
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:2px">Amount (USD) *</label>
+              <input id="payAmt" type="number" min="0" step="0.01" placeholder="e.g. 5000"
+                class="form-control" style="font-family:var(--font-mono);font-size:var(--text-xs);padding:4px 6px">
+            </div>
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:2px">Date</label>
+              <input id="payDate" type="date" class="form-control" style="font-size:var(--text-xs);padding:4px 6px"
+                value="${new Date().toISOString().slice(0,10)}">
+            </div>
           </div>
-          ${threshold ? `
-          <div style="font-size:var(--text-xs);color:var(--text-muted);margin-bottom:var(--space-2)">
-            Required: <strong class="mono">${fmtMoney(threshold)}</strong>
-            ${bankChargesOnInvoice && reqTransfer ? ' (includes bank charges)' : ''}
-          </div>` : ''}
-          <div class="form-group mb-2">
-            <label class="form-label" for="detailPaymentReceived" style="font-size:var(--text-xs)">Amount Received (USD)</label>
-            <input class="form-control" type="number" id="detailPaymentReceived" min="0" step="0.01"
-              value="${received != null ? received : ''}"
-              placeholder="${threshold ? threshold.toFixed(2) : 'e.g. 5000'}"
-              style="font-family:var(--font-mono)">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-2);margin-bottom:var(--space-2)">
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:2px">Method</label>
+              <select id="payMethod" class="form-control" style="font-size:var(--text-xs);padding:4px 6px">
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="card">Card</option>
+                <option value="cash">Cash</option>
+                <option value="mobile_money">Mobile Money</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:2px">Reference</label>
+              <input id="payRef" type="text" placeholder="TXN ref or receipt #"
+                class="form-control" style="font-size:var(--text-xs);padding:4px 6px">
+            </div>
           </div>
-          <div id="detailPaymentWarning" style="display:${isUnderpaid ? 'block' : 'none'};background:#FEF2F2;border:1px solid var(--danger);border-radius:var(--radius-md);padding:var(--space-3);font-size:var(--text-xs);color:var(--danger);margin-bottom:var(--space-2)">
-            ⚠ Underpaid — shortfall of <strong class="mono">${isUnderpaid ? fmtMoney(shortfall) : ''}</strong>.
-            Invoice settlement blocked until full amount is received.
+          <div style="margin-bottom:var(--space-2)">
+            <label style="font-size:10px;color:var(--text-muted);display:block;margin-bottom:2px">Notes</label>
+            <input id="payNotes" type="text" placeholder="Optional notes"
+              class="form-control" style="font-size:var(--text-xs);padding:4px 6px">
           </div>
-          <div id="detailPaymentOk" style="display:${received != null && !isUnderpaid && threshold ? 'block' : 'none'};background:#F0FAF6;border:1px solid #6ee7c7;border-radius:var(--radius-md);padding:var(--space-3);font-size:var(--text-xs);color:#0d7a5f;margin-bottom:var(--space-2)">
-            ✓ Payment sufficient — invoice can be settled.
+          <div style="display:flex;gap:6px">
+            <button id="btnSavePayment" class="btn btn-primary btn-sm" style="font-size:10px">Save Payment</button>
+            <button id="btnCancelPayment" class="btn btn-ghost btn-sm" style="font-size:10px">Cancel</button>
           </div>
         </div>
-        <div class="divider"></div>`;
-      })()}
+      </div>
+      <div class="divider"></div>
 
       <div class="form-group mb-4">
         <label class="form-label" for="detailNotes">Notes</label>
@@ -1510,12 +1540,22 @@
       </div>
     `;
 
+    const isConfirmedOrLater = ['Confirmed', 'In_Progress', 'Completed'].includes(enquiry.status);
     const footerHtml = `
       <button class="btn btn-primary" id="detailSaveBtn" data-enquiry-id="${escapeHtml(enquiry.id)}">Save Changes</button>
       <button class="btn btn-gold" id="detailCurationBtn" data-enquiry-id="${escapeHtml(enquiry.id)}">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5l1.4 4.2H13l-3.8 2.8 1.4 4.2L7 9.9l-3.6 2.8 1.4-4.2L1 5.7h4.6L7 1.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
         Find Best Itineraries
       </button>
+      ${isConfirmedOrLater ? `
+      <button class="btn btn-secondary btn-sm" id="detailInvoiceBtn" data-enquiry-id="${escapeHtml(enquiry.id)}" title="Generate tax invoice">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7.5 1H2.5A1 1 0 001.5 2v9a1 1 0 001 1h8a1 1 0 001-1V4.5l-3-3.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7.5 1v3.5H11M3.5 7h6M3.5 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        Invoice
+      </button>
+      <button class="btn btn-secondary btn-sm" id="detailVouchersBtn" data-enquiry-id="${escapeHtml(enquiry.id)}" title="Generate supplier vouchers">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="3" width="11" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M1 5.5h11M4 3V2M9 3V2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        Vouchers
+      </button>` : ''}
       <button class="btn btn-ghost" id="detailCancelBtn">Cancel</button>
     `;
 
@@ -1649,6 +1689,188 @@
       sel.dispatchEvent(new Event('change'));
       await runCurationFromEnquiry(enquiry.id);
     });
+
+    // --- Payment ledger ---
+    async function loadPaymentLedger() {
+      const ledgerEl = document.getElementById('paymentLedgerList');
+      if (!ledgerEl) return;
+      try {
+        const payments = await apiFetch(`/api/payments?booking_ref=${encodeURIComponent(enquiry.booking_ref)}`);
+        const quoted = parseFloat(enquiry.quoted_usd) || 0;
+        const totalPaid = payments.reduce((s, p) => s + (parseFloat(p.amount_usd) || 0), 0);
+        const balance = quoted - totalPaid;
+
+        if (!payments.length) {
+          ledgerEl.innerHTML = `<div style="color:var(--text-muted);padding:var(--space-2) 0">No payments recorded yet.</div>`;
+        } else {
+          ledgerEl.innerHTML = payments.map(p => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">
+              <div>
+                <span class="mono" style="font-size:11px;font-weight:600;color:var(--teal-700)">${fmtMoney(p.amount_usd)}</span>
+                <span style="color:var(--text-muted);margin-left:6px">${escapeHtml(p.method || 'bank_transfer').replace('_',' ')}</span>
+                ${p.reference ? `<span style="color:var(--text-muted);margin-left:4px">· ${escapeHtml(p.reference)}</span>` : ''}
+              </div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-size:10px;color:var(--text-muted)">${fmtDate(p.payment_date || p.created_at)}</span>
+                <button style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:11px;padding:2px 4px"
+                  onclick="window._deletePayment('${escapeHtml(p.id)}', '${escapeHtml(enquiry.booking_ref)}')">×</button>
+              </div>
+            </div>
+          `).join('');
+        }
+
+        // Summary bar
+        if (quoted > 0) {
+          const pct = Math.min(100, (totalPaid / quoted) * 100);
+          const barColor = totalPaid >= quoted - 0.01 ? 'var(--success)' : totalPaid > 0 ? 'var(--brand-gold)' : 'var(--border)';
+          ledgerEl.innerHTML += `
+            <div style="margin-top:var(--space-2)">
+              <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+                <div style="height:100%;width:${pct}%;background:${barColor};transition:width 0.3s"></div>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:var(--text-muted)">
+                <span>Received: <strong class="mono">${fmtMoney(totalPaid)}</strong></span>
+                <span>Balance: <strong class="mono" style="color:${balance > 0.01 ? 'var(--danger)' : 'var(--success)'}">${fmtMoney(Math.max(0, balance))}</strong></span>
+              </div>
+            </div>`;
+        }
+
+        // Update local enquiry state so kanban card refreshes
+        const idx = state.enquiries.findIndex(e => e.id === enquiry.id);
+        if (idx !== -1) {
+          state.enquiries[idx].revenue_usd = totalPaid;
+          state.enquiries[idx].balance_usd = balance;
+        }
+      } catch (err) {
+        const ledgerEl2 = document.getElementById('paymentLedgerList');
+        if (ledgerEl2) ledgerEl2.textContent = 'Failed to load payments.';
+      }
+    }
+    loadPaymentLedger();
+
+    const btnAddPay = document.getElementById('btnAddPayment');
+    if (btnAddPay) {
+      btnAddPay.addEventListener('click', () => {
+        const form = document.getElementById('addPaymentForm');
+        if (form) form.style.display = form.style.display === 'none' ? '' : 'none';
+      });
+    }
+
+    const btnCancelPay = document.getElementById('btnCancelPayment');
+    if (btnCancelPay) btnCancelPay.addEventListener('click', () => {
+      const form = document.getElementById('addPaymentForm');
+      if (form) form.style.display = 'none';
+    });
+
+    const btnSavePay = document.getElementById('btnSavePayment');
+    if (btnSavePay) {
+      btnSavePay.addEventListener('click', async () => {
+        const amt = parseFloat(document.getElementById('payAmt')?.value);
+        if (!amt || amt <= 0) { toast('warning', 'Enter a valid amount'); return; }
+        const payDate = document.getElementById('payDate')?.value;
+        const method = document.getElementById('payMethod')?.value;
+        const ref = document.getElementById('payRef')?.value;
+        const notes = document.getElementById('payNotes')?.value;
+        btnSavePay.classList.add('loading'); btnSavePay.disabled = true;
+        try {
+          await apiFetch('/api/payments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              booking_ref: enquiry.booking_ref,
+              amount_usd: amt,
+              payment_date: payDate,
+              method: method || 'bank_transfer',
+              reference: ref || '',
+              notes: notes || '',
+              recorded_by: state.coordinator,
+            }),
+          });
+          const form = document.getElementById('addPaymentForm');
+          if (form) form.style.display = 'none';
+          const amtEl = document.getElementById('payAmt');
+          const refEl = document.getElementById('payRef');
+          const notesEl2 = document.getElementById('payNotes');
+          if (amtEl) amtEl.value = '';
+          if (refEl) refEl.value = '';
+          if (notesEl2) notesEl2.value = '';
+          toast('success', 'Payment recorded', `${fmtMoney(amt)} saved`);
+          await loadPaymentLedger();
+          renderPipeline();
+        } catch (err) {
+          toast('error', 'Failed to save payment', err.message);
+        } finally {
+          btnSavePay.classList.remove('loading'); btnSavePay.disabled = false;
+        }
+      });
+    }
+
+    window._deletePayment = async function(payId, bookingRef) {
+      if (!confirm('Delete this payment record?')) return;
+      try {
+        await apiFetch(`/api/payments/${payId}`, { method: 'DELETE' });
+        toast('info', 'Payment deleted', '');
+        await loadPaymentLedger();
+        renderPipeline();
+      } catch (err) {
+        toast('error', 'Delete failed', err.message);
+      }
+    };
+
+    // --- Invoice button ---
+    const btnInvoice = document.getElementById('detailInvoiceBtn');
+    if (btnInvoice) {
+      btnInvoice.addEventListener('click', async () => {
+        btnInvoice.classList.add('loading'); btnInvoice.disabled = true;
+        try {
+          const result = await apiFetch('/api/invoices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              booking_ref: enquiry.booking_ref,
+              client_name: enquiry.client_name,
+              client_email: enquiry.email || '',
+            }),
+          });
+          toast('success', `Invoice ${result.invoice_number} created`, `Total: ${fmtMoney(result.total_usd)}`);
+          // Open PDF in new tab
+          window.open(`${API}/api/invoices/${result.id}/pdf`, '_blank');
+        } catch (err) {
+          toast('error', 'Invoice generation failed', err.message);
+        } finally {
+          btnInvoice.classList.remove('loading'); btnInvoice.disabled = false;
+        }
+      });
+    }
+
+    // --- Vouchers button ---
+    const btnVouchers = document.getElementById('detailVouchersBtn');
+    if (btnVouchers) {
+      btnVouchers.addEventListener('click', async () => {
+        btnVouchers.classList.add('loading'); btnVouchers.disabled = true;
+        try {
+          const result = await apiFetch('/api/vouchers/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              booking_ref: enquiry.booking_ref,
+              client_name: enquiry.client_name,
+              travel_start_date: enquiry.travel_start_date || '',
+              special_requests: enquiry.special_requests || '',
+            }),
+          });
+          if (result.created === 0) {
+            toast('warning', 'No vouchers generated', 'No pricing data found. Generate a quotation first.');
+          } else {
+            toast('success', `${result.created} voucher${result.created !== 1 ? 's' : ''} generated`, result.vouchers.map(v => v.supplier).join(', '));
+          }
+        } catch (err) {
+          toast('error', 'Voucher generation failed', err.message);
+        } finally {
+          btnVouchers.classList.remove('loading'); btnVouchers.disabled = false;
+        }
+      });
+    }
   }
 
   /* ============================================================
@@ -5233,6 +5455,155 @@
   function initQuotations() {
     // Quotations are loaded on navigate; nothing to init statically
   }
+
+  /* ============================================================
+     VIEW: INVOICES & VOUCHERS
+     ============================================================ */
+
+  const INV_STATUS_BADGE = {
+    draft:    'badge-quot-draft',
+    sent:     'badge-quot-sent',
+    paid:     'badge-confirmed',
+    overdue:  'badge-expired',
+  };
+
+  function loadInvoicesView() {
+    // Wire up tab switching
+    document.querySelectorAll('.inv-tab').forEach(tab => {
+      tab.onclick = () => {
+        document.querySelectorAll('.inv-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const which = tab.dataset.invtab;
+        document.getElementById('invPanelInvoices').style.display = which === 'invoices' ? '' : 'none';
+        document.getElementById('invPanelVouchers').style.display = which === 'vouchers' ? '' : 'none';
+        if (which === 'invoices') _fetchInvoices();
+        else _fetchVouchers();
+      };
+    });
+    _fetchInvoices();
+  }
+
+  async function _fetchInvoices(bookingRef) {
+    const wrap = document.getElementById('invoicesTableWrap');
+    wrap.innerHTML = `<div style="padding:var(--space-5);color:var(--text-muted);font-size:var(--text-sm)">Loading…</div>`;
+    try {
+      const url = bookingRef ? `/api/invoices?booking_ref=${encodeURIComponent(bookingRef)}` : '/api/invoices';
+      const data = await apiFetch(url);
+      const invoices = Array.isArray(data) ? data : [];
+      if (!invoices.length) {
+        wrap.innerHTML = `<div class="empty-state">
+          <div class="empty-icon"><svg width="28" height="28" viewBox="0 0 28 28" fill="none"><path d="M18 3H7a2 2 0 00-2 2v18a2 2 0 002 2h14a2 2 0 002-2V9l-5-6z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M18 3v6h5M10 17h8M10 21h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+          <div class="empty-title">No invoices yet</div>
+          <div class="empty-text">Open a confirmed booking in the Pipeline and click "Generate Invoice".</div>
+        </div>`;
+        return;
+      }
+      wrap.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+        <thead><tr>
+          <th>Invoice #</th><th>Booking Ref</th><th>Client</th>
+          <th style="text-align:right">Total USD</th><th>Due Date</th>
+          <th>Status</th><th>Actions</th>
+        </tr></thead>
+        <tbody>
+          ${invoices.map(inv => `<tr>
+            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(inv.invoice_number || '—')}</td>
+            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(inv.booking_ref || '—')}</td>
+            <td>
+              <div style="font-weight:500">${escapeHtml(inv.client_name || '—')}</div>
+              ${inv.client_email ? `<div style="font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(inv.client_email)}</div>` : ''}
+            </td>
+            <td class="mono" style="text-align:right;white-space:nowrap">${fmtMoney(inv.total_usd)}</td>
+            <td style="font-size:var(--text-xs);white-space:nowrap">${inv.due_date ? fmtDate(inv.due_date) : 'On receipt'}</td>
+            <td><span class="badge ${INV_STATUS_BADGE[inv.status] || 'badge-quot-draft'}">${escapeHtml(inv.status || 'draft')}</span></td>
+            <td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
+              <a href="${API}/api/invoices/${escapeHtml(inv.id)}/pdf" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9v1a1 1 0 001 1h8a1 1 0 001-1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                PDF
+              </a>
+              ${inv.status !== 'paid' ? `
+              <button class="btn btn-ghost btn-sm" onclick="window._markInvoicePaid('${escapeHtml(inv.id)}')">Mark Paid</button>` : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+    } catch (err) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-title">Failed to load</div><div class="empty-text">${escapeHtml(err.message)}</div></div>`;
+    }
+  }
+
+  window._markInvoicePaid = async function(invoiceId) {
+    try {
+      await apiFetch(`/api/invoices/${invoiceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'paid' }),
+      });
+      toast('success', 'Invoice marked paid', '');
+      _fetchInvoices();
+    } catch (err) {
+      toast('error', 'Update failed', err.message);
+    }
+  };
+
+  async function _fetchVouchers(bookingRef) {
+    const wrap = document.getElementById('vouchersTableWrap');
+    wrap.innerHTML = `<div style="padding:var(--space-5);color:var(--text-muted);font-size:var(--text-sm)">Loading…</div>`;
+    try {
+      const url = bookingRef ? `/api/vouchers?booking_ref=${encodeURIComponent(bookingRef)}` : '/api/vouchers';
+      const data = await apiFetch(url);
+      const vouchers = Array.isArray(data) ? data : [];
+      if (!vouchers.length) {
+        wrap.innerHTML = `<div class="empty-state">
+          <div class="empty-icon"><svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="2" y="6" width="24" height="16" rx="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M2 12h24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+          <div class="empty-title">No vouchers yet</div>
+          <div class="empty-text">Open a confirmed booking in the Pipeline and click "Generate Vouchers".</div>
+        </div>`;
+        return;
+      }
+      wrap.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+        <thead><tr>
+          <th>Voucher #</th><th>Booking Ref</th><th>Supplier</th>
+          <th>Service</th><th>Dates</th><th>Guests</th>
+          <th>Status</th><th>Actions</th>
+        </tr></thead>
+        <tbody>
+          ${vouchers.map(v => `<tr>
+            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.voucher_number || '—')}</td>
+            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.booking_ref || '—')}</td>
+            <td style="font-weight:500">${escapeHtml(v.supplier_name || '—')}</td>
+            <td style="font-size:var(--text-xs)">${escapeHtml(v.service_type || '—')}</td>
+            <td style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.service_dates || '—')}</td>
+            <td style="text-align:center">${v.pax || 1}</td>
+            <td><span class="badge ${v.status === 'sent' ? 'badge-confirmed' : 'badge-quot-draft'}">${escapeHtml(v.status || 'draft')}</span></td>
+            <td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
+              <a href="${API}/api/vouchers/${escapeHtml(v.id)}/pdf" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9v1a1 1 0 001 1h8a1 1 0 001-1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                PDF
+              </a>
+              ${v.status !== 'sent' ? `
+              <button class="btn btn-ghost btn-sm" onclick="window._markVoucherSent('${escapeHtml(v.id)}')">Mark Sent</button>` : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+    } catch (err) {
+      wrap.innerHTML = `<div class="empty-state"><div class="empty-title">Failed to load</div><div class="empty-text">${escapeHtml(err.message)}</div></div>`;
+    }
+  }
+
+  window._markVoucherSent = async function(voucherId) {
+    try {
+      await apiFetch(`/api/vouchers/${voucherId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'sent' }),
+      });
+      toast('success', 'Voucher marked sent', '');
+      _fetchVouchers();
+    } catch (err) {
+      toast('error', 'Update failed', err.message);
+    }
+  };
 
   /* ============================================================
      VIEW: SHEETS SYNC PANEL
