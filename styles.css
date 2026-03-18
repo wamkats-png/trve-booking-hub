@@ -96,12 +96,17 @@
 
   /* Monospace font */
   --font-mono:         'Courier New', 'SF Mono', monospace;
+
+  /* Mobile layout */
+  --bottom-nav-height:      56px;
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* ── Reset ──────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html { font-size: 14px; }
+@media (max-width: 768px) { html { font-size: 16px; } }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;

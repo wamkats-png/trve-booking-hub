@@ -618,12 +618,12 @@
 
     hamburger.addEventListener('click', () => {
       sidebar.classList.toggle('mobile-open');
-      overlay.classList.toggle('open');
+      overlay.classList.toggle('active');
     });
 
     overlay.addEventListener('click', () => {
       sidebar.classList.remove('mobile-open');
-      overlay.classList.remove('open');
+      overlay.classList.remove('active');
     });
 
     // Coordinator selector
@@ -638,7 +638,7 @@
         navigate(item.dataset.view);
         // Close mobile sidebar
         sidebar.classList.remove('mobile-open');
-        overlay.classList.remove('open');
+        overlay.classList.remove('active');
       });
       item.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); item.click(); }
