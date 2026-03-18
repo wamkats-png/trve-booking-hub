@@ -6916,10 +6916,6 @@
           toast('warning', 'Accommodation incomplete',
             `${shortfall} guest${shortfall !== 1 ? 's are' : ' is'} unaccommodated. Add more rooms before calculating.`);
           _checkCapacityMismatch();
-          btn.classList.remove('loading');
-          btn.disabled = false;
-          btn.innerHTML = originalBtnText;
-          return;
         }
       }
       if (hasOvercrowded) {
