@@ -1475,6 +1475,7 @@ def init_db():
         ("source_email_date", "TEXT", "''"),
         ("extraction_timestamp", "TEXT", "''"),
         ("max_occupancy", "INTEGER", "2"),
+        ("child_policy", "TEXT", "'{\"free_under\":5,\"child_rate_pct\":50,\"adult_from\":12}'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE lodges ADD COLUMN {_col} {_ctype} DEFAULT {_cdefault}")
@@ -2873,6 +2874,8 @@ class LodgeCreate(BaseModel):
     source_email_date: Optional[str] = ""
     extraction_timestamp: Optional[str] = ""
     max_occupancy: Optional[int] = 2
+    # child_policy: JSON string {"free_under":5,"child_rate_pct":50,"adult_from":12}
+    child_policy: Optional[str] = None
 
 
 class LodgeUpdate(BaseModel):
@@ -2890,6 +2893,7 @@ class LodgeUpdate(BaseModel):
     source_email_date: Optional[str] = None
     extraction_timestamp: Optional[str] = None
     max_occupancy: Optional[int] = None
+    child_policy: Optional[str] = None
 
 
 class EmailRateEntry(BaseModel):
@@ -3624,12 +3628,24 @@ def list_lodges():
         l = dict(r)
         name = l["lodge_name"]
         if name not in lodge_map:
+            # Parse child_policy once per lodge (first row wins; all rows should match)
+            raw_cp0 = l["child_policy"] if "child_policy" in l.keys() else None
+            try:
+                cp0 = json.loads(raw_cp0) if raw_cp0 else {"free_under": 5, "child_rate_pct": 50, "adult_from": 12}
+            except (json.JSONDecodeError, TypeError):
+                cp0 = {"free_under": 5, "child_rate_pct": 50, "adult_from": 12}
             lodge_map[name] = {
                 "name": name,
                 "country": l["country"],
                 "location": l["location"],
+                "child_policy": cp0,
                 "room_types": [],
             }
+        raw_cp = l["child_policy"] if "child_policy" in l.keys() else None
+        try:
+            child_policy = json.loads(raw_cp) if raw_cp else {"free_under": 5, "child_rate_pct": 50, "adult_from": 12}
+        except (json.JSONDecodeError, TypeError):
+            child_policy = {"free_under": 5, "child_rate_pct": 50, "adult_from": 12}
         lodge_map[name]["room_types"].append({
             "room_type": l["room_type"],
             "net_rate_usd": l["net_rate_usd"],
@@ -3641,6 +3657,7 @@ def list_lodges():
             "source_email_date": l["source_email_date"] if "source_email_date" in l.keys() else "",
             "extraction_timestamp": l["extraction_timestamp"] if "extraction_timestamp" in l.keys() else "",
             "max_occupancy": l["max_occupancy"] if "max_occupancy" in l.keys() else 2,
+            "child_policy": child_policy,
         })
     return list(lodge_map.values())
 
@@ -3738,12 +3755,15 @@ def list_lodges_raw(
 def create_lodge(body: LodgeCreate):
     lid = str(uuid.uuid4())[:8]
     net = body.net_rate_usd if body.net_rate_usd is not None else round((body.rack_rate_usd or 0) * 0.7, 2)
+    default_cp = '{"free_under":5,"child_rate_pct":50,"adult_from":12}'
+    child_policy = body.child_policy or default_cp
     with db_session() as conn:
         conn.execute("""
             INSERT INTO lodges (id, lodge_name, room_type, country, location,
                 rack_rate_usd, net_rate_usd, meal_plan, valid_from, valid_to,
-                source_file, notes, source_email_date, extraction_timestamp, max_occupancy)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_file, notes, source_email_date, extraction_timestamp, max_occupancy,
+                child_policy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             lid, body.lodge_name, body.room_type or "Double",
             body.country or "Uganda", body.location or "",
@@ -3753,6 +3773,7 @@ def create_lodge(body: LodgeCreate):
             body.source_file or "", body.notes or "",
             body.source_email_date or "", body.extraction_timestamp or "",
             body.max_occupancy if body.max_occupancy is not None else 2,
+            child_policy,
         ))
         row = dict(conn.execute("SELECT * FROM lodges WHERE id = ?", (lid,)).fetchone())
     return row
@@ -4176,12 +4197,18 @@ def calculate_price(body: PricingRequest):
                         "SELECT net_rate_usd, meal_plan FROM lodges WHERE lodge_name LIKE ? ORDER BY net_rate_usd ASC LIMIT 1",
                         (f"%{lodge_name}%",)
                     ).fetchone()
-                if row:
+                # Rate priority: explicit override > DB lookup > zero
+                manual_rate = acc.get("rate_per_night", 0) or 0
+                if manual_rate > 0:
+                    # Coordinator-specified rate (STO, rack, or custom) takes precedence
+                    rate           = float(manual_rate)
+                    rate_plan_code = _meal_code(acc.get("rate_meal_plan", "BB"))
+                elif row:
                     row_dict       = dict(row)
                     rate           = row_dict["net_rate_usd"]
                     rate_plan_code = _meal_code(row_dict.get("meal_plan", ""))
                 else:
-                    rate           = acc.get("rate_per_night", 0)
+                    rate           = 0
                     rate_plan_code = "BB"
                 # Only apply a meal surcharge when the booking requests a more inclusive
                 # plan than the rate already includes (e.g. BB rate + FB booking).
@@ -4192,13 +4219,38 @@ def calculate_price(body: PricingRequest):
                     if booking_rank > rate_rank else 0
                 )
                 name = lodge_name or "Lodge"
-                # Adults: full rate per person; children: 50% of adult per-person rate
-                adult_rate_total = acc_adults  * (rate + meal_surcharge)
-                child_rate_total = acc_children * (rate + meal_surcharge) * 0.5
+                effective_rate = rate + meal_surcharge
+                # Age-banded child pricing:
+                #   children_free  = under free_under age → 0
+                #   children_half  = child rate (default 50%) → child_rate_pct / 100
+                #   children_full  = adult-equivalent age   → 1.0 (full rate)
+                # These are sent by the frontend when guest ages are known.
+                # Fall back to flat 50% when age data is absent.
+                c_free = int(acc.get("children_free", 0) or 0)
+                c_half = int(acc.get("children_half", 0) or 0)
+                c_full = int(acc.get("children_full", 0) or 0)
+                if c_free + c_half + c_full == acc_children and acc_children > 0:
+                    # Use age-banded breakdown from frontend
+                    child_rate_total = (c_half * 0.5 + c_full * 1.0) * effective_rate
+                else:
+                    # No age data — flat 50% for all children
+                    child_rate_total = acc_children * effective_rate * 0.5
+                adult_rate_total = acc_adults * effective_rate
                 line_total = rooms * nights * (adult_rate_total + child_rate_total)
                 accommodation_total += line_total
                 meal_label = f" [{meal_plan}]" if meal_plan != "BB" else ""
-                child_note = f" ({acc_adults}A+{acc_children}C)" if acc_children > 0 else f" ({acc_adults} adults)"
+                if acc_children > 0:
+                    if c_free + c_half + c_full == acc_children:
+                        parts = []
+                        if c_free:  parts.append(f"{c_free} free")
+                        if c_half:  parts.append(f"{c_half}×50%")
+                        if c_full:  parts.append(f"{c_full} full")
+                        child_note = f" ({acc_adults}A + {', '.join(parts)} C)"
+                    else:
+                        child_note = f" ({acc_adults}A+{acc_children}C@50%)"
+                else:
+                    child_note = f" ({acc_adults} adult{'s' if acc_adults != 1 else ''})"
+                rate_source = "override" if manual_rate > 0 else "STO"
                 guest_label = acc.get("guest_label", "").strip()
                 accommodation_lines.append({
                     "description": f"{name} — {room}{meal_label}{child_note}",
@@ -4206,9 +4258,13 @@ def calculate_price(body: PricingRequest):
                     "nights": nights,
                     "rooms": rooms,
                     "rate_per_night": rate,
+                    "rate_source": rate_source,
                     "meal_plan": meal_plan,
                     "adults": acc_adults,
                     "children": acc_children,
+                    "children_free": c_free,
+                    "children_half": c_half,
+                    "children_full": c_full,
                     "total": round(line_total, 2),
                 })
 

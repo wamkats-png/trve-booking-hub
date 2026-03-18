@@ -2941,9 +2941,16 @@
 
         <!-- ④ Room Types section (Task 3: nested room type entries) -->
         <div class="lodge-room-type-section" style="margin-bottom:10px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px;flex-wrap:wrap">
             <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Room Types</span>
-            <span class="lodge-occupancy-badge" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:9px;background:var(--bg-surface);color:var(--text-muted);font-weight:600">—</span>
+            <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+              <button type="button" class="btn btn-xs"
+                style="font-size:10px;padding:3px 9px;height:22px;background:var(--teal-600);color:#fff;border:none;border-radius:9px;cursor:pointer;font-weight:600;white-space:nowrap"
+                onclick="window.TRVE._autoAssignGuests()" title="Automatically assign all guests to rooms, respecting lodge policy. You can then drag to adjust.">
+                ✦ Auto-Assign Guests
+              </button>
+              <span class="lodge-occupancy-badge" style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:9px;background:var(--bg-surface);color:var(--text-muted);font-weight:600">—</span>
+            </div>
           </div>
 
           <!-- Room type entries container -->
@@ -2975,6 +2982,8 @@
                   </div>
                 </div>
               </div>
+              <!-- Rate control row (STO / Rack / custom override) -->
+              ${_buildRateControlHTML(`rate_override_${idx}`)}
               <!-- Occupancy hint for this room type entry -->
               <div class="lodge-computed-occ" style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:6px 10px;margin-bottom:8px;font-size:var(--text-xs);color:var(--text-secondary)">
                 Occupancy computed from Basic Details guest count.
@@ -3019,6 +3028,8 @@
         _getRoomTypeEntries(el).forEach(entry => {
           const rtSel = entry.querySelector('.room-type-select');
           if (rtSel) populateRoomTypes(this.value, rtSel);
+          // Reset chips to show new lodge's rates
+          _updateRateChips(entry, this.value, entry.querySelector('.room-type-select')?.value || '');
         });
         _autoSyncRoomGuests(el);
       });
@@ -3030,14 +3041,33 @@
       if (rtSel) {
         rtSel.addEventListener('change', function() {
           _accomPushHistory();
+          const lodgeName = el.querySelector('[name^="lodge_name_"]')?.value || '';
           _autoSyncRoomGuests(el);
-          _showRateFreshnessForEntry(entry, el.querySelector('[name^="lodge_name_"]')?.value, this.value);
+          _showRateFreshnessForEntry(entry, lodgeName, this.value);
+          // Update STO/Rack chip labels and auto-fill STO when field is blank
+          _updateRateChips(entry, lodgeName, this.value);
+          const rateInp = entry.querySelector('.rate-override-input');
+          if (rateInp && (!rateInp.value || parseFloat(rateInp.value) === 0)) {
+            const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+            const rt = lodge ? (lodge.room_types || []).find(r => r.room_type === this.value) : null;
+            // Leave blank by default — backend uses DB rate; chips allow quick override
+          }
         });
       }
       const roomsInp = entry.querySelector('[name^="rooms_"]');
       if (roomsInp) {
         roomsInp.addEventListener('change', () => { _accomPushHistory(); _autoSyncRoomGuests(el); });
         roomsInp.addEventListener('input',  () => _autoSyncRoomGuests(el));
+      }
+      // Wire rate override input to highlight chip on manual edit
+      const rateInp = entry.querySelector('.rate-override-input');
+      if (rateInp) {
+        rateInp.addEventListener('input', () => {
+          const lodgeName = el.querySelector('[name^="lodge_name_"]')?.value || '';
+          const roomType  = rtSel ? rtSel.value : '';
+          _updateRateChips(entry, lodgeName, roomType);
+          _renderAccommPricingSummary();
+        });
       }
     }
     _getRoomTypeEntries(el).forEach(entry => _wireRoomTypeEntry(entry));
@@ -3120,7 +3150,10 @@
         const roomType = row.querySelector('[name^="room_type_"]')?.value || '';
         const maxOcc   = _getMaxOccupancy(roomType, lodgeName) || 2;
         const perRoom  = rooms > 0 && totalGuests > 0 ? Math.ceil(totalGuests / rooms) : 0;
-        const overcrowded = perRoom > maxOcc;
+        // Use same child-sharing check as multi-room-type path (was missing here — bug fix)
+        const overcrowded = perRoom > maxOcc && !_childSharingApplies(
+          Math.ceil(totalAdults / rooms), Math.ceil(totalChildren / rooms), maxOcc
+        );
         occEl.style.borderColor = overcrowded ? 'var(--danger)' : 'var(--border)';
         occEl.style.background  = overcrowded ? 'rgba(220,38,38,.05)' : 'var(--bg-subtle)';
         occEl.innerHTML = totalGuests === 0
@@ -3233,6 +3266,8 @@
           </div>
         </div>
       </div>
+      <!-- Rate control row (STO / Rack / custom override) -->
+      ${_buildRateControlHTML(`rate_override_${rowIdx}_rt${rtIdx}`)}
       <!-- Occupancy hint -->
       <div class="lodge-computed-occ" style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md);padding:6px 10px;margin-bottom:8px;font-size:var(--text-xs);color:var(--text-secondary)">
         Select room type above, then assign guests.
@@ -3950,18 +3985,25 @@
     return                      { multiplier: p.older_child_multiplier ?? 0.5, label: `Half/configured rate (age ${childUnder}+)`, free: false, ageGroup: 'older' };
   }
 
-  // Return lodge-specific child sharing policy from supplier data.
-  // Falls back to sensible defaults if no supplier data available.
+  // Return lodge-specific child policy from supplier data.
+  // Reads the new child_policy JSON (free_under, child_rate_pct, adult_from) from the
+  // lodge object returned by /api/lodge-rates/lodges, and maps it to the internal
+  // policy object used by _getChildMealTier and _childSharingApplies.
   function _getLodgeChildPolicy(lodgeName) {
     const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
-    const policy = lodge?.child_policy || {};
+    // child_policy is returned at lodge level (from first room type row)
+    const cp = lodge?.child_policy || {};
+    // Support both old field names (free_under_age) and new compact names (free_under)
+    const freeUnder   = cp.free_under    ?? cp.free_under_age    ?? 5;
+    const adultFrom   = cp.adult_from    ?? cp.child_under_age   ?? 12;
+    const childRatePct = cp.child_rate_pct ?? 50;
     return {
-      free_under_age:          policy.free_under_age          ?? 5,
-      child_under_age:         policy.child_under_age         ?? 10,
-      older_child_multiplier:  policy.older_child_multiplier  ?? 0.5,
-      max_adults_per_room:     policy.max_adults_per_room     ?? 2,
-      child_sharing_allowed:   policy.child_sharing_allowed   ?? true,
-      max_children_sharing:    policy.max_children_sharing    ?? 3,
+      free_under_age:          freeUnder,
+      child_under_age:         adultFrom,          // age at which child becomes full adult
+      older_child_multiplier:  childRatePct / 100, // e.g. 50 → 0.5
+      max_adults_per_room:     cp.max_adults_per_room   ?? 2,
+      child_sharing_allowed:   cp.child_sharing_allowed ?? true,
+      max_children_sharing:    cp.max_children_sharing  ?? 3,
     };
   }
 
@@ -4088,7 +4130,17 @@
     const assignments = Array.isArray(snap) ? {}   : (snap.assignments || {});
     container.innerHTML = '';
     rows.forEach(cfg => addLodgeItem({ ...cfg, skipHistory: true, skipRender: true }));
-    state.roomAssignments = { ...assignments };
+    // Migrate legacy 2-part keys ("rowIdx:roomIdx") to 3-part ("rowIdx:0:roomIdx")
+    const migratedAssignments = {};
+    Object.entries(assignments).forEach(([guestId, key]) => {
+      if ((key || '').split(':').length === 2) {
+        const [ri, rmi] = key.split(':');
+        migratedAssignments[guestId] = `${ri}:0:${rmi}`;
+      } else {
+        migratedAssignments[guestId] = key;
+      }
+    });
+    state.roomAssignments = migratedAssignments;
     state.roomExtras      = JSON.parse(JSON.stringify(snap.roomExtras || {}));
     // Restore custom date fields for each row if snapshot captured them
     Array.from(container.querySelectorAll('.lodge-item')).forEach((row, i) => {
@@ -5560,6 +5612,8 @@
 
   // Badge derived entirely from Basic Details ÷ rooms vs maxOcc — no manual inputs.
   // Update the lodge-level occupancy badge — sums across all room-type-entries.
+  // Badge format: "X / Y beds" where X = guests assigned to this lodge, Y = total bed capacity.
+  // Separate colour states: green (within capacity), amber (over capacity but override applied), red (over with no override).
   function _updateRoomOccupancyBadge(row, rowIdx) {
     const badge = row.querySelector('.lodge-occupancy-badge');
     if (!badge) return;
@@ -5568,45 +5622,71 @@
     const { adults: totalAdults, children: totalChildren } = _getBasicPax();
     const totalGuests = totalAdults + totalChildren;
 
-    // Sum capacity and assigned guests across all entries
-    let totalCapacity   = 0;
-    let assignedInRow   = 0;
-    let anyOver         = false;
+    // Sum capacity and assigned guests across all entries.
+    // FIX: track per-entry assigned count separately so anyOver is correct.
+    let totalCapacity = 0;
+    let assignedInRow = 0;
+    let anyOver       = false;
+    let anyOverridden = false;
 
     if (entries.length === 0) {
-      // Legacy path
+      // Legacy path (no room-type-entry elements)
       const rooms  = parseInt(row.querySelector('[name^="rooms_"]')?.value) || 1;
       const maxOcc = _getMaxOccupancy(row.querySelector('[name^="room_type_"]')?.value, lodgeName) || 2;
-      totalCapacity = rooms * maxOcc;
-      for (let r = 0; r < rooms; r++) assignedInRow += _getGuestsInRoom(rowIdx, 0, r).length;
-      anyOver = assignedInRow > totalCapacity;
+      const cap    = rooms * maxOcc;
+      totalCapacity = cap;
+      let entryAssigned = 0;
+      for (let r = 0; r < rooms; r++) entryAssigned += _getGuestsInRoom(rowIdx, 0, r).length;
+      assignedInRow = entryAssigned;
+      if (entryAssigned > cap) anyOver = true;
     } else {
       entries.forEach((entry, rtIdx) => {
         const rooms  = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
         const rt     = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
         const maxOcc = _getMaxOccupancy(rt, lodgeName) || 2;
-        totalCapacity += rooms * maxOcc;
-        for (let r = 0; r < rooms; r++) assignedInRow += _getGuestsInRoom(rowIdx, rtIdx, r).length;
-        if (rooms * maxOcc < assignedInRow) anyOver = true;
+        const cap    = rooms * maxOcc;
+        totalCapacity += cap;
+        // Count assigned guests for THIS entry only (not cumulative)
+        let entryAssigned = 0;
+        for (let r = 0; r < rooms; r++) entryAssigned += _getGuestsInRoom(rowIdx, rtIdx, r).length;
+        assignedInRow += entryAssigned;
+        if (entryAssigned > cap) {
+          anyOver = true;
+          // Check if any room in this entry has an override applied
+          for (let r = 0; r < rooms; r++) {
+            const rk = _makeRoomKey(rowIdx, rtIdx, r);
+            if ((state.roomOverrides || {})[rk]?.overridden) { anyOverridden = true; break; }
+          }
+        }
       });
     }
 
-    const hasAssignments = Object.keys(state.roomAssignments || {}).length > 0;
-    const displayed = hasAssignments ? assignedInRow : Math.min(totalGuests, totalCapacity);
-    const isOver    = anyOver || (assignedInRow > totalCapacity);
+    const isOver = anyOver;
+    const allAssigned = totalGuests > 0 && assignedInRow >= totalGuests;
 
-    badge.textContent = totalGuests > 0
-      ? `${assignedInRow}/${totalGuests} assigned · capacity ${totalCapacity}`
-      : '—';
-    badge.style.background = isOver
-      ? 'var(--danger)'
-      : totalGuests > 0 ? 'var(--success)' : 'var(--bg-surface)';
-    badge.style.color      = totalGuests > 0 ? '#fff' : 'var(--text-muted)';
-    badge.style.borderColor = isOver ? 'var(--danger)'
-      : totalGuests > 0 ? 'var(--success)' : 'var(--border)';
-    badge.title = isOver
-      ? `Over capacity! ${assignedInRow} guests vs capacity ${totalCapacity}.`
-      : `${assignedInRow} of ${totalGuests} guests assigned. Capacity: ${totalCapacity}.`;
+    // Badge text: "X guests · Y beds" — unambiguous separation of assigned vs capacity
+    if (totalGuests === 0) {
+      badge.textContent = '—';
+      badge.style.cssText += ';background:var(--bg-surface);color:var(--text-muted);border-color:var(--border)';
+    } else if (isOver) {
+      badge.textContent = `${assignedInRow} guests · ${totalCapacity} beds ⚠`;
+      badge.style.background  = anyOverridden ? 'var(--warning)' : 'var(--danger)';
+      badge.style.color       = '#fff';
+      badge.style.borderColor = anyOverridden ? 'var(--warning)' : 'var(--danger)';
+      badge.title = `${assignedInRow} guests assigned into ${totalCapacity} bed capacity. ${anyOverridden ? 'Override applied.' : 'Add rooms or reassign.'}`;
+    } else if (allAssigned) {
+      badge.textContent = `${assignedInRow} / ${totalCapacity} ✓`;
+      badge.style.background  = 'var(--success)';
+      badge.style.color       = '#fff';
+      badge.style.borderColor = 'var(--success)';
+      badge.title = `All ${totalGuests} guests assigned within ${totalCapacity} bed capacity.`;
+    } else {
+      badge.textContent = `${assignedInRow} / ${totalGuests} assigned`;
+      badge.style.background  = 'var(--bg-surface)';
+      badge.style.color       = 'var(--text-secondary)';
+      badge.style.borderColor = 'var(--border)';
+      badge.title = `${assignedInRow} of ${totalGuests} guests assigned to this lodge.`;
+    }
   }
 
   function _getMaxOccupancy(roomType, lodgeName) {
@@ -6037,6 +6117,83 @@
         }
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // RATE CONTROL — editable per-room-type-entry override with STO / Rack chips
+  // ---------------------------------------------------------------------------
+
+  // Returns the HTML string for the rate control row embedded in a room-type-entry.
+  // rateInputName: the unique name attr for the hidden rate input (e.g. "rate_override_0")
+  function _buildRateControlHTML(rateInputName) {
+    return `
+      <div class="rate-control-row" style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <label style="font-size:var(--text-xs);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap">Rate/night</label>
+        <span style="font-size:var(--text-xs);color:var(--text-muted)">$</span>
+        <input type="number" name="${rateInputName}" class="rate-override-input form-control"
+          min="0" step="0.01" placeholder="auto from DB"
+          style="width:88px;height:28px;font-size:var(--text-sm);font-weight:600;text-align:right"
+          title="Leave blank to use the STO rate from the database. Enter a value to override.">
+        <button type="button" class="rate-chip sto-chip"
+          style="font-size:10px;padding:2px 7px;height:24px;border-radius:9px;border:1px solid var(--teal-600);background:var(--bg-subtle);color:var(--teal-700);cursor:pointer;white-space:nowrap;font-weight:600"
+          title="Use STO (net) rate from database">STO —</button>
+        <button type="button" class="rate-chip rack-chip"
+          style="font-size:10px;padding:2px 7px;height:24px;border-radius:9px;border:1px solid var(--border);background:var(--bg-subtle);color:var(--text-secondary);cursor:pointer;white-space:nowrap;font-weight:600"
+          title="Use published rack rate">Rack —</button>
+        <button type="button" class="rate-chip clear-chip"
+          style="font-size:10px;padding:2px 7px;height:24px;border-radius:9px;border:1px solid var(--border);background:transparent;color:var(--text-muted);cursor:pointer"
+          title="Clear override — revert to STO from DB">×</button>
+      </div>`;
+  }
+
+  // Update STO/Rack chip labels for a room-type-entry after a room type is selected.
+  function _updateRateChips(entry, lodgeName, roomType) {
+    const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+    const rt    = lodge && roomType
+      ? (lodge.room_types || []).find(r => r.room_type === roomType)
+      : null;
+    const sto  = rt ? rt.net_rate_usd  : null;
+    const rack = rt ? rt.rack_rate_usd : null;
+    const stoChip  = entry.querySelector('.sto-chip');
+    const rackChip = entry.querySelector('.rack-chip');
+    const inp      = entry.querySelector('.rate-override-input');
+    const clearChip = entry.querySelector('.clear-chip');
+    if (stoChip)  stoChip.textContent  = sto  != null ? `STO $${sto}`  : 'STO —';
+    if (rackChip) rackChip.textContent = rack != null ? `Rack $${rack}` : 'Rack —';
+    if (stoChip) {
+      stoChip.onclick = () => {
+        if (inp && sto != null) { inp.value = sto; _highlightActiveChip(entry, 'sto'); }
+      };
+    }
+    if (rackChip) {
+      rackChip.onclick = () => {
+        if (inp && rack != null) { inp.value = rack; _highlightActiveChip(entry, 'rack'); }
+      };
+    }
+    if (clearChip) {
+      clearChip.onclick = () => {
+        if (inp) { inp.value = ''; _highlightActiveChip(entry, null); }
+      };
+    }
+    // Highlight whichever chip matches current input value
+    if (inp) {
+      const cur = parseFloat(inp.value);
+      if (!isNaN(cur) && cur > 0) {
+        if (sto != null && Math.abs(cur - sto) < 0.01)        _highlightActiveChip(entry, 'sto');
+        else if (rack != null && Math.abs(cur - rack) < 0.01) _highlightActiveChip(entry, 'rack');
+        else                                                   _highlightActiveChip(entry, 'custom');
+      } else {
+        _highlightActiveChip(entry, null); // empty = using DB automatically
+      }
+    }
+  }
+
+  function _highlightActiveChip(entry, which) {
+    const chips = { sto: entry.querySelector('.sto-chip'), rack: entry.querySelector('.rack-chip') };
+    if (chips.sto)  chips.sto.style.background  = which === 'sto'  ? 'var(--teal-600)' : 'var(--bg-subtle)';
+    if (chips.sto)  chips.sto.style.color        = which === 'sto'  ? '#fff'            : 'var(--teal-700)';
+    if (chips.rack) chips.rack.style.background  = which === 'rack' ? 'var(--warning)'  : 'var(--bg-subtle)';
+    if (chips.rack) chips.rack.style.color        = which === 'rack' ? '#fff'            : 'var(--text-secondary)';
   }
 
   // Build an extra cost row element with type selector and per-day toggle.
@@ -7014,36 +7171,42 @@
 
         if (entries.length === 0) {
           // Legacy: single room type from row-level fields
-          const roomType = row.querySelector(`[name^="room_type_"]`)?.value || 'standard';
-          const rooms    = parseInt(row.querySelector(`[name^="rooms_"]`)?.value)  || 1;
+          const roomType   = row.querySelector(`[name^="room_type_"]`)?.value || 'standard';
+          const rooms      = parseInt(row.querySelector(`[name^="rooms_"]`)?.value)  || 1;
+          const rateOverride = parseFloat(row.querySelector(`.rate-override-input`)?.value) || 0;
           const perRoomAdults   = rooms > 0 ? Math.ceil(adults   / rooms) : adults;
           const perRoomChildren = rooms > 0 ? Math.ceil(children / rooms) : children;
-          accommodations.push({
+          const acc = {
             lodge, room_type: roomType, nights, rooms, meal_plan: mealPlan,
             adults: perRoomAdults, children: perRoomChildren,
             children_free: childrenFree, children_half: childrenHalf, children_full: childrenFull,
             guest_label: guestLabel,
-          });
+          };
+          if (rateOverride > 0) acc.rate_per_night = rateOverride;
+          accommodations.push(acc);
           return;
         }
 
         // Multi room type: one accommodation record per room-type-entry
         const totalRoomsInLodge = entries.reduce((s, e) => s + (parseInt(e.querySelector('[name^="rooms_"]')?.value) || 1), 0);
         entries.forEach(entry => {
-          const roomType = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || 'standard';
-          const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+          const roomType     = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || 'standard';
+          const rooms        = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
+          const rateOverride = parseFloat(entry.querySelector('.rate-override-input')?.value) || 0;
           // Apportion adults/children proportionally to room count in this entry
           const share = totalRoomsInLodge > 0 ? rooms / totalRoomsInLodge : 1;
           const perRoomAdults   = rooms > 0 ? Math.ceil(adults   * share / rooms) : adults;
           const perRoomChildren = rooms > 0 ? Math.ceil(children * share / rooms) : children;
-          accommodations.push({
+          const acc = {
             lodge, room_type: roomType, nights, rooms, meal_plan: mealPlan,
             adults: perRoomAdults, children: perRoomChildren,
             children_free: Math.ceil(childrenFree  * share),
             children_half: Math.ceil(childrenHalf  * share),
             children_full: Math.ceil(childrenFull  * share),
             guest_label: guestLabel,
-          });
+          };
+          if (rateOverride > 0) acc.rate_per_night = rateOverride;
+          accommodations.push(acc);
         });
       });
 
@@ -8587,6 +8750,9 @@
         if (el) el.value = '';
       });
       document.getElementById('lf_country').value = 'Uganda';
+      const cfu = document.getElementById('lf_child_free_under'); if (cfu) cfu.value = 5;
+      const crp = document.getElementById('lf_child_rate_pct');   if (crp) crp.value = 50;
+      const caf = document.getElementById('lf_child_adult_from'); if (caf) caf.value = 12;
       document.getElementById('lf_meal').value = 'Full Board';
       document.getElementById('lf_valid_from').value = '2025-01-01';
       document.getElementById('lf_valid_to').value = '2026-12-31';
@@ -8610,6 +8776,10 @@
       if (!name || !room) { toast('warning', 'Required fields', 'Lodge name and room type are required'); return; }
       const rack = parseFloat(document.getElementById('lf_rack').value) || 0;
       const net = parseFloat(document.getElementById('lf_net').value) || null;
+      const childFreeUnder  = parseInt(document.getElementById('lf_child_free_under')?.value) ?? 5;
+      const childRatePct    = parseInt(document.getElementById('lf_child_rate_pct')?.value)   ?? 50;
+      const childAdultFrom  = parseInt(document.getElementById('lf_child_adult_from')?.value) ?? 12;
+      const childPolicy     = JSON.stringify({ free_under: childFreeUnder, child_rate_pct: childRatePct, adult_from: childAdultFrom });
       const payload = {
         lodge_name: name,
         room_type: room,
@@ -8621,6 +8791,7 @@
         valid_from: document.getElementById('lf_valid_from').value,
         valid_to: document.getElementById('lf_valid_to').value,
         notes: document.getElementById('lf_notes').value.trim(),
+        child_policy: childPolicy,
       };
       try {
         if (_editingLodgeId) {
@@ -8753,6 +8924,15 @@
     document.getElementById('lf_valid_from').value = lodge.valid_from || '2025-01-01';
     document.getElementById('lf_valid_to').value = lodge.valid_to || '2026-12-31';
     document.getElementById('lf_notes').value = lodge.notes || '';
+    // Populate child policy fields
+    try {
+      const cp = typeof lodge.child_policy === 'string'
+        ? JSON.parse(lodge.child_policy)
+        : (lodge.child_policy || {});
+      const cfu = document.getElementById('lf_child_free_under'); if (cfu) cfu.value = cp.free_under ?? cp.free_under_age ?? 5;
+      const crp = document.getElementById('lf_child_rate_pct');   if (crp) crp.value = cp.child_rate_pct ?? 50;
+      const caf = document.getElementById('lf_child_adult_from'); if (caf) caf.value = cp.adult_from ?? cp.child_under_age ?? 12;
+    } catch (_) {}
     document.getElementById('lodgeFormCard').scrollIntoView({ behavior: 'smooth' });
   };
 
