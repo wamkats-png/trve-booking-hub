@@ -1035,3 +1035,210 @@ class TestSyncExtended:
         ops = data["recent_operations"]
         pull_ops = [o for o in ops if o["direction"] == "pull" or o["sheet_name"] == "pull"]
         assert len(pull_ops) >= 1
+
+
+# ===========================================================================
+# Lodge child policy and rate override
+# ===========================================================================
+class TestLodgeChildPolicy:
+    def test_create_lodge_with_child_policy(self, client):
+        """Creating a lodge with child_policy persists the JSON correctly."""
+        resp = client.post("/api/lodges", json={
+            "lodge_name": "Test Child Policy Lodge",
+            "room_type": "Double",
+            "rack_rate_usd": 300,
+            "net_rate_usd": 210,
+            "meal_plan": "Full Board",
+            "child_policy": '{"free_under":5,"child_rate_pct":50,"adult_from":12}',
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert "child_policy" in data
+        import json
+        cp = json.loads(data["child_policy"])
+        assert cp["free_under"] == 5
+        assert cp["child_rate_pct"] == 50
+        assert cp["adult_from"] == 12
+
+    def test_lodge_list_returns_child_policy(self, client):
+        """The lodge-rates/lodges endpoint must include child_policy on each room type."""
+        client.post("/api/lodges", json={
+            "lodge_name": "Policy List Lodge",
+            "room_type": "Double",
+            "rack_rate_usd": 200,
+            "net_rate_usd": 140,
+            "meal_plan": "Full Board",
+            "child_policy": '{"free_under":5,"child_rate_pct":50,"adult_from":12}',
+        })
+        resp = client.get("/api/lodge-rates/lodges")
+        assert resp.status_code == 200
+        lodges = resp.json()
+        lodge = next((l for l in lodges if l["name"] == "Policy List Lodge"), None)
+        assert lodge is not None, "Lodge not found in list"
+        assert "child_policy" in lodge
+        assert lodge["child_policy"]["free_under"] == 5
+
+
+class TestRateOverride:
+    def _seed_lodge(self, client, name="Rate Override Lodge", net=200.0, rack=285.0):
+        client.post("/api/lodges", json={
+            "lodge_name": name,
+            "room_type": "Double",
+            "rack_rate_usd": rack,
+            "net_rate_usd": net,
+            "meal_plan": "Full Board",
+        })
+
+    def test_rate_override_used_when_provided(self, client):
+        """When rate_per_night is provided, it must override the DB net rate."""
+        self._seed_lodge(client, net=200.0)
+        payload = {
+            "nationality_tier": "FNR",
+            "pax": 2, "adults": 2, "children": 0,
+            "duration_days": 4,
+            "travel_start_date": "2025-09-01",
+            "accommodations": [{
+                "lodge": "Rate Override Lodge",
+                "room_type": "Double",
+                "nights": 3,
+                "rooms": 1,
+                "meal_plan": "FB",
+                "adults": 2,
+                "children": 0,
+                "rate_per_night": 285.0,  # rack override
+            }],
+            "permits": [], "vehicles": [], "include_insurance": False, "extra_costs": [],
+        }
+        resp = client.post("/api/calculate-price", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        lines = data["pricing_data"]["accommodation"]["lines"]
+        assert len(lines) == 1
+        assert lines[0]["rate_per_night"] == 285.0
+        assert lines[0]["rate_source"] == "override"
+
+    def test_db_rate_used_when_no_override(self, client):
+        """Without rate_per_night, the DB net rate is used."""
+        self._seed_lodge(client, net=200.0)
+        payload = {
+            "nationality_tier": "FNR",
+            "pax": 2, "adults": 2, "children": 0,
+            "duration_days": 4,
+            "travel_start_date": "2025-09-01",
+            "accommodations": [{
+                "lodge": "Rate Override Lodge",
+                "room_type": "Double",
+                "nights": 3,
+                "rooms": 1,
+                "meal_plan": "FB",
+                "adults": 2,
+                "children": 0,
+            }],
+            "permits": [], "vehicles": [], "include_insurance": False, "extra_costs": [],
+        }
+        resp = client.post("/api/calculate-price", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        lines = data["pricing_data"]["accommodation"]["lines"]
+        assert lines[0]["rate_per_night"] == 200.0
+        assert lines[0]["rate_source"] == "STO"
+
+
+class TestAgeBandedChildPricing:
+    def _seed(self, client):
+        client.post("/api/lodges", json={
+            "lodge_name": "Age Band Lodge",
+            "room_type": "Double",
+            "rack_rate_usd": 400,
+            "net_rate_usd": 280,
+            "meal_plan": "Full Board",
+        })
+
+    def test_children_free_excluded_from_cost(self, client):
+        """children_free=1 means 1 child has zero room cost."""
+        self._seed(client)
+        payload = {
+            "nationality_tier": "FNR",
+            "pax": 3, "adults": 2, "children": 1,
+            "duration_days": 4,
+            "travel_start_date": "2025-09-01",
+            "accommodations": [{
+                "lodge": "Age Band Lodge",
+                "room_type": "Double",
+                "nights": 3,
+                "rooms": 1,
+                "meal_plan": "FB",
+                "adults": 2,
+                "children": 1,
+                "children_free": 1,
+                "children_half": 0,
+                "children_full": 0,
+            }],
+            "permits": [], "vehicles": [], "include_insurance": False, "extra_costs": [],
+        }
+        resp = client.post("/api/calculate-price", json=payload)
+        assert resp.status_code == 200
+        lines = resp.json()["pricing_data"]["accommodation"]["lines"]
+        # Lodge meal plan = Full Board → booking FB has no surcharge (same plan).
+        # 2 adults × $280 = $560; 1 free child = $0.
+        # 1 room × 3 nights (trip_nights = days-1 = 3) × $560 = $1680
+        assert lines[0]["total"] == pytest.approx(1680.0, rel=1e-2)
+        assert lines[0].get("children_free") == 1
+
+    def test_children_full_charged_at_adult_rate(self, client):
+        """children_full=1 means 1 child charged at full adult rate."""
+        self._seed(client)
+        payload = {
+            "nationality_tier": "FNR",
+            "pax": 3, "adults": 2, "children": 1,
+            "duration_days": 4,
+            "travel_start_date": "2025-09-01",
+            "accommodations": [{
+                "lodge": "Age Band Lodge",
+                "room_type": "Double",
+                "nights": 3,
+                "rooms": 1,
+                "meal_plan": "BB",
+                "adults": 2,
+                "children": 1,
+                "children_free": 0,
+                "children_half": 0,
+                "children_full": 1,
+            }],
+            "permits": [], "vehicles": [], "include_insurance": False, "extra_costs": [],
+        }
+        resp = client.post("/api/calculate-price", json=payload)
+        assert resp.status_code == 200
+        lines = resp.json()["pricing_data"]["accommodation"]["lines"]
+        # 3 adults equivalent at $280 = $840; 1 room × 3 nights = $2520
+        assert lines[0]["total"] == pytest.approx(2520.0, rel=1e-2)
+
+    def test_mixed_child_bands(self, client):
+        """1 free + 1 half-rate child: only the half child adds cost."""
+        self._seed(client)
+        payload = {
+            "nationality_tier": "FNR",
+            "pax": 4, "adults": 2, "children": 2,
+            "duration_days": 3,  # trip_nights = 2
+            "travel_start_date": "2025-09-01",
+            "accommodations": [{
+                "lodge": "Age Band Lodge",
+                "room_type": "Double",
+                "nights": 2,
+                "rooms": 1,
+                "meal_plan": "BB",
+                "adults": 2,
+                "children": 2,
+                "children_free": 1,
+                "children_half": 1,
+                "children_full": 0,
+            }],
+            "permits": [], "vehicles": [], "include_insurance": False, "extra_costs": [],
+        }
+        resp = client.post("/api/calculate-price", json=payload)
+        assert resp.status_code == 200
+        lines = resp.json()["pricing_data"]["accommodation"]["lines"]
+        # Lodge = Full Board, booking = BB → no surcharge (booking lower than rate).
+        # 2 adults × $280 = $560; 1 half × $140 = $140; 1 free × $0 = $0. Per night = $700.
+        # 1 room × 2 nights × $700 = $1400
+        assert lines[0]["total"] == pytest.approx(1400.0, rel=1e-2)
