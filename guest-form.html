@@ -127,6 +127,21 @@
 
     .page-footer { text-align: center; padding: 24px 16px;
                    font-size: 11px; color: var(--text-light); }
+
+    /* Mobile polish */
+    body { padding-bottom: env(safe-area-inset-bottom, 0px); }
+    @media (max-width: 480px) {
+      .form-row-2 { grid-template-columns: 1fr; gap: 10px; }
+      .guest-header { position: sticky; top: 0; z-index: 5; }
+      .booking-banner h2 { font-size: 15px; }
+      .submit-btn {
+        position: sticky;
+        bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+        z-index: 10;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(13,94,79,.3);
+      }
+    }
   </style>
 </head>
 <body>
