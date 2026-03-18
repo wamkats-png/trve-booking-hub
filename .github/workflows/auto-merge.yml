@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - claude/confirm-working-4yYw8
+      - claude/review-reference-docs-j0bPB
 
 jobs:
   test-and-merge:
@@ -35,8 +36,8 @@ jobs:
           git config user.name "TRVE Auto-Merge"
           git checkout main
           git pull origin main
-          git merge --no-ff claude/confirm-working-4yYw8 \
-            -m "ci: auto-merge claude/confirm-working-4yYw8 → main [skip ci]"
+          git merge --no-ff ${{ github.ref_name }} \
+            -m "ci: auto-merge ${{ github.ref_name }} → main [skip ci]"
           git push origin main
 
       - name: Sync master to main
