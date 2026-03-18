@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
   <title>Your Safari Itinerary — TRVE</title>
   <style>
@@ -105,18 +105,28 @@
     .contact-btns    { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
     .btn-wa  { display: inline-flex; align-items: center; gap: 8px;
                background: #25d366; color: #fff; text-decoration: none;
-               font-size: 14px; font-weight: 600; padding: 11px 20px;
+               font-size: 14px; font-weight: 600; padding: 13px 20px;
                border-radius: 8px; transition: opacity .15s; }
     .btn-wa:hover { opacity: .88; }
     .btn-email { display: inline-flex; align-items: center; gap: 8px;
                  background: var(--green); color: #fff; text-decoration: none;
-                 font-size: 14px; font-weight: 600; padding: 11px 20px;
+                 font-size: 14px; font-weight: 600; padding: 13px 20px;
                  border-radius: 8px; transition: opacity .15s; }
     .btn-email:hover { opacity: .88; }
 
     /* Footer */
     .page-footer { text-align: center; padding: 24px 16px;
                    font-size: 11px; color: var(--text-light); }
+
+    /* Mobile polish */
+    body { padding-bottom: env(safe-area-inset-bottom, 0px); }
+    @media (max-width: 480px) {
+      .map-wrap iframe { height: 200px; }
+    }
+    @media (max-width: 360px) {
+      .timeline  { padding-left: 24px; }
+      .tl-dot    { left: -24px; }
+    }
   </style>
 </head>
 <body>

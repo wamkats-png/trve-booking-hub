@@ -553,6 +553,16 @@
     fleet:      'Fleet',
   };
 
+  function updateBottomNavActive(viewId) {
+    const primaryViews = ['pipeline', 'enquiry', 'pricing', 'clients'];
+    document.querySelectorAll('#bottomNav .bottom-nav-item[data-view]').forEach(btn =>
+      btn.classList.toggle('active', btn.dataset.view === viewId));
+    const moreBtn = document.getElementById('bnMore');
+    if (moreBtn) moreBtn.classList.toggle('active', !primaryViews.includes(viewId));
+    document.querySelectorAll('.bottom-nav-more-item[data-view]').forEach(btn =>
+      btn.classList.toggle('active', btn.dataset.view === viewId));
+  }
+
   function navigate(viewId) {
     // Clear sync auto-refresh when leaving that view
     if (state.syncInterval && viewId !== 'sync') {
@@ -575,6 +585,9 @@
 
     // Update title
     document.getElementById('pageTitle').textContent = VIEW_TITLES[viewId] || viewId;
+
+    // Update bottom nav active state
+    updateBottomNavActive(viewId);
 
     state.currentView = viewId;
 
@@ -618,12 +631,12 @@
 
     hamburger.addEventListener('click', () => {
       sidebar.classList.toggle('mobile-open');
-      overlay.classList.toggle('open');
+      overlay.classList.toggle('active');
     });
 
     overlay.addEventListener('click', () => {
       sidebar.classList.remove('mobile-open');
-      overlay.classList.remove('open');
+      overlay.classList.remove('active');
     });
 
     // Coordinator selector
@@ -638,7 +651,7 @@
         navigate(item.dataset.view);
         // Close mobile sidebar
         sidebar.classList.remove('mobile-open');
-        overlay.classList.remove('open');
+        overlay.classList.remove('active');
       });
       item.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); item.click(); }
@@ -729,6 +742,42 @@
     if (window.innerWidth >= 1024) {
       layout.classList.remove('sidebar-collapsed');
     }
+
+    // Bottom nav (mobile)
+    function initBottomNav() {
+      const morePanel = document.getElementById('bottomNavMorePanel');
+      const moreBtn   = document.getElementById('bnMore');
+      if (!morePanel || !moreBtn) return;
+
+      document.querySelectorAll('#bottomNav .bottom-nav-item[data-view]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          navigate(btn.dataset.view);
+          sidebar.classList.remove('mobile-open');
+          overlay.classList.remove('active');
+          morePanel.classList.remove('open');
+        });
+      });
+
+      moreBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        morePanel.classList.toggle('open');
+      });
+
+      morePanel.querySelectorAll('.bottom-nav-more-item[data-view]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          navigate(btn.dataset.view);
+          sidebar.classList.remove('mobile-open');
+          overlay.classList.remove('active');
+          morePanel.classList.remove('open');
+        });
+      });
+
+      document.addEventListener('click', e => {
+        if (!morePanel.contains(e.target) && e.target !== moreBtn)
+          morePanel.classList.remove('open');
+      });
+    }
+    initBottomNav();
   }
 
   /* ============================================================
@@ -1259,6 +1308,18 @@
         </div>
       `;
     }).join('');
+
+    // Mobile: collapsible kanban columns (tap header to expand/collapse)
+    if (window.innerWidth <= 600) {
+      board.querySelectorAll('.kanban-column').forEach(col => {
+        const header = col.querySelector('.kanban-col-header');
+        if (!header) return;
+        const title = header.querySelector('.kanban-col-title')?.textContent || '';
+        if (!['New Inquiry', 'Active Quote'].some(p => title.includes(p)))
+          col.classList.add('collapsed');
+        header.addEventListener('click', () => col.classList.toggle('collapsed'));
+      });
+    }
 
     // Attach click + keyboard handlers (MINOR-22: null guard, MINOR-23: keyboard nav)
     board.querySelectorAll('.kanban-card').forEach(card => {
@@ -7747,7 +7808,7 @@
 
     wrap.innerHTML = `
       <div style="overflow-x:auto">
-        <table class="data-table">
+        <table class="data-table table-mobile-stack">
           <thead>
             <tr>
               <th>Quotation #</th>
@@ -7763,20 +7824,20 @@
           <tbody>
             ${quotations.map(q => `
               <tr>
-                <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(q.id || '—')}</td>
-                <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(q.booking_ref || '—')}</td>
-                <td>
+                <td data-label="Quote #" class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(q.id || '—')}</td>
+                <td data-label="Booking" class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(q.booking_ref || '—')}</td>
+                <td data-label="Client">
                   <div style="font-weight:500">${escapeHtml(q.client_name || '—')}</div>
                   ${q.client_email ? `<div style="font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(q.client_email)}</div>` : ''}
                 </td>
-                <td style="max-width:200px">
+                <td data-label="Itinerary" style="max-width:200px">
                   <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(q.itinerary_name || '')}">${
                     escapeHtml(q.itinerary_name || '—')
                   }</div>
                 </td>
-                <td class="mono" style="text-align:right;white-space:nowrap">${fmtMoney(q.total_usd)}</td>
-                <td style="white-space:nowrap;font-size:var(--text-xs)">${fmtDate(q.created_at)}</td>
-                <td>
+                <td data-label="Total USD" class="mono" style="text-align:right;white-space:nowrap">${fmtMoney(q.total_usd)}</td>
+                <td data-label="Date" style="white-space:nowrap;font-size:var(--text-xs)">${fmtDate(q.created_at)}</td>
+                <td data-label="Status">
                   <span class="badge ${QUOTATION_STATUS_BADGE[q.status] || 'badge-quot-draft'}">
                     ${escapeHtml(q.status || 'draft')}
                   </span>
@@ -7790,7 +7851,7 @@
                     return `<span class="badge ${expiryClass}" style="margin-left:4px">${expiryText}</span>`;
                   })()}
                 </td>
-                <td style="white-space:nowrap">
+                <td data-label="Actions" style="white-space:nowrap">
                   <a href="${API}/api/quotations/${escapeHtml(q.id)}/pdf"
                      target="_blank" rel="noopener"
                      class="btn btn-secondary btn-sm">
@@ -7852,7 +7913,7 @@
         </div>`;
         return;
       }
-      wrap.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+      wrap.innerHTML = `<div style="overflow-x:auto"><table class="data-table table-mobile-stack">
         <thead><tr>
           <th>Invoice #</th><th>Booking Ref</th><th>Client</th>
           <th style="text-align:right">Total USD</th><th>Due Date</th>
@@ -7860,16 +7921,16 @@
         </tr></thead>
         <tbody>
           ${invoices.map(inv => `<tr>
-            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(inv.invoice_number || '—')}</td>
-            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(inv.booking_ref || '—')}</td>
-            <td>
+            <td data-label="Invoice #" class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(inv.invoice_number || '—')}</td>
+            <td data-label="Booking" class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(inv.booking_ref || '—')}</td>
+            <td data-label="Client">
               <div style="font-weight:500">${escapeHtml(inv.client_name || '—')}</div>
               ${inv.client_email ? `<div style="font-size:var(--text-xs);color:var(--text-muted)">${escapeHtml(inv.client_email)}</div>` : ''}
             </td>
-            <td class="mono" style="text-align:right;white-space:nowrap">${fmtMoney(inv.total_usd)}</td>
-            <td style="font-size:var(--text-xs);white-space:nowrap">${inv.due_date ? fmtDate(inv.due_date) : 'On receipt'}</td>
-            <td><span class="badge ${INV_STATUS_BADGE[inv.status] || 'badge-quot-draft'}">${escapeHtml(inv.status || 'draft')}</span></td>
-            <td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
+            <td data-label="Total USD" class="mono" style="text-align:right;white-space:nowrap">${fmtMoney(inv.total_usd)}</td>
+            <td data-label="Due Date" style="font-size:var(--text-xs);white-space:nowrap">${inv.due_date ? fmtDate(inv.due_date) : 'On receipt'}</td>
+            <td data-label="Status"><span class="badge ${INV_STATUS_BADGE[inv.status] || 'badge-quot-draft'}">${escapeHtml(inv.status || 'draft')}</span></td>
+            <td data-label="Actions" style="white-space:nowrap;display:flex;gap:4px;align-items:center">
               <a href="${API}/api/invoices/${escapeHtml(inv.id)}/pdf" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9v1a1 1 0 001 1h8a1 1 0 001-1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                 PDF
@@ -7914,7 +7975,7 @@
         </div>`;
         return;
       }
-      wrap.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+      wrap.innerHTML = `<div style="overflow-x:auto"><table class="data-table table-mobile-stack">
         <thead><tr>
           <th>Voucher #</th><th>Booking Ref</th><th>Supplier</th>
           <th>Service</th><th>Dates</th><th>Guests</th>
@@ -7922,14 +7983,14 @@
         </tr></thead>
         <tbody>
           ${vouchers.map(v => `<tr>
-            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.voucher_number || '—')}</td>
-            <td class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.booking_ref || '—')}</td>
-            <td style="font-weight:500">${escapeHtml(v.supplier_name || '—')}</td>
-            <td style="font-size:var(--text-xs)">${escapeHtml(v.service_type || '—')}</td>
-            <td style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.service_dates || '—')}</td>
-            <td style="text-align:center">${v.pax || 1}</td>
-            <td><span class="badge ${v.status === 'sent' ? 'badge-confirmed' : 'badge-quot-draft'}">${escapeHtml(v.status || 'draft')}</span></td>
-            <td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
+            <td data-label="Voucher #" class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.voucher_number || '—')}</td>
+            <td data-label="Booking" class="mono" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.booking_ref || '—')}</td>
+            <td data-label="Supplier" style="font-weight:500">${escapeHtml(v.supplier_name || '—')}</td>
+            <td data-label="Service" style="font-size:var(--text-xs)">${escapeHtml(v.service_type || '—')}</td>
+            <td data-label="Dates" style="font-size:var(--text-xs);white-space:nowrap">${escapeHtml(v.service_dates || '—')}</td>
+            <td data-label="Guests" style="text-align:center">${v.pax || 1}</td>
+            <td data-label="Status"><span class="badge ${v.status === 'sent' ? 'badge-confirmed' : 'badge-quot-draft'}">${escapeHtml(v.status || 'draft')}</span></td>
+            <td data-label="Actions" style="white-space:nowrap;display:flex;gap:4px;align-items:center">
               <a href="${API}/api/vouchers/${escapeHtml(v.id)}/pdf" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 9v1a1 1 0 001 1h8a1 1 0 001-1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                 PDF
@@ -8481,22 +8542,22 @@
     }
     tbody.innerHTML = lodges.map(l => `
       <tr>
-        <td><strong>${escapeHtml(l.lodge_name)}</strong></td>
-        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.room_type || '')}</span></td>
-        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.country || '')} ${l.location ? '· ' + l.location : ''}</span></td>
-        <td style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs)">$${(l.rack_rate_usd || 0).toFixed(0)}</td>
-        <td style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--teal-700)"><strong>$${(l.net_rate_usd || 0).toFixed(0)}</strong></td>
-        <td><span style="font-size:var(--text-xs)">${escapeHtml(l.meal_plan || '')}</span></td>
-        <td><span style="font-size:10px;color:var(--text-muted)">${l.valid_from ? l.valid_from.slice(0,7) : ''} – ${l.valid_to ? l.valid_to.slice(0,7) : ''}</span></td>
-        <td>${l.source_email_date
+        <td data-label="Lodge"><strong>${escapeHtml(l.lodge_name)}</strong></td>
+        <td data-label="Room Type"><span style="font-size:var(--text-xs)">${escapeHtml(l.room_type || '')}</span></td>
+        <td data-label="Country/Area"><span style="font-size:var(--text-xs)">${escapeHtml(l.country || '')} ${l.location ? '· ' + l.location : ''}</span></td>
+        <td data-label="Rack Rate" style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs)">$${(l.rack_rate_usd || 0).toFixed(0)}</td>
+        <td data-label="Net Rate" style="text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--teal-700)"><strong>$${(l.net_rate_usd || 0).toFixed(0)}</strong></td>
+        <td data-label="Meal Plan"><span style="font-size:var(--text-xs)">${escapeHtml(l.meal_plan || '')}</span></td>
+        <td data-label="Valid"><span style="font-size:10px;color:var(--text-muted)">${l.valid_from ? l.valid_from.slice(0,7) : ''} – ${l.valid_to ? l.valid_to.slice(0,7) : ''}</span></td>
+        <td data-label="Rate Source">${l.source_email_date
           ? (() => {
               const ageDays = Math.floor((Date.now() - new Date(l.source_email_date).getTime()) / 86400000);
               const stale = ageDays > 90;
               return `<span style="font-size:10px;color:${stale ? 'var(--danger)' : 'var(--text-muted)'}" title="Email date: ${l.source_email_date}">${stale ? '⚠ ' : ''}${l.source_email_date.slice(0,10)}</span>`;
             })()
           : '<span style="font-size:10px;color:var(--text-muted)">—</span>'}</td>
-        <td><span style="font-size:10px;color:var(--text-muted)">${escapeHtml(l.notes || '')}</span></td>
-        <td style="white-space:nowrap">
+        <td data-label="Notes"><span style="font-size:10px;color:var(--text-muted)">${escapeHtml(l.notes || '')}</span></td>
+        <td data-label="Actions" style="white-space:nowrap">
           <button class="btn btn-ghost btn-icon" title="Edit" onclick="window.TRVE.editLodge('${l.id}')">
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M9 2l2 2-7 7H2v-2L9 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
           </button>

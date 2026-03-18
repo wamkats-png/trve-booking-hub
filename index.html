@@ -17,7 +17,7 @@
   <meta property="og:see_also" content="https://www.perplexity.ai/computer">
   <link rel="author" href="https://www.perplexity.ai/computer">
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>TRVE Booking Hub — Safari Operations</title>
   <meta name="description" content="The Rift Valley Explorer — Bucket List Adventures Into The Heart Of Africa. Booking operations dashboard.">
 
@@ -90,6 +90,83 @@
   </div>
   <div class="slideover-body" id="slideoverBody"></div>
   <div class="slideover-footer" id="slideoverFooter"></div>
+</div>
+
+<!-- Bottom Navigation (mobile only) -->
+<nav class="bottom-nav" id="bottomNav" aria-label="Bottom navigation">
+  <button class="bottom-nav-item active" data-view="pipeline" id="bnPipeline">
+    <svg width="20" height="20" viewBox="0 0 18 18" fill="none">
+      <rect x="1.5" y="3" width="4" height="12" rx="1" stroke="currentColor" stroke-width="1.5"/>
+      <rect x="7" y="5" width="4" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/>
+      <rect x="12.5" y="1.5" width="4" height="15" rx="1" stroke="currentColor" stroke-width="1.5"/>
+    </svg>
+    Pipeline
+  </button>
+  <button class="bottom-nav-item" data-view="enquiry" id="bnEnquiry">
+    <svg width="20" height="20" viewBox="0 0 18 18" fill="none">
+      <path d="M2 13.5V3.5A1.5 1.5 0 013.5 2h11A1.5 1.5 0 0116 3.5v7A1.5 1.5 0 0114.5 12H5l-3 1.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    </svg>
+    Enquiry
+  </button>
+  <button class="bottom-nav-item" data-view="pricing" id="bnPricing">
+    <svg width="20" height="20" viewBox="0 0 18 18" fill="none">
+      <rect x="1.5" y="3" width="15" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M1.5 7h15" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M5 11h3M11 11h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    Pricing
+  </button>
+  <button class="bottom-nav-item" data-view="clients" id="bnClients">
+    <svg width="20" height="20" viewBox="0 0 18 18" fill="none">
+      <circle cx="7" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M1 16c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    Clients
+  </button>
+  <button class="bottom-nav-item" id="bnMore">
+    <svg width="20" height="20" viewBox="0 0 18 18" fill="none">
+      <circle cx="4" cy="9" r="1.5" fill="currentColor"/>
+      <circle cx="9" cy="9" r="1.5" fill="currentColor"/>
+      <circle cx="14" cy="9" r="1.5" fill="currentColor"/>
+    </svg>
+    More
+  </button>
+</nav>
+
+<!-- Bottom Nav "More" panel -->
+<div class="bottom-nav-more-panel" id="bottomNavMorePanel">
+  <button class="bottom-nav-more-item" data-view="curation">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 2l1.6 4.8H15l-4 2.9 1.5 4.8L9 11.6l-3.5 2.9 1.5-4.8L3 6.8h4.4L9 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    Itinerary
+  </button>
+  <button class="bottom-nav-more-item" data-view="quotations">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M10.5 1.5H4.5A1.5 1.5 0 003 3v12a1.5 1.5 0 001.5 1.5h9A1.5 1.5 0 0015 15V6l-4.5-4.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    Quotes
+  </button>
+  <button class="bottom-nav-more-item" data-view="invoices">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M10.5 1.5H4.5A1.5 1.5 0 003 3v12a1.5 1.5 0 001.5 1.5h9A1.5 1.5 0 0015 15V6l-4.5-4.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    Invoices
+  </button>
+  <button class="bottom-nav-more-item" data-view="tasks">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 9l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Tasks
+  </button>
+  <button class="bottom-nav-more-item" data-view="reports">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 14V10h3v4H2zM7 14V6h3v8H7zM12 14V2h3v12h-3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    Reports
+  </button>
+  <button class="bottom-nav-more-item" data-view="sync">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M15.5 9A6.5 6.5 0 119 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9 2.5L12 5.5M9 2.5L6 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Sync
+  </button>
+  <button class="bottom-nav-more-item" data-view="tools">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="9" width="14" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M5 9V6a4 4 0 018 0v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    Finance
+  </button>
+  <button class="bottom-nav-more-item" data-view="lodges">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 14V7l7-5 7 5v7H2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    Lodges
+  </button>
 </div>
 
 <!-- App Layout -->
@@ -1470,8 +1547,8 @@
 
         <!-- Lodge Table -->
         <div class="card">
-          <div class="card-body" style="padding:0;overflow-x:auto">
-            <table class="pipeline-table" id="lodgeTable">
+          <div class="card-body table-overflow-wrap" style="padding:0">
+            <table class="pipeline-table table-mobile-stack" id="lodgeTable">
               <thead>
                 <tr>
                   <th>Lodge Name</th>
