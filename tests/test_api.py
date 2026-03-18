@@ -1024,7 +1024,7 @@ class TestSyncExtended:
         resp = client.post("/api/sync/refresh-from-sheets")
         assert resp.status_code == 503
         detail = resp.json()["detail"]
-        assert detail["error"] == "sheets_token_missing"
+        assert detail["error"] in ("sheets_token_missing", "google_auth_required")
         assert "how_to_fix" in detail
         assert len(detail["how_to_fix"]) > 0
 

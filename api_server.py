@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import uuid
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, date, timedelta
@@ -405,6 +406,17 @@ CREATE TABLE IF NOT EXISTS drivers (
     license TEXT DEFAULT '',
     notes TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Google OAuth2 token store (one row per service, keyed by 'sheets')
+CREATE TABLE IF NOT EXISTS google_oauth_tokens (
+    service TEXT PRIMARY KEY,
+    access_token TEXT DEFAULT '',
+    refresh_token TEXT DEFAULT '',
+    token_type TEXT DEFAULT 'Bearer',
+    expires_at TEXT DEFAULT '',
+    scope TEXT DEFAULT '',
+    updated_at TEXT DEFAULT (datetime('now'))
 );
 """
 
@@ -5203,51 +5215,361 @@ def mark_queue_failed(item_id: str):
     return {"status": "failed", "id": item_id}
 
 
+# ---------------------------------------------------------------------------
+# Google OAuth2 helpers (no external dependencies — pure stdlib urllib)
+# ---------------------------------------------------------------------------
+
+_GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
+_SHEETS_SPREADSHEET_ID = "1U7aRziHcFPEaOqiSTLYnYFVsKgmdMhIMR8R2lTJtax4"
+
+_DEFAULT_CREDENTIALS_PATHS = [
+    Path.home() / ".config" / "riftvalley-gdrive-credentials.json",
+    Path.home() / ".config" / "gcloud" / "application_default_credentials.json",
+]
+
+
+def _load_google_credentials() -> dict:
+    """
+    Load OAuth2 client credentials from (in order):
+    1. GOOGLE_CREDENTIALS_JSON env var (JSON string)
+    2. GOOGLE_CREDENTIALS_PATH env var (file path)
+    3. Default file locations
+    Returns the 'installed' or 'web' credentials dict, or {} if not found.
+    """
+    raw = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
+    if raw:
+        try:
+            data = json.loads(raw)
+            return data.get("installed") or data.get("web") or data
+        except Exception:
+            pass
+
+    creds_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "")
+    search_paths = ([Path(creds_path)] if creds_path else []) + _DEFAULT_CREDENTIALS_PATHS
+    for p in search_paths:
+        if p.exists():
+            try:
+                data = json.loads(p.read_text())
+                return data.get("installed") or data.get("web") or data
+            except Exception:
+                pass
+    return {}
+
+
+def _get_stored_oauth_token(service: str = "sheets") -> dict:
+    """Return the stored OAuth token row for the given service, or {}."""
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM google_oauth_tokens WHERE service = ?", (service,)
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def _store_oauth_token(service: str, token_data: dict) -> None:
+    """Upsert an OAuth token into the DB."""
+    expires_at = ""
+    if "expires_in" in token_data:
+        expires_at = (datetime.utcnow() + timedelta(seconds=int(token_data["expires_in"]))).isoformat()
+    with db_session() as conn:
+        conn.execute("""
+            INSERT INTO google_oauth_tokens
+                (service, access_token, refresh_token, token_type, expires_at, scope, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(service) DO UPDATE SET
+                access_token = excluded.access_token,
+                refresh_token = CASE WHEN excluded.refresh_token != '' THEN excluded.refresh_token ELSE refresh_token END,
+                token_type   = excluded.token_type,
+                expires_at   = excluded.expires_at,
+                scope        = excluded.scope,
+                updated_at   = excluded.updated_at
+        """, (
+            service,
+            token_data.get("access_token", ""),
+            token_data.get("refresh_token", ""),
+            token_data.get("token_type", "Bearer"),
+            expires_at,
+            token_data.get("scope", _SHEETS_SCOPE),
+            datetime.utcnow().isoformat(),
+        ))
+
+
+def _refresh_access_token(creds: dict, refresh_token: str) -> dict:
+    """Exchange a refresh_token for a new access_token. Returns token_data dict."""
+    payload = {
+        "client_id": creds["client_id"],
+        "client_secret": creds["client_secret"],
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }
+    data = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in payload.items()).encode()
+    req = urllib.request.Request(
+        _GOOGLE_TOKEN_URL,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode())
+
+
+def _get_valid_access_token(service: str = "sheets") -> str:
+    """
+    Return a valid access token for the given service.
+    Refreshes automatically if the stored token is expired or within 60 s of expiry.
+    Raises HTTPException(503) if no token is configured.
+    """
+    stored = _get_stored_oauth_token(service)
+    if not stored or not stored.get("refresh_token"):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "google_auth_required",
+                "message": "Google Sheets OAuth is not connected. Visit /api/auth/google/start to authorise.",
+                "how_to_fix": [
+                    "1. Call GET /api/auth/google/start to get the authorisation URL.",
+                    "2. Visit the URL in a browser and grant access.",
+                    "3. Copy the authorisation code and POST it to /api/auth/google/callback.",
+                ],
+            },
+        )
+
+    # Check expiry
+    expires_at = stored.get("expires_at", "")
+    needs_refresh = True
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(expires_at)
+            needs_refresh = (exp - datetime.utcnow()).total_seconds() < 60
+        except Exception:
+            pass
+
+    if needs_refresh:
+        creds = _load_google_credentials()
+        if not creds:
+            # Fall back to existing access_token — may still be valid
+            return stored.get("access_token", "")
+        token_data = _refresh_access_token(creds, stored["refresh_token"])
+        _store_oauth_token(service, token_data)
+        return token_data["access_token"]
+
+    return stored["access_token"]
+
+
+# ---------------------------------------------------------------------------
+# Google OAuth2 endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/auth/google/status")
+def google_auth_status():
+    """Return the current Google OAuth2 connection status for Sheets."""
+    stored = _get_stored_oauth_token("sheets")
+    creds = _load_google_credentials()
+    has_creds_file = bool(creds)
+    connected = bool(stored.get("refresh_token"))
+    expires_at = stored.get("expires_at", "")
+    return {
+        "connected": connected,
+        "credentials_file_found": has_creds_file,
+        "scope": stored.get("scope", ""),
+        "expires_at": expires_at,
+        "updated_at": stored.get("updated_at", ""),
+        "spreadsheet_id": _SHEETS_SPREADSHEET_ID,
+    }
+
+
+@app.get("/api/auth/google/start")
+def google_auth_start(request: Request):
+    """
+    Begin the Google OAuth2 authorisation flow.
+    Returns the URL the user must visit in a browser to grant Sheets access.
+    """
+    creds = _load_google_credentials()
+    if not creds:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "credentials_not_found",
+                "message": (
+                    "Google OAuth2 credentials file not found. "
+                    "Place the downloaded client_secret JSON at "
+                    "~/.config/riftvalley-gdrive-credentials.json "
+                    "or set GOOGLE_CREDENTIALS_JSON / GOOGLE_CREDENTIALS_PATH."
+                ),
+            },
+        )
+
+    # Build callback URL from the incoming request (works locally and on Render)
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth/google/callback"
+
+    params = {
+        "client_id": creds["client_id"],
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": _SHEETS_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",          # ensures refresh_token is always returned
+    }
+    auth_url = _GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode(params)
+    return {
+        "auth_url": auth_url,
+        "redirect_uri": redirect_uri,
+        "instructions": (
+            "Open auth_url in a browser, grant access, then you will be redirected "
+            "back to this server automatically (or POST the code to /api/auth/google/callback)."
+        ),
+    }
+
+
+@app.get("/api/auth/google/callback")
+def google_auth_callback(code: str = Query(...), request: Request = None):
+    """
+    OAuth2 redirect handler. Google redirects here with ?code=...
+    Exchanges the code for tokens and stores them in the DB.
+    """
+    creds = _load_google_credentials()
+    if not creds:
+        raise HTTPException(status_code=503, detail="Credentials file not found.")
+
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth/google/callback"
+
+    payload = {
+        "code": code,
+        "client_id": creds["client_id"],
+        "client_secret": creds["client_secret"],
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
+    data = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in payload.items()).encode()
+    req = urllib.request.Request(
+        _GOOGLE_TOKEN_URL,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            token_data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "token_exchange_failed", "http_status": e.code, "body": body[:500]},
+        )
+
+    _store_oauth_token("sheets", token_data)
+    return HTMLResponse(
+        "<html><body style='font-family:sans-serif;padding:40px'>"
+        "<h2 style='color:#2e7d32'>✓ Google Sheets Connected</h2>"
+        "<p>TRVE Booking Hub now has read access to the Operations spreadsheet.</p>"
+        "<p>You can close this tab and return to the booking hub.</p>"
+        "</body></html>"
+    )
+
+
+@app.post("/api/auth/google/callback")
+def google_auth_callback_post(body: dict, request: Request = None):
+    """
+    Alternative: POST { "code": "..." } if the browser redirect isn't convenient.
+    """
+    code = body.get("code", "")
+    if not code:
+        raise HTTPException(status_code=400, detail="code is required")
+
+    creds = _load_google_credentials()
+    if not creds:
+        raise HTTPException(status_code=503, detail="Credentials file not found.")
+
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth/google/callback"
+
+    payload = {
+        "code": code,
+        "client_id": creds["client_id"],
+        "client_secret": creds["client_secret"],
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
+    data = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in payload.items()).encode()
+    req = urllib.request.Request(
+        _GOOGLE_TOKEN_URL,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            token_data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body_txt = e.read().decode()
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "token_exchange_failed", "http_status": e.code, "body": body_txt[:500]},
+        )
+
+    _store_oauth_token("sheets", token_data)
+    return {"status": "connected", "scope": token_data.get("scope", _SHEETS_SCOPE)}
+
+
+@app.delete("/api/auth/google")
+def google_auth_revoke():
+    """Disconnect Google Sheets — deletes the stored OAuth tokens."""
+    with db_session() as conn:
+        conn.execute("DELETE FROM google_oauth_tokens WHERE service = 'sheets'")
+    return {"status": "disconnected", "message": "Google Sheets OAuth tokens removed."}
+
+
+# ---------------------------------------------------------------------------
+# Updated Sheets refresh — uses stored OAuth2 tokens with auto-refresh
+# ---------------------------------------------------------------------------
+
 @app.post("/api/sync/refresh-from-sheets")
 def refresh_from_sheets():
     """
     Pull the latest data from the linked Google Sheets spreadsheet.
 
-    Architecture note: This system uses a hybrid sync model.
-    • Push (enquiries → Sheets) is fully automated via /api/sync/push-all.
-    • Pull (Sheets → system) requires the Google Sheets API OAuth token, which
-      must be configured via the GOOGLE_SHEETS_TOKEN environment variable.
+    Requires the Google OAuth2 flow to have been completed first:
+      GET /api/auth/google/start → visit URL → tokens stored automatically.
 
-    If no token is configured, this endpoint records a pull-attempt event and
-    returns a clear error explaining what is needed to enable two-way sync.
+    Falls back to GOOGLE_SHEETS_TOKEN env var for backwards compatibility.
     """
+    spreadsheet_id = _SHEETS_SPREADSHEET_ID
+
+    # Resolve a valid access token (OAuth2 stored tokens or env-var fallback)
     token = os.environ.get("GOOGLE_SHEETS_TOKEN", "")
-    spreadsheet_id = "1U7aRziHcFPEaOqiSTLYnYFVsKgmdMhIMR8R2lTJtax4"
-
     if not token:
-        # Log the attempt so the sync log shows the event
-        with db_session() as conn:
-            conn.execute("""
-                INSERT INTO sync_queue (id, type, reference, description, status, created_at)
-                VALUES (?, 'pull', 'SHEETS', 'Refresh from Sheets — token not configured', 'failed', ?)
-            """, (str(uuid.uuid4())[:8], datetime.now().isoformat()))
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "sheets_token_missing",
-                "message": (
-                    "Sheets Sync pull is not configured. "
-                    "To enable two-way sync, set the GOOGLE_SHEETS_TOKEN environment variable "
-                    "with a valid Google OAuth2 access token that has read access to the spreadsheet. "
-                    f"Spreadsheet ID: {spreadsheet_id}"
-                ),
-                "spreadsheet_id": spreadsheet_id,
-                "how_to_fix": [
-                    "1. Create a Google Cloud project and enable the Sheets API.",
-                    "2. Generate an OAuth2 service-account key with roles/sheets.readonly.",
-                    "3. Share the spreadsheet with the service-account email.",
-                    "4. Set GOOGLE_SHEETS_TOKEN=<access_token> in the server environment.",
-                    "5. Restart the application.",
-                ],
-            }
-        )
+        try:
+            token = _get_valid_access_token("sheets")
+        except HTTPException:
+            # Log the attempt so the sync log shows the event
+            with db_session() as conn:
+                conn.execute("""
+                    INSERT INTO sync_queue (id, type, reference, description, status, created_at)
+                    VALUES (?, 'pull', 'SHEETS', 'Refresh from Sheets — not authorised', 'failed', ?)
+                """, (str(uuid.uuid4())[:8], datetime.now().isoformat()))
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "google_auth_required",
+                    "message": (
+                        "Sheets Sync pull is not configured. "
+                        "Connect Google Sheets via GET /api/auth/google/start "
+                        f"or set GOOGLE_SHEETS_TOKEN. Spreadsheet ID: {spreadsheet_id}"
+                    ),
+                    "spreadsheet_id": spreadsheet_id,
+                    "how_to_fix": [
+                        "1. Call GET /api/auth/google/start to get the authorisation URL.",
+                        "2. Open the URL in a browser and grant read access.",
+                        "3. You will be redirected back automatically — tokens are saved.",
+                        "4. Re-try this endpoint.",
+                    ],
+                },
+            )
 
-    # If token present, attempt to fetch sheet data
+    # Attempt to fetch sheet data
     try:
         range_name = "Enquiries!A2:Z"
         api_url = (
