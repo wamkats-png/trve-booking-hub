@@ -1345,8 +1345,120 @@ tr:hover td { background: var(--bg-subtle); }
 
 @media (max-width: 600px) {
   .stats-row { grid-template-columns: 1fr 1fr; }
-  .kanban-board { grid-template-columns: 1fr; }
+
+  /* Kanban: vertical stack with collapsible columns */
+  .kanban-board {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .kanban-col-header {
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .kanban-col-header::after {
+    content: '';
+    display: inline-block;
+    margin-left: auto;
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid currentColor;
+    opacity: .5;
+    transition: transform 150ms ease;
+  }
+  .kanban-column.collapsed .kanban-col-header::after { transform: rotate(-90deg); }
+  .kanban-column.collapsed .kanban-cards             { display: none; }
+
   .pipeline-toolbar { flex-direction: column; align-items: stretch; }
+  .pipeline-toolbar .search-input-wrap,
+  .pipeline-toolbar .form-control,
+  .pipeline-toolbar select { width: 100%; }
+  .filter-pills { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+  .filter-pills::-webkit-scrollbar { display: none; }
+
+  /* Table → stacked cards */
+  .table-mobile-stack thead { display: none; }
+  .table-mobile-stack tr {
+    display: block;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-3);
+    padding: var(--space-3);
+  }
+  .table-mobile-stack td {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--bg-subtle);
+    font-size: 13px;
+  }
+  .table-mobile-stack td:last-child { border-bottom: none; }
+  .table-mobile-stack td::before {
+    content: attr(data-label);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    min-width: 90px;
+    flex-shrink: 0;
+    padding-right: var(--space-3);
+    padding-top: 1px;
+  }
+  .table-overflow-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Modals as bottom sheets */
+  .modal-overlay { align-items: flex-end; padding: 0; }
+  .modal-overlay .modal-content,
+  .modal-overlay .card {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 92vh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #quotationModal .card {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 92vh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    overflow-y: auto;
+  }
+
+  /* Misc layout */
+  .topbar { padding: 0 var(--space-3); }
+  .card-body { padding: var(--space-4); }
+  .detail-grid { grid-template-columns: 1fr; }
+  .inv-tabs { overflow-x: auto; }
+  .inv-tab  { white-space: nowrap; }
+  .checkbox-chip { padding: 9px 12px; min-height: 36px; }
+  .sync-status-grid { grid-template-columns: 1fr; }
+  .stat-card { padding: var(--space-3); }
+}
+
+/* Slideover: full-width on very small screens */
+@media (max-width: 480px) {
+  .slideover { width: 100vw; border-radius: 0; }
+  .slideover-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--bg-surface);
+    padding-bottom: calc(var(--space-3) + var(--safe-area-inset-bottom));
+    z-index: 2;
+  }
+}
+
+/* 375px micro-adjustments */
+@media (max-width: 375px) {
+  .stats-row { gap: var(--space-2); }
+  .stat-value { font-size: 18px; }
+  .card-header { flex-wrap: wrap; gap: var(--space-2); }
+  .health-badge span { display: none; }
 }
 
 /* ── Modal Overlay ──────────────────────────────────────────── */
