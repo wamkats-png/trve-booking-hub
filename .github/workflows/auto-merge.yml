@@ -24,11 +24,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install fastapi uvicorn[standard] python-multipart httpx pytest pytest-asyncio
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
         run: |
-          pytest tests/test_api.py -q --tb=short
+          python -m pytest tests/test_api.py -q --tb=short
 
       - name: Merge to main
         run: |
