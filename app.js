@@ -8026,31 +8026,42 @@
 
   async function _refreshSyncPanel() {
     // Fire all fetches in parallel; tolerate individual failures
-    const [unsyncedResult, queueResult, statusResult, quotationsResult] = await Promise.allSettled([
+    const [unsyncedResult, queueResult, statusResult, quotationsResult, authResult] = await Promise.allSettled([
       apiFetch('/api/sync/unsynced'),
       apiFetch('/api/sync/queue'),
       apiFetch('/api/sync/status'),
-      apiFetch('/api/quotations')
+      apiFetch('/api/quotations'),
+      apiFetch('/api/auth/google/status'),
     ]);
 
     const unsynced   = unsyncedResult.status   === 'fulfilled' ? unsyncedResult.value   : null;
     const queue      = queueResult.status      === 'fulfilled' ? queueResult.value      : null;
     const syncStatus = statusResult.status     === 'fulfilled' ? statusResult.value     : null;
     const quotations = quotationsResult.status === 'fulfilled' ? quotationsResult.value : null;
+    const authStatus = authResult.status       === 'fulfilled' ? authResult.value       : null;
 
-    _renderSyncStatusCard(unsynced, syncStatus);
-    _renderSyncActions(quotations);
+    _renderSyncStatusCard(unsynced, syncStatus, authStatus);
+    _renderSyncActions(quotations, authStatus);
     _renderSyncQueue(queue);
     _renderSyncLog(syncStatus);
   }
 
-  function _renderSyncStatusCard(unsynced, syncStatus) {
+  function _renderSyncStatusCard(unsynced, syncStatus, authStatus) {
     const card = document.getElementById('syncStatusCard');
     if (!card) return;
 
     const unsyncedCount = unsynced ? (unsynced.count != null ? unsynced.count : (Array.isArray(unsynced) ? unsynced.length : 0)) : '—';
     const lastSync      = syncStatus && syncStatus.last_sync ? fmtDate(syncStatus.last_sync) : 'Never';
     const spreadsheet   = (syncStatus && syncStatus.spreadsheet_name) || 'TRVE_Operations_Hub_Branded';
+
+    const oauthConnected = authStatus && authStatus.connected;
+    const hasCredFile    = authStatus && authStatus.credentials_file_found;
+
+    const pullStatusHtml = oauthConnected
+      ? `<span style="color:var(--success);font-weight:600">&#10003; Google authenticated</span>`
+      : hasCredFile
+        ? `<span style="color:var(--gold-600)">Credentials file found &mdash; authorisation needed</span>`
+        : `<span style="color:var(--text-muted)">Not connected &mdash; click Connect Google below</span>`;
 
     card.innerHTML = `
       <div class="card-body" style="padding: var(--space-5) var(--space-6);">
@@ -8061,9 +8072,8 @@
               <div style="font-weight:600; font-size:var(--text-base); color:var(--text-primary); margin-bottom:2px;">Connected to Operations Hub</div>
               <div style="font-size:var(--text-sm); color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(spreadsheet)}</div>
               <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
-                Push (system → Sheets): fully operational &middot;
-                Pull (Sheets → system): requires
-                <code style="font-size:9px;background:var(--bg-subtle);padding:1px 4px;border-radius:3px">GOOGLE_SHEETS_TOKEN</code> env var
+                Push (system &#8594; Sheets): fully operational &middot;
+                Pull (Sheets &#8594; system): ${pullStatusHtml}
               </div>
             </div>
           </div>
@@ -8082,7 +8092,7 @@
     `;
   }
 
-  function _renderSyncActions(quotationsData) {
+  function _renderSyncActions(quotationsData, authStatus) {
     const card = document.getElementById('syncActionsCard');
     if (!card) return;
 
@@ -8095,6 +8105,19 @@
           `<option value="${escapeHtml(q.id)}">${escapeHtml(q.id)} — ${escapeHtml(q.client_name || '—')}</option>`
         ).join('')
       : '<option value="">No quotations available</option>';
+
+    const oauthConnected = authStatus && authStatus.connected;
+
+    const googleAuthBtnHtml = oauthConnected
+      ? `<button class="btn btn-ghost btn-sm" id="btnDisconnectGoogle" style="font-size:11px;color:var(--text-muted)">
+           &#10007; Disconnect Google
+         </button>`
+      : `<button class="btn btn-secondary" id="btnConnectGoogle">
+           <svg width="14" height="14" viewBox="0 0 48 48" fill="none">
+             <path d="M44.5 20H24v8h11.8C34.7 33.1 29.8 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.7 1.1 7.8 2.9L37 9.7C33.4 6.5 28.9 4.5 24 4.5 12.7 4.5 3.5 13.7 3.5 25S12.7 45.5 24 45.5 44.5 36.3 44.5 25c0-1.7-.2-3.3-.5-5z" fill="currentColor"/>
+           </svg>
+           Connect Google Sheets
+         </button>`;
 
     // Re-render card header + body
     card.innerHTML = `
@@ -8130,6 +8153,7 @@
             </svg>
             Refresh from Sheets
           </button>
+          ${googleAuthBtnHtml}
         </div>
       </div>
     `;
@@ -8180,6 +8204,52 @@
         _refreshSyncPanel();
       }
     });
+
+    // Google OAuth buttons
+    const btnConnect = document.getElementById('btnConnectGoogle');
+    if (btnConnect) {
+      btnConnect.addEventListener('click', async () => {
+        btnConnect.disabled = true;
+        try {
+          const data = await apiFetch('/api/auth/google/start');
+          // Open the auth URL in a new tab; callback will auto-complete
+          window.open(data.auth_url, '_blank', 'width=600,height=700,noopener');
+          toast('info', 'Google Auth', 'Complete the authorisation in the new tab, then refresh this panel.');
+          // Poll for completion (up to 90 s)
+          let attempts = 0;
+          const poll = setInterval(async () => {
+            attempts++;
+            try {
+              const status = await apiFetch('/api/auth/google/status');
+              if (status.connected) {
+                clearInterval(poll);
+                toast('success', 'Google Sheets Connected', 'You can now pull data from the spreadsheet.');
+                _refreshSyncPanel();
+              }
+            } catch (_) {}
+            if (attempts >= 18) clearInterval(poll); // stop after 90 s
+          }, 5000);
+        } catch (err) {
+          toast('error', 'Connect failed', err.message || 'Could not start Google auth flow.');
+        } finally {
+          btnConnect.disabled = false;
+        }
+      });
+    }
+
+    const btnDisconnect = document.getElementById('btnDisconnectGoogle');
+    if (btnDisconnect) {
+      btnDisconnect.addEventListener('click', async () => {
+        if (!confirm('Disconnect Google Sheets? You can reconnect at any time.')) return;
+        try {
+          await apiFetch('/api/auth/google', { method: 'DELETE' });
+          toast('success', 'Disconnected', 'Google Sheets access removed.');
+          _refreshSyncPanel();
+        } catch (err) {
+          toast('error', 'Disconnect failed', err.message);
+        }
+      });
+    }
   }
 
   function _renderSyncQueue(queue) {
