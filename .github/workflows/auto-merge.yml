@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - claude/confirm-working-4yYw8
+      - claude/migrate-project-to-code-LvNCk
 
 jobs:
   test-and-merge:
@@ -33,8 +34,9 @@ jobs:
         run: |
           git config user.email "ci-auto@trve.local"
           git config user.name "TRVE Auto-Merge"
+          BRANCH="${GITHUB_REF#refs/heads/}"
           git checkout main
           git pull origin main
-          git merge --no-ff claude/confirm-working-4yYw8 \
-            -m "ci: auto-merge claude/confirm-working-4yYw8 → main [skip ci]"
+          git merge --no-ff "$BRANCH" \
+            -m "ci: auto-merge ${BRANCH} → main [skip ci]"
           git push origin main
