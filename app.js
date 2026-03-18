@@ -553,6 +553,16 @@
     fleet:      'Fleet',
   };
 
+  function updateBottomNavActive(viewId) {
+    const primaryViews = ['pipeline', 'enquiry', 'pricing', 'clients'];
+    document.querySelectorAll('#bottomNav .bottom-nav-item[data-view]').forEach(btn =>
+      btn.classList.toggle('active', btn.dataset.view === viewId));
+    const moreBtn = document.getElementById('bnMore');
+    if (moreBtn) moreBtn.classList.toggle('active', !primaryViews.includes(viewId));
+    document.querySelectorAll('.bottom-nav-more-item[data-view]').forEach(btn =>
+      btn.classList.toggle('active', btn.dataset.view === viewId));
+  }
+
   function navigate(viewId) {
     // Clear sync auto-refresh when leaving that view
     if (state.syncInterval && viewId !== 'sync') {
@@ -575,6 +585,9 @@
 
     // Update title
     document.getElementById('pageTitle').textContent = VIEW_TITLES[viewId] || viewId;
+
+    // Update bottom nav active state
+    updateBottomNavActive(viewId);
 
     state.currentView = viewId;
 
@@ -729,6 +742,42 @@
     if (window.innerWidth >= 1024) {
       layout.classList.remove('sidebar-collapsed');
     }
+
+    // Bottom nav (mobile)
+    function initBottomNav() {
+      const morePanel = document.getElementById('bottomNavMorePanel');
+      const moreBtn   = document.getElementById('bnMore');
+      if (!morePanel || !moreBtn) return;
+
+      document.querySelectorAll('#bottomNav .bottom-nav-item[data-view]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          navigate(btn.dataset.view);
+          sidebar.classList.remove('mobile-open');
+          overlay.classList.remove('active');
+          morePanel.classList.remove('open');
+        });
+      });
+
+      moreBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        morePanel.classList.toggle('open');
+      });
+
+      morePanel.querySelectorAll('.bottom-nav-more-item[data-view]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          navigate(btn.dataset.view);
+          sidebar.classList.remove('mobile-open');
+          overlay.classList.remove('active');
+          morePanel.classList.remove('open');
+        });
+      });
+
+      document.addEventListener('click', e => {
+        if (!morePanel.contains(e.target) && e.target !== moreBtn)
+          morePanel.classList.remove('open');
+      });
+    }
+    initBottomNav();
   }
 
   /* ============================================================

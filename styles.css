@@ -1804,3 +1804,83 @@ tr:hover td { background: var(--bg-subtle); }
   border-color: transparent;
   box-shadow: none;
 }
+
+/* ── Bottom Navigation (mobile only) ───────────────────────── */
+.bottom-nav { display: none; }
+
+@media (max-width: 768px) {
+  .bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: calc(var(--bottom-nav-height) + var(--safe-area-inset-bottom));
+    padding-bottom: var(--safe-area-inset-bottom);
+    background: var(--sidebar-bg);
+    border-top: 1px solid rgba(255,255,255,.12);
+    z-index: 250;
+    align-items: center;
+    justify-content: space-around;
+  }
+
+  .bottom-nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    flex: 1;
+    min-height: 56px;
+    padding: 6px 2px;
+    color: rgba(255,255,255,.65);
+    cursor: pointer;
+    border: none;
+    background: none;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    transition: color var(--transition);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .bottom-nav-item.active { color: var(--brand-gold); }
+  .bottom-nav-item svg    { width: 20px; height: 20px; }
+
+  .bottom-nav-more-panel {
+    position: fixed;
+    bottom: calc(var(--bottom-nav-height) + var(--safe-area-inset-bottom));
+    left: 0; right: 0;
+    background: var(--sidebar-bg);
+    border-top: 1px solid rgba(255,255,255,.15);
+    padding: var(--space-3) var(--space-4);
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-3);
+    z-index: 249;
+    transform: translateY(110%);
+    transition: transform 200ms ease;
+  }
+
+  .bottom-nav-more-panel.open { transform: translateY(0); }
+
+  .bottom-nav-more-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    color: rgba(255,255,255,.75);
+    cursor: pointer;
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+    font-size: 10px;
+    font-weight: 500;
+    text-align: center;
+    min-height: 56px;
+    justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+    border: none;
+    background: none;
+  }
+
+  .bottom-nav-more-item.active   { color: var(--brand-gold); }
+  .bottom-nav-more-item:active   { background: rgba(255,255,255,.1); }
+}
