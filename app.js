@@ -3035,6 +3035,18 @@
       });
     }
 
+    // Meal plan change → refresh rate chips and pricing summary
+    const mealPlanSelect = el.querySelector(`[name^="meal_plan_"]`);
+    if (mealPlanSelect) {
+      mealPlanSelect.addEventListener('change', function() {
+        const lodgeName = el.querySelector('[name^="lodge_name_"]')?.value || '';
+        _getRoomTypeEntries(el).forEach(entry => {
+          _updateRateChips(entry, lodgeName, entry.querySelector('.room-type-select')?.value || '');
+        });
+        _renderAccommPricingSummary();
+      });
+    }
+
     // Wire each room-type-entry's select and rooms input
     function _wireRoomTypeEntry(entry) {
       const rtSel = entry.querySelector('.room-type-select');
@@ -5098,6 +5110,26 @@
   window.TRVE._removeStaffRoom  = _removeStaffRoom;
   window.TRVE.addStaffRoomItem  = addStaffRoomItem;
 
+  // Return the best rate record for a room type, preferring one that matches the selected meal plan.
+  function _findBestRate(roomTypes, roomType, mealPlan) {
+    const allForRoom = roomTypes.filter(r => r.room_type === roomType);
+    if (allForRoom.length === 0) return null;
+    if (mealPlan) {
+      const normalizeMP = mp => {
+        const s = (mp || '').toLowerCase();
+        if (s.includes('all incl'))              return 'AI';
+        if (s === 'fb' || s.includes('full'))    return 'FB';
+        if (s === 'hb' || s.includes('half'))    return 'HB';
+        if (s === 'bb' || s.includes('bed'))     return 'BB';
+        if (s === 'ro' || s.includes('room only')) return 'RO';
+        return null;
+      };
+      const match = allForRoom.find(r => normalizeMP(r.meal_plan) === mealPlan);
+      if (match) return match;
+    }
+    return allForRoom[0];
+  }
+
   // Accommodation pricing summary — age-banded per-guest pricing (Sections 3-6 of booking logic spec).
   function _renderAccommPricingSummary() {
     const panel = document.getElementById('accomPricingSummary');
@@ -5123,7 +5155,7 @@
         // Legacy: single room type from row-level fields
         const rooms    = parseInt(row.querySelector('[name^="rooms_"]')?.value)  || 1;
         const roomType = row.querySelector('[name^="room_type_"]')?.value        || '';
-        const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
+        const rt = _findBestRate(lodgeData?.room_types || [], roomType, mealPlan)
                 || (lodgeData?.room_types || [])[0];
         const rate = rt?.net_rate_usd || 0;
         if (rate > 0) priceItems.push({ roomType, rooms, rate, rateMealPlan: rt?.meal_plan || '' });
@@ -5131,7 +5163,7 @@
         entries.forEach(entry => {
           const rooms    = parseInt(entry.querySelector('[name^="rooms_"]')?.value) || 1;
           const roomType = entry.querySelector('.room-type-select')?.value || entry.querySelector('[name^="room_type_"]')?.value || '';
-          const rt = (lodgeData?.room_types || []).find(r => r.room_type === roomType)
+          const rt = _findBestRate(lodgeData?.room_types || [], roomType, mealPlan)
                   || (lodgeData?.room_types || [])[0];
           const rate = rt?.net_rate_usd || 0;
           if (rate > 0) priceItems.push({ roomType, rooms, rate, rateMealPlan: rt?.meal_plan || '' });
@@ -6148,9 +6180,11 @@
 
   // Update STO/Rack chip labels for a room-type-entry after a room type is selected.
   function _updateRateChips(entry, lodgeName, roomType) {
-    const lodge = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
-    const rt    = lodge && roomType
-      ? (lodge.room_types || []).find(r => r.room_type === roomType)
+    const lodge      = (state.lodgeData || []).find(l => (l.name || l.lodge_name) === lodgeName);
+    const lodgeRow   = entry.closest('.lodge-item');
+    const mealPlan   = lodgeRow?.querySelector('[name^="meal_plan_"]')?.value || '';
+    const rt         = lodge && roomType
+      ? (_findBestRate(lodge.room_types || [], roomType, mealPlan) || null)
       : null;
     const sto  = rt ? rt.net_rate_usd  : null;
     const rack = rt ? rt.rack_rate_usd : null;
