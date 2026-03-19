@@ -734,6 +734,23 @@
       } else if (badge) {
         badge.remove();
       }
+
+      // Quotations badge
+      const quotationsItem = document.querySelector('.nav-item[data-view="quotations"]');
+      if (quotationsItem) {
+        let qBadge = quotationsItem.querySelector('.nav-badge');
+        const qCount = state.quotations ? state.quotations.length : 0;
+        if (qCount > 0) {
+          if (!qBadge) {
+            qBadge = document.createElement('span');
+            qBadge.className = 'nav-badge';
+            quotationsItem.appendChild(qBadge);
+          }
+          qBadge.textContent = qCount;
+        } else if (qBadge) {
+          qBadge.remove();
+        }
+      }
     }
     // Expose for use after data loads
     window.TRVE.updateSidebarBadges = updateSidebarBadges;
@@ -3508,8 +3525,13 @@
         const daysEl = document.getElementById('pricingDays');
         if (daysEl) {
           if (parseInt(daysEl.value) !== diffDays) {
+            const prevDays = parseInt(daysEl.value) || 0;
             daysEl.value = diffDays;
             _syncLodgeNightsFromDays(diffDays);
+            // Show duration override warning if duration actually changed
+            if (prevDays > 0 && prevDays !== diffDays) {
+              _showDurationOverrideWarning(prevDays, diffDays);
+            }
           }
           daysEl.readOnly = true; // lock when dates are provided
           daysEl.title = 'Auto-calculated from travel dates (inclusive). Edit dates above to change.';
@@ -3562,6 +3584,43 @@
     // Re-validate nights totals whenever dates/duration change
     _validateAndShowNightsSummary();
   }
+
+  function _showDurationOverrideWarning(fromDays, toDays) {
+    // Remove any existing warning
+    const existing = document.getElementById('durationOverrideWarning');
+    if (existing) existing.remove();
+
+    const daysEl = document.getElementById('pricingDays');
+    if (!daysEl) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'durationOverrideWarning';
+    banner.style.cssText = 'background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;padding:10px 12px;margin-top:6px;font-size:12px;color:#92400e';
+    banner.innerHTML = `
+        <strong>⚠️ Duration updated:</strong> Changed from ${fromDays} to ${toDays} days based on your travel dates.
+        If ${fromDays} days was intended, adjust your end date.
+        <div style="margin-top:6px;display:flex;gap:8px">
+            <button onclick="window.TRVE._restoreDuration(${fromDays})" style="font-size:11px;padding:2px 8px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">Restore to ${fromDays} days</button>
+            <button onclick="document.getElementById('durationOverrideWarning')?.remove()" style="font-size:11px;padding:2px 8px;background:transparent;border:1px solid #f59e0b;border-radius:4px;cursor:pointer;color:#92400e">Keep ${toDays} days</button>
+        </div>`;
+    daysEl.parentNode.insertBefore(banner, daysEl.nextSibling);
+  }
+
+  function _restoreDuration(days) {
+    const startEl = document.getElementById('pricingTravelStartDate');
+    const endEl = document.getElementById('pricingTravelEndDate');
+    const daysEl = document.getElementById('pricingDays');
+    if (!startEl || !startEl.value || !endEl || !daysEl) return;
+    // Compute new end date: start + days - 1 (inclusive)
+    const start = new Date(startEl.value);
+    start.setDate(start.getDate() + days - 1);
+    endEl.value = start.toISOString().slice(0, 10);
+    daysEl.readOnly = false;
+    // Re-trigger date update which will re-calculate (and no longer warn since days matches)
+    _updateAccommodationDates();
+    document.getElementById('durationOverrideWarning')?.remove();
+  }
+  window.TRVE._restoreDuration = _restoreDuration;
 
   // Update check-in/check-out display for ALL lodge rows in sequence (cascade).
   // Row 1: check-in = trip start; Row N: check-in = Row (N-1) check-out.
@@ -3882,8 +3941,64 @@
     _distCache.clear(); // young-child count affects sharing logic
     _syncLodgeGuestAssignments();
     _checkCapacityMismatch();
+    _checkUwaAgeRestriction();
   }
   window.TRVE._updateChildAge = _updateChildAge;
+
+  // ---------------------------------------------------------------------------
+  // F-02: UWA AGE RESTRICTION — Gorilla & Chimp Tracking (children under 15)
+  // ---------------------------------------------------------------------------
+  const _UWA_RESTRICTED_PERMITS = [
+    'permit_gorilla_uganda', 'permit_gorilla_habituation', 'permit_gorilla_rwanda',
+    'permit_chimp', 'permit_chimp_habituation'
+  ];
+
+  function _checkUwaAgeRestriction() {
+    const childAges = state.childAges || [];
+    const underageChildren = childAges
+      .map((age, i) => ({ age, idx: i }))
+      .filter(c => c.age !== null && Number(c.age) < 15);
+
+    const restrictedChecked = _UWA_RESTRICTED_PERMITS.some(name => {
+      const cb = document.querySelector(`[name="${name}"]`);
+      return cb && cb.checked;
+    });
+
+    const shouldWarn = underageChildren.length > 0 && restrictedChecked;
+
+    // Remove existing warning
+    const existing = document.getElementById('uwaAgeWarningBanner');
+    if (existing) existing.remove();
+
+    if (!shouldWarn) return;
+
+    // Build child descriptions
+    const childDesc = underageChildren.map(c => `Child ${c.idx + 1} (age ${c.age})`).join(', ');
+
+    // Inject warning banner after permitsSection
+    const permitsSection = document.getElementById('permitsSection');
+    if (!permitsSection) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'uwaAgeWarningBanner';
+    banner.style.cssText = 'background:#FDEDEC;border:2px solid #C0392B;border-radius:6px;padding:12px 14px;margin-top:8px;font-size:12px;color:#641E16';
+    banner.innerHTML = `
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px">⚠️ UWA Regulation — Gorilla/Chimp Tracking Age Restriction</div>
+      <div style="margin-bottom:8px">Children under 15 years of age are <strong>not permitted</strong> on gorilla trekking or chimpanzee tracking by Uganda Wildlife Authority (UWA). <strong>${escapeHtml(childDesc)}</strong> does not meet the minimum age requirement (15+). This permit cannot be issued for this child. Please remove gorilla/chimp permits or adjust the guest list before generating a quotation.</div>
+      <button onclick="window.TRVE._removeRestrictedPermits()" style="font-size:11px;padding:4px 10px;background:#C0392B;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Remove Restricted Permits</button>`;
+
+    permitsSection.parentNode.insertBefore(banner, permitsSection.nextSibling);
+  }
+  window.TRVE._checkUwaAgeRestriction = _checkUwaAgeRestriction;
+
+  function _removeRestrictedPermits() {
+    _UWA_RESTRICTED_PERMITS.forEach(name => {
+      const cb = document.querySelector(`[name="${name}"]`);
+      if (cb) cb.checked = false;
+    });
+    _checkUwaAgeRestriction(); // Re-check — banner should disappear
+  }
+  window.TRVE._removeRestrictedPermits = _removeRestrictedPermits;
 
   // Count children globally with age < 5
   function _getYoungChildCount() {
@@ -5974,7 +6089,7 @@
   const VEHICLE_TYPES = [
     { value: '4x4 Safari Vehicle', label: '4x4 Safari Vehicle (Land Cruiser)', rate: 120, seats: 7 },
     { value: 'Safari Minivan', label: 'Safari Minivan / Hiace', rate: 100, seats: 8 },
-    { value: 'Coaster Bus', label: 'Coaster Bus (large groups)', rate: 150, seats: 26 },
+    { value: 'Coaster Bus', label: 'Coaster Bus (large groups)', rate: 150, seats: 24 },
     { value: 'Self-Drive 4x4', label: 'Self-Drive 4x4 (fuel excl.)', rate: 90, seats: 5 },
     { value: 'Airport Shuttle', label: 'Airport Shuttle (Entebbe)', rate: 60, seats: 4 },
     { value: 'Boat Transfer', label: 'Boat Transfer / Water Taxi', rate: 80, seats: 10 },
@@ -6974,14 +7089,47 @@
       const total = (parseInt(adultsInput?.value) || 0) + (parseInt(childrenInput?.value) || 0);
       syncGuestRecords(total);
       renderChildAgeInputs();
+      _checkUwaAgeRestriction();
       _syncGuestPool();        // reconcile guest pool objects with new pax count
       _renderGuestAssignmentUI(); // refresh pool panel + room cards
       _checkCapacityMismatch();
     }
+    // F-03: Single supplement for solo travellers
+    function _updateSingleSupplementVisibility() {
+      const adultsEl = document.getElementById('pricingAdults');
+      const suppWrap = document.getElementById('singleSupplementWrap');
+      if (!suppWrap || !adultsEl) return;
+      const adults = parseInt(adultsEl.value) || 0;
+      suppWrap.style.display = adults === 1 ? '' : 'none';
+      if (adults !== 1) {
+        const cb = document.getElementById('singleSupplementToggle');
+        if (cb) cb.checked = false; // auto-uncheck when not 1 adult
+      }
+    }
+    window.TRVE._updateSingleSupplementVisibility = _updateSingleSupplementVisibility;
     if (adultsInput) adultsInput.addEventListener('change', _syncGuestsFromForm);
     if (adultsInput) adultsInput.addEventListener('input', _syncGuestsFromForm);
     if (childrenInput) childrenInput.addEventListener('change', _syncGuestsFromForm);
     if (childrenInput) childrenInput.addEventListener('input', _syncGuestsFromForm);
+
+    // F-03: Single supplement visibility toggle
+    if (adultsInput) adultsInput.addEventListener('input', _updateSingleSupplementVisibility);
+    if (adultsInput) adultsInput.addEventListener('change', _updateSingleSupplementVisibility);
+    // Set initial visibility
+    _updateSingleSupplementVisibility();
+    const suppToggle = document.getElementById('singleSupplementToggle');
+    if (suppToggle) {
+      suppToggle.addEventListener('change', () => {
+        const waivedNote = document.getElementById('singleSupplementWaivedNote');
+        if (waivedNote) waivedNote.style.display = suppToggle.checked ? 'none' : '';
+      });
+    }
+
+    // F-02: Wire UWA age restriction check on permit checkbox changes
+    _UWA_RESTRICTED_PERMITS.forEach(name => {
+      const cb = document.querySelector(`[name="${name}"]`);
+      if (cb) cb.addEventListener('change', _checkUwaAgeRestriction);
+    });
 
     // Initial label render
     updatePermitLabels();
@@ -8062,6 +8210,7 @@
         </table>
       </div>
     `;
+    if (window.TRVE && window.TRVE.updateSidebarBadges) window.TRVE.updateSidebarBadges();
   }
 
   function initQuotations() {

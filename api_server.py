@@ -1506,16 +1506,21 @@ def init_db():
             pass  # Column already exists — safe to ignore
 
     # Phase 3 seed: vehicles (INSERT OR IGNORE — plate is UNIQUE key)
+    # Remove legacy placeholder vehicles before seeding real fleet
+    for _old_plate in ('UAA 123B', 'UAA 456C', 'UAB 789D'):
+        conn.execute("DELETE FROM vehicles WHERE plate = ?", (_old_plate,))
     _phase3_vehicle_seeds = [
-        ('Landcruiser 001', '4WD', 7, 'UAA 123B'),
-        ('Landcruiser 002', '4WD', 7, 'UAA 456C'),
-        ('Safari Van 001', 'Minivan', 12, 'UAB 789D'),
+        ('Land Cruiser 985S', 'Land Cruiser GX', 7, 'UBE 985S', 'Game drives, long-haul safaris'),
+        ('Land Cruiser 906S', 'Land Cruiser GX', 7, 'UBE 906S', 'Game drives, long-haul safaris'),
+        ('Land Cruiser 223W', 'Land Cruiser GX', 7, 'UAW 223W', 'Airport transfers, short city runs'),
+        ('Land Cruiser 224W', 'Land Cruiser GX', 7, 'UAW 224W', 'Airport transfers, short city runs'),
+        ('Toyota Coaster', 'Coaster Bus', 24, 'UAA Coaster', 'Campus groups, large groups'),
     ]
-    for _vname, _vtype, _vseats, _vplate in _phase3_vehicle_seeds:
+    for _vname, _vtype, _vseats, _vplate, _vnotes in _phase3_vehicle_seeds:
         try:
             conn.execute(
-                "INSERT OR IGNORE INTO vehicles (id, name, type, seats, plate, notes, status) VALUES (?,?,?,?,?,'','available')",
-                (str(uuid.uuid4()), _vname, _vtype, _vseats, _vplate)
+                "INSERT OR IGNORE INTO vehicles (id, name, type, seats, plate, notes, status) VALUES (?,?,?,?,?,?,'available')",
+                (str(uuid.uuid4()), _vname, _vtype, _vseats, _vplate, _vnotes)
             )
         except Exception:
             pass
@@ -3854,6 +3859,16 @@ def curate_itinerary(body: CurateRequest):
     with db_session() as conn:
         rows = conn.execute("SELECT * FROM itineraries").fetchall()
 
+    # If matching from an enquiry, use that enquiry's duration if not explicitly provided
+    if body.enquiry_id and not body.effective_duration:
+        with db_session() as enq_conn:
+            enq_row = enq_conn.execute(
+                "SELECT duration_days FROM enquiries WHERE id = ? OR booking_ref = ?",
+                (body.enquiry_id, body.enquiry_id)
+            ).fetchone()
+            if enq_row and enq_row["duration_days"]:
+                body = body.model_copy(update={"duration_days": enq_row["duration_days"]})
+
     suggestions = []
     for r in rows:
         itn = dict(r)
@@ -3882,6 +3897,8 @@ def curate_itinerary(body: CurateRequest):
                 elif diff <= 4:
                     score += 12
                     reasons.append(f"Duration within {diff} days")
+                else:
+                    reasons.append(f"Duration mismatch: {diff} days off (0 pts)")
 
         # Budget match (max 20)
         if body.budget_tier:
@@ -4405,7 +4422,10 @@ def calculate_price(body: PricingRequest):
         buf_label = f" + {vline['fuel_buffer_pct']}% fuel buffer" if vline["fuel_buffer_pct"] else ""
         line_items.append({"item": f"{vline['type']} ({vline['days']} days @ ${vline['rate']}/day{buf_label})", "total_usd": vline["total"]})
     for line in permit_lines:
-        line_items.append({"item": line["description"] + f" (×{line['qty']})", "total_usd": line["total"]})
+        if line.get("pax"):
+            line_items.append({"item": line["description"] + f" — ${line['price_per_unit']:.0f} × {line['pax']} pax", "total_usd": line["total"]})
+        else:
+            line_items.append({"item": line["description"] + f" (×{line['qty']})", "total_usd": line["total"]})
     if insurance_total > 0:
         guest_label = f"{adults} adults" + (f" + {children} children" if children else "")
         line_items.append({"item": f"Travel Insurance ({guest_label} × {days} days)", "total_usd": round(insurance_total, 2)})
