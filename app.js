@@ -734,6 +734,23 @@
       } else if (badge) {
         badge.remove();
       }
+
+      // Quotations badge
+      const quotationsItem = document.querySelector('.nav-item[data-view="quotations"]');
+      if (quotationsItem) {
+        let qBadge = quotationsItem.querySelector('.nav-badge');
+        const qCount = state.quotations ? state.quotations.length : 0;
+        if (qCount > 0) {
+          if (!qBadge) {
+            qBadge = document.createElement('span');
+            qBadge.className = 'nav-badge';
+            quotationsItem.appendChild(qBadge);
+          }
+          qBadge.textContent = qCount;
+        } else if (qBadge) {
+          qBadge.remove();
+        }
+      }
     }
     // Expose for use after data loads
     window.TRVE.updateSidebarBadges = updateSidebarBadges;
@@ -3508,8 +3525,13 @@
         const daysEl = document.getElementById('pricingDays');
         if (daysEl) {
           if (parseInt(daysEl.value) !== diffDays) {
+            const prevDays = parseInt(daysEl.value) || 0;
             daysEl.value = diffDays;
             _syncLodgeNightsFromDays(diffDays);
+            // Show duration override warning if duration actually changed
+            if (prevDays > 0 && prevDays !== diffDays) {
+              _showDurationOverrideWarning(prevDays, diffDays);
+            }
           }
           daysEl.readOnly = true; // lock when dates are provided
           daysEl.title = 'Auto-calculated from travel dates (inclusive). Edit dates above to change.';
@@ -8062,6 +8084,7 @@
         </table>
       </div>
     `;
+    if (window.TRVE && window.TRVE.updateSidebarBadges) window.TRVE.updateSidebarBadges();
   }
 
   function initQuotations() {
