@@ -6107,6 +6107,7 @@
       sel.appendChild(opt);
     });
     sel.addEventListener('change', _updateVehicleHint);
+    sel.addEventListener('change', _checkVehicleCapacity);
   }
 
   function _updateVehicleHint() {
@@ -6124,6 +6125,51 @@
     const total = days * v.rate * (1 + fuelBuf / 100);
     hint.textContent = `$${v.rate}/day · ${v.seats} seats · ${days} day(s) ≈ $${total.toFixed(0)} incl. ${fuelBuf}% fuel buffer`;
   }
+
+  // F-04: Vehicle capacity validation
+  function _checkVehicleCapacity() {
+    const adultsEl = document.getElementById('pricingAdults');
+    const childrenEl = document.getElementById('pricingChildren');
+    const vehicleSel = document.getElementById('vehicleDropdown');
+    const existing = document.getElementById('vehicleCapacityWarning');
+    if (existing) existing.remove();
+
+    if (!adultsEl || !vehicleSel) return;
+
+    const adults = parseInt(adultsEl.value) || 0;
+    const children = parseInt(childrenEl?.value) || 0;
+    const totalPax = adults + children;
+    if (totalPax === 0) return;
+
+    const selectedType = vehicleSel.value;
+    if (!selectedType) return;
+
+    const vehicleDef = VEHICLE_TYPES.find(v => v.value === selectedType);
+    if (!vehicleDef) return;
+
+    const capacity = vehicleDef.seats;
+    if (totalPax <= capacity) return;
+
+    // Determine vehicle suggestion
+    let suggestion = '';
+    if (totalPax <= 7) suggestion = '1× Land Cruiser GX (7 pax)';
+    else if (totalPax <= 14) suggestion = '2× Land Cruiser GX (7 pax each)';
+    else if (totalPax <= 24) suggestion = '1× Toyota Coaster Bus (24 pax)';
+    else suggestion = 'Toyota Coaster Bus + Land Cruiser GX';
+
+    const vehicleCount = Math.ceil(totalPax / capacity);
+
+    const banner = document.createElement('div');
+    banner.id = 'vehicleCapacityWarning';
+    banner.style.cssText = 'background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;padding:10px 12px;margin-top:6px;font-size:12px;color:#92400e';
+    banner.innerHTML = `<strong>⚠️ Capacity Alert:</strong> ${escapeHtml(vehicleDef.label)} carries a maximum of ${capacity} passengers. You have ${totalPax} guests (${adults} adults${children > 0 ? ' + ' + children + ' children' : ''}). Consider: <strong>${escapeHtml(suggestion)}</strong>.
+      <div style="margin-top:4px;font-size:11px;color:#b45309">Vehicle requirement: ${vehicleCount} × ${escapeHtml(vehicleDef.value)} (based on ${totalPax} guests)</div>`;
+
+    // Insert after the vehicle dropdown parent container
+    const dropdownWrap = vehicleSel.closest('.form-group') || vehicleSel.parentNode;
+    dropdownWrap.parentNode.insertBefore(banner, dropdownWrap.nextSibling);
+  }
+  window.TRVE._checkVehicleCapacity = _checkVehicleCapacity;
 
   function addVehicleItem(presetType, presetRate) {
     const container = document.getElementById('vehicleItems');
@@ -7111,6 +7157,14 @@
     if (adultsInput) adultsInput.addEventListener('input', _syncGuestsFromForm);
     if (childrenInput) childrenInput.addEventListener('change', _syncGuestsFromForm);
     if (childrenInput) childrenInput.addEventListener('input', _syncGuestsFromForm);
+    if (adultsInput) {
+      adultsInput.setAttribute('max', '99');
+      adultsInput.setAttribute('min', '1');
+      adultsInput.addEventListener('input', _checkVehicleCapacity);
+    }
+    if (childrenInput) {
+      childrenInput.addEventListener('input', _checkVehicleCapacity);
+    }
 
     // F-03: Single supplement visibility toggle
     if (adultsInput) adultsInput.addEventListener('input', _updateSingleSupplementVisibility);
@@ -7796,6 +7850,22 @@
         ${result.fuel_buffer_pct ? ` Fuel buffer: ${result.fuel_buffer_pct}% applied.` : ''}
         ${result.fx_buffer_pct ? ` FX buffer: ${result.fx_buffer_pct}% noted.` : ''}
       </div>
+
+      <!-- Vehicle Requirement Suggestion -->
+      ${(() => {
+        const adults = result.adults || payload.adults || result.pax || 0;
+        const children = result.children || payload.children || 0;
+        const totalPax = adults + children;
+        if (totalPax <= 0) return '';
+        let vSuggestion = '';
+        if (totalPax <= 7) vSuggestion = '1× Land Cruiser GX';
+        else if (totalPax <= 14) vSuggestion = '2× Land Cruiser GX';
+        else if (totalPax <= 24) vSuggestion = '1× Toyota Coaster Bus';
+        else vSuggestion = 'Toyota Coaster Bus + Land Cruiser GX';
+        return `<div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text-secondary)">
+          🚙 <strong>Vehicle requirement:</strong> ${escapeHtml(vSuggestion)} (based on ${totalPax} guest${totalPax !== 1 ? 's' : ''})
+        </div>`;
+      })()}
 
       <!-- Bank Charges Notice (populated asynchronously after price calc) -->
       <div id="pricingBankChargesNotice" style="margin-bottom:var(--space-4)">
