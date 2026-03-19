@@ -3,12 +3,13 @@
 **Date:** 2026-03-19
 **Stack:** FastAPI 0.104+ (Python) · SQLite WAL · Vanilla JS SPA · pytest
 **Scope:** `api_server.py` (7,370 lines, 93 routes) · `app.js` (10,531 lines) · `tests/test_api.py` (130 tests)
+**Updated:** additional findings from deeper business-logic and schema audit added below
 
 ---
 
 ## Executive Summary
 
-The TRVE Booking Hub is a well-featured internal ops tool with solid business logic, clear code structure, and good basic test coverage. However it was built without a threat model: **every API endpoint is publicly accessible with no authentication**, wildcard CORS is enabled, and passport numbers are protected only by reversible XOR obfuscation with a key committed to source. These three issues alone mean the system should not be exposed to a network where untrusted parties could reach it. On the frontend, a 10,531-line monolith contains silent error paths that can cause auto-save failures to go unnoticed. The database design and indexing are generally good (WAL mode, foreign-key enforcement, correct indexes), with minor gaps. Fixing the critical security issues should be the first priority before adding features or hardening the rest.
+The TRVE Booking Hub is a well-featured internal ops tool with clear code structure and good basic CRUD test coverage. However it was built without a threat model: **every API endpoint is publicly accessible with no authentication**, wildcard CORS is enabled, and passport numbers are protected only by reversible XOR obfuscation with a key committed to source. These issues alone mean the system should not be exposed to a network where untrusted parties can reach it. Beyond security, several business-logic gaps can cause silent mispricing: UGX-denominated permit costs bypass the FX buffer, multi-lodge night counts can be overridden by frontend values, and permits with group-size limits are never validated. The database enables `foreign_keys=ON` but declares no actual FK constraints, so orphaned records are possible. Roughly half of all endpoints have no test coverage. Fixing the critical security issues should be the first priority; business-logic correctness second.
 
 ---
 
@@ -333,6 +334,184 @@ The share-itinerary and guest-form-token endpoints (`/api/share`, `/api/guest-fo
 
 ---
 
+## Business Logic
+
+### B1 — High: Night Count Ambiguity for Single-Lodge vs Multi-Lodge Trips
+**File:** `api_server.py:4141-4173`
+
+For single-lodge trips, nights are auto-derived as `days − 1`. For multi-lodge trips the frontend-supplied `nights` field is used directly. There is no validation that frontend-supplied nights match the actual date range, and if a single-lodge request includes `nights` in the accommodation object it will be silently ignored (multi-lodge branch only).
+
+```python
+if "nights" in acc and num_accs > 1:
+    nights = max(1, int(acc["nights"]))   # trusts frontend
+else:
+    nights = max(1, trip_nights)          # ignores frontend
+```
+
+Related: PDF generation at line 2095 uses yet a third derivation: `summary.get('nights', summary.get('days', 1) - 1)`.
+
+**Fix:** Validate that `sum(acc.nights for each lodge) == duration_days - 1` and reject with 422 if they disagree.
+
+---
+
+### B2 — High: FX Buffer Not Applied to UGX-Denominated Permit Conversions
+**File:** `api_server.py:520-561` vs `api_server.py:4397-4398`
+
+`get_permit_price_usd()` converts UGX permit prices to USD using the **base** FX rate:
+```python
+fx = CONFIG.get("fx_rate", FX_RATE) or FX_RATE
+return val / fx   # no buffer
+```
+
+But the final `grand_total_ugx` is computed with the **buffered** rate:
+```python
+fx_rate = CONFIG["fx_rate"] * (1 + fx_buffer_pct / 100)
+grand_total_ugx = grand_total * fx_rate
+```
+
+Result: gorilla permits (300,000 UGX) are underquoted in USD by the buffer percentage (e.g. 2% buffer → permit quoted ~$6 too cheap per person at 3,575 UGX/USD).
+
+**Fix:** Pass the buffered FX rate into `get_permit_price_usd()` or apply the buffer inside it.
+
+---
+
+### B3 — Medium: No Permit Group-Size Validation
+**File:** `api_server.py:434, 4288-4309`
+
+`PERMIT_PRICES` defines `max_per_group` for gorilla/chimp tracking permits (e.g. `"max_per_group": 8`) but the calculation never checks it. Booking 10 guests for an 8-person permit group is silently accepted, producing an incorrect cost and impossible logistics.
+
+**Fix:** During pricing calculation, raise an error if `pax > permit["max_per_group"]` for applicable permit types.
+
+---
+
+### B4 — Medium: Lodge Validity Dates Not Checked During Pricing
+**File:** `api_server.py:4180-4198`
+
+Rate lookup:
+```python
+"SELECT net_rate_usd, meal_plan FROM lodges WHERE lodge_name = ? AND room_type = ?
+ ORDER BY net_rate_usd ASC LIMIT 1"
+```
+
+`valid_from` and `valid_to` are stored per rate row but ignored. A rate that expired in 2025 will be returned for a 2026 booking with no warning.
+
+**Fix:** Add `AND (valid_to = '' OR valid_to >= ?)` with `travel_start_date` as the parameter, and fall back with a warning if no valid rate is found.
+
+---
+
+### B5 — Medium: Child Pricing Accepts Internally Inconsistent Input
+**File:** `api_server.py:4223-4238`
+
+If `children_free + children_half + children_full != acc_children`, the backend silently falls back to 50% for all children. No error is raised and no indication is given that the frontend-supplied age breakdown was discarded.
+
+**Fix:** Validate that the sum equals `acc_children` and return a 422 if not.
+
+---
+
+### B6 — Low: Commission and Service Fee Both Applied to Same Subtotal
+**File:** `api_server.py:4381-4394`
+
+Both fees are applied as additive percentages of `subtotal`. Whether commission should be calculated before or after the service fee is undocumented. Tests only verify totals ≥ 0, not the exact math.
+
+**Fix:** Document the intended formula explicitly and add a test that verifies the exact arithmetic for a known input.
+
+---
+
+## Database (additional)
+
+### D5 — High: Foreign Key Constraints Declared Nowhere
+**File:** `api_server.py:57-58, 200-262`
+
+`PRAGMA foreign_keys=ON` is set, which enforces FK constraints — but **no `FOREIGN KEY` clauses exist in any `CREATE TABLE` statement**. The pragma has no effect without declared constraints.
+
+Orphaned records are therefore possible: deleting an enquiry does not cascade-delete its quotations, invoices, payments, vouchers, or shared itinerary links.
+
+**Fix:** Add FK clauses to all child tables, e.g.:
+```sql
+CREATE TABLE IF NOT EXISTS invoices (
+    ...
+    booking_ref TEXT NOT NULL REFERENCES enquiries(booking_ref) ON DELETE CASCADE,
+    ...
+);
+```
+
+---
+
+### D6 — Medium: Tests Share a Single Session-Scoped Database
+**File:** `tests/conftest.py:26-38`
+
+`scope="session"` means all 130 tests run against one in-memory database. Tests that create records leave state visible to later tests, and test ordering determines whether assertions pass. A comment on line 85 explicitly accepts this: `"accept config state carry-over"`.
+
+**Fix:** Use `scope="function"` with a per-test database fixture, or at minimum wrap each test class in a transaction that is rolled back on teardown.
+
+---
+
+## Configuration & Deployment
+
+### C1 — Medium: Documentation Contradicts Implementation
+**File:** `docs/configuration.md:5-6` vs `api_server.py:1612-1625`
+
+`configuration.md` states config changes are *not* persisted across restarts. The code actually seeds defaults into SQLite on first run and loads them back on every subsequent start — so config **is** persistent. The docs are wrong.
+
+---
+
+### C2 — Medium: Two Separate Email Configurations That Can Drift
+**File:** `api_server.py:861-870` vs `api_server.py:1012-1020`
+
+`EMAIL_CFG` (used by synchronous `send_email()`) and `EMAIL_CONFIG` (used by async `send_email_async()`) are configured independently. One checks `EMAIL_NOTIFICATIONS_ENABLED`; the other checks `bool(os.environ.get("SMTP_USER", ""))`. If SMTP credentials are set but the env var is missing, one code path sends and the other doesn't.
+
+**Fix:** Consolidate to one config dict and one send function.
+
+---
+
+### C3 — Low: Bank Account Details Hardcoded in PDF Generator
+**File:** `api_server.py:2503-2510`
+
+Bank name, account name, and partial account number are embedded in `generate_quotation_pdf()` with no config override. Any change requires a code deploy.
+
+**Fix:** Move to the `config` table so it can be updated via `PATCH /api/config` without redeployment.
+
+---
+
+### C4 — Low: PDF Generation Failure Is Silent
+**File:** `api_server.py:4543-4546`
+
+```python
+try:
+    pdf_bytes = generate_quotation_pdf(q_doc)
+    attachments = [(...)]
+except (ModuleNotFoundError, Exception):
+    attachments = None  # email sent without PDF; no user notification
+```
+
+If PDF generation crashes, the quotation email is sent without an attachment. No error is surfaced.
+
+**Fix:** Re-raise after logging, or return a 500 to the caller so the coordinator knows the PDF failed.
+
+---
+
+## Test Coverage (additional gaps)
+
+### T5 — High: ~50% of Endpoints Have Zero Test Coverage
+Completely untested:
+- Guest information form (`POST /api/enquiries/{id}/guest-form`, `GET/POST /api/guest-form/{token}`)
+- Shared itineraries (`POST /api/share/{booking_ref}`, `GET /api/share/{token}`)
+- Task management (`POST /api/tasks`, `PATCH /api/tasks/{id}`)
+- Fleet / driver management (`GET /api/vehicles`, `GET /api/drivers`, `GET /api/fleet/availability`)
+- Manifests and driver-briefing PDFs
+- Invoice creation and payment recording
+
+### T6 — Medium: Pricing Tests Verify Structure, Not Correctness
+**File:** `tests/test_api.py:354`
+
+```python
+assert data["total_usd"] >= 0   # verifies structure, not math
+```
+
+No test constructs a known pricing scenario (e.g. 2 adults × 3 nights × $350 FB rate + 2 gorilla permits × $800 = $X) and asserts the exact result.
+
+---
+
 ## Prioritised Action List
 
 | Priority | ID | Action |
@@ -341,13 +520,19 @@ The share-itinerary and guest-form-token endpoints (`/api/share`, `/api/guest-fo
 | 2 | S2 | Restrict CORS to production origin |
 | 3 | S3/S4 | Replace XOR obfuscation with Fernet; remove hardcoded key default |
 | 4 | S5 | Use `secrets.token_urlsafe(32)` for share and guest-form tokens |
-| 5 | F2 | Surface auto-save failures to the user via toast |
-| 6 | S6 | Add explicit field allowlists to PATCH endpoints |
-| 7 | D1 | Add composite index `(lodge_name, room_type)` |
-| 8 | S7 | Add rate limiting (slowapi or reverse proxy) |
-| 9 | F1 | Fix event listener accumulation in day-panel |
-| 10 | T1 | Add pricing edge-case tests |
-| 11 | D2 | Add UNIQUE constraint on lodge rates |
-| 12 | F3 | Cap undo/redo history at 50 entries |
-| 13 | S8 | Add audit log table |
-| 14 | T2/T3 | Add security boundary and share/voucher tests |
+| 5 | D5 | Add `FOREIGN KEY … ON DELETE CASCADE` to all child tables |
+| 6 | B2 | Apply FX buffer inside `get_permit_price_usd()` |
+| 7 | B1 | Validate multi-lodge night sums match trip duration |
+| 8 | B3 | Enforce permit `max_per_group` during pricing |
+| 9 | B4 | Filter rate lookup by `valid_to >= travel_start_date` |
+| 10 | F2 | Surface auto-save failures to the user via toast |
+| 11 | S6 | Add explicit field allowlists to PATCH endpoints |
+| 12 | D1 | Add composite index `(lodge_name, room_type)` |
+| 13 | S7 | Add rate limiting (slowapi or reverse proxy) |
+| 14 | C2 | Consolidate duplicate email configs into one code path |
+| 15 | F1 | Fix event listener accumulation in day-panel |
+| 16 | T5/T6 | Add pricing correctness tests and cover untested endpoints |
+| 17 | D2 | Add UNIQUE constraint on lodge rates |
+| 18 | F3 | Cap undo/redo history at 50 entries |
+| 19 | C1 | Fix `docs/configuration.md` to reflect actual persistence behaviour |
+| 20 | S8 | Add audit log table |
