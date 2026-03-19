@@ -3859,6 +3859,16 @@ def curate_itinerary(body: CurateRequest):
     with db_session() as conn:
         rows = conn.execute("SELECT * FROM itineraries").fetchall()
 
+    # If matching from an enquiry, use that enquiry's duration if not explicitly provided
+    if body.enquiry_id and not body.effective_duration:
+        with db_session() as enq_conn:
+            enq_row = enq_conn.execute(
+                "SELECT duration_days FROM enquiries WHERE id = ? OR booking_ref = ?",
+                (body.enquiry_id, body.enquiry_id)
+            ).fetchone()
+            if enq_row and enq_row["duration_days"]:
+                body = body.model_copy(update={"duration_days": enq_row["duration_days"]})
+
     suggestions = []
     for r in rows:
         itn = dict(r)
@@ -3887,6 +3897,8 @@ def curate_itinerary(body: CurateRequest):
                 elif diff <= 4:
                     score += 12
                     reasons.append(f"Duration within {diff} days")
+                else:
+                    reasons.append(f"Duration mismatch: {diff} days off (0 pts)")
 
         # Budget match (max 20)
         if body.budget_tier:
