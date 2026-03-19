@@ -5974,7 +5974,7 @@
   const VEHICLE_TYPES = [
     { value: '4x4 Safari Vehicle', label: '4x4 Safari Vehicle (Land Cruiser)', rate: 120, seats: 7 },
     { value: 'Safari Minivan', label: 'Safari Minivan / Hiace', rate: 100, seats: 8 },
-    { value: 'Coaster Bus', label: 'Coaster Bus (large groups)', rate: 150, seats: 26 },
+    { value: 'Coaster Bus', label: 'Coaster Bus (large groups)', rate: 150, seats: 24 },
     { value: 'Self-Drive 4x4', label: 'Self-Drive 4x4 (fuel excl.)', rate: 90, seats: 5 },
     { value: 'Airport Shuttle', label: 'Airport Shuttle (Entebbe)', rate: 60, seats: 4 },
     { value: 'Boat Transfer', label: 'Boat Transfer / Water Taxi', rate: 80, seats: 10 },

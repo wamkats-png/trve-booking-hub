@@ -1506,16 +1506,21 @@ def init_db():
             pass  # Column already exists — safe to ignore
 
     # Phase 3 seed: vehicles (INSERT OR IGNORE — plate is UNIQUE key)
+    # Remove legacy placeholder vehicles before seeding real fleet
+    for _old_plate in ('UAA 123B', 'UAA 456C', 'UAB 789D'):
+        conn.execute("DELETE FROM vehicles WHERE plate = ?", (_old_plate,))
     _phase3_vehicle_seeds = [
-        ('Landcruiser 001', '4WD', 7, 'UAA 123B'),
-        ('Landcruiser 002', '4WD', 7, 'UAA 456C'),
-        ('Safari Van 001', 'Minivan', 12, 'UAB 789D'),
+        ('Land Cruiser 985S', 'Land Cruiser GX', 7, 'UBE 985S', 'Game drives, long-haul safaris'),
+        ('Land Cruiser 906S', 'Land Cruiser GX', 7, 'UBE 906S', 'Game drives, long-haul safaris'),
+        ('Land Cruiser 223W', 'Land Cruiser GX', 7, 'UAW 223W', 'Airport transfers, short city runs'),
+        ('Land Cruiser 224W', 'Land Cruiser GX', 7, 'UAW 224W', 'Airport transfers, short city runs'),
+        ('Toyota Coaster', 'Coaster Bus', 24, 'UAA Coaster', 'Campus groups, large groups'),
     ]
-    for _vname, _vtype, _vseats, _vplate in _phase3_vehicle_seeds:
+    for _vname, _vtype, _vseats, _vplate, _vnotes in _phase3_vehicle_seeds:
         try:
             conn.execute(
-                "INSERT OR IGNORE INTO vehicles (id, name, type, seats, plate, notes, status) VALUES (?,?,?,?,?,'','available')",
-                (str(uuid.uuid4()), _vname, _vtype, _vseats, _vplate)
+                "INSERT OR IGNORE INTO vehicles (id, name, type, seats, plate, notes, status) VALUES (?,?,?,?,?,?,'available')",
+                (str(uuid.uuid4()), _vname, _vtype, _vseats, _vplate, _vnotes)
             )
         except Exception:
             pass
