@@ -3585,6 +3585,43 @@
     _validateAndShowNightsSummary();
   }
 
+  function _showDurationOverrideWarning(fromDays, toDays) {
+    // Remove any existing warning
+    const existing = document.getElementById('durationOverrideWarning');
+    if (existing) existing.remove();
+
+    const daysEl = document.getElementById('pricingDays');
+    if (!daysEl) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'durationOverrideWarning';
+    banner.style.cssText = 'background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;padding:10px 12px;margin-top:6px;font-size:12px;color:#92400e';
+    banner.innerHTML = `
+        <strong>⚠️ Duration updated:</strong> Changed from ${fromDays} to ${toDays} days based on your travel dates.
+        If ${fromDays} days was intended, adjust your end date.
+        <div style="margin-top:6px;display:flex;gap:8px">
+            <button onclick="window.TRVE._restoreDuration(${fromDays})" style="font-size:11px;padding:2px 8px;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">Restore to ${fromDays} days</button>
+            <button onclick="document.getElementById('durationOverrideWarning')?.remove()" style="font-size:11px;padding:2px 8px;background:transparent;border:1px solid #f59e0b;border-radius:4px;cursor:pointer;color:#92400e">Keep ${toDays} days</button>
+        </div>`;
+    daysEl.parentNode.insertBefore(banner, daysEl.nextSibling);
+  }
+
+  function _restoreDuration(days) {
+    const startEl = document.getElementById('pricingTravelStartDate');
+    const endEl = document.getElementById('pricingTravelEndDate');
+    const daysEl = document.getElementById('pricingDays');
+    if (!startEl || !startEl.value || !endEl || !daysEl) return;
+    // Compute new end date: start + days - 1 (inclusive)
+    const start = new Date(startEl.value);
+    start.setDate(start.getDate() + days - 1);
+    endEl.value = start.toISOString().slice(0, 10);
+    daysEl.readOnly = false;
+    // Re-trigger date update which will re-calculate (and no longer warn since days matches)
+    _updateAccommodationDates();
+    document.getElementById('durationOverrideWarning')?.remove();
+  }
+  window.TRVE._restoreDuration = _restoreDuration;
+
   // Update check-in/check-out display for ALL lodge rows in sequence (cascade).
   // Row 1: check-in = trip start; Row N: check-in = Row (N-1) check-out.
   // Rows with "Custom stay dates" checked keep their own date inputs and are treated
