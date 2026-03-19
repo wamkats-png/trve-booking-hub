@@ -3941,8 +3941,64 @@
     _distCache.clear(); // young-child count affects sharing logic
     _syncLodgeGuestAssignments();
     _checkCapacityMismatch();
+    _checkUwaAgeRestriction();
   }
   window.TRVE._updateChildAge = _updateChildAge;
+
+  // ---------------------------------------------------------------------------
+  // F-02: UWA AGE RESTRICTION — Gorilla & Chimp Tracking (children under 15)
+  // ---------------------------------------------------------------------------
+  const _UWA_RESTRICTED_PERMITS = [
+    'permit_gorilla_uganda', 'permit_gorilla_habituation', 'permit_gorilla_rwanda',
+    'permit_chimp', 'permit_chimp_habituation'
+  ];
+
+  function _checkUwaAgeRestriction() {
+    const childAges = state.childAges || [];
+    const underageChildren = childAges
+      .map((age, i) => ({ age, idx: i }))
+      .filter(c => c.age !== null && Number(c.age) < 15);
+
+    const restrictedChecked = _UWA_RESTRICTED_PERMITS.some(name => {
+      const cb = document.querySelector(`[name="${name}"]`);
+      return cb && cb.checked;
+    });
+
+    const shouldWarn = underageChildren.length > 0 && restrictedChecked;
+
+    // Remove existing warning
+    const existing = document.getElementById('uwaAgeWarningBanner');
+    if (existing) existing.remove();
+
+    if (!shouldWarn) return;
+
+    // Build child descriptions
+    const childDesc = underageChildren.map(c => `Child ${c.idx + 1} (age ${c.age})`).join(', ');
+
+    // Inject warning banner after permitsSection
+    const permitsSection = document.getElementById('permitsSection');
+    if (!permitsSection) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'uwaAgeWarningBanner';
+    banner.style.cssText = 'background:#FDEDEC;border:2px solid #C0392B;border-radius:6px;padding:12px 14px;margin-top:8px;font-size:12px;color:#641E16';
+    banner.innerHTML = `
+      <div style="font-weight:700;font-size:13px;margin-bottom:6px">⚠️ UWA Regulation — Gorilla/Chimp Tracking Age Restriction</div>
+      <div style="margin-bottom:8px">Children under 15 years of age are <strong>not permitted</strong> on gorilla trekking or chimpanzee tracking by Uganda Wildlife Authority (UWA). <strong>${escapeHtml(childDesc)}</strong> does not meet the minimum age requirement (15+). This permit cannot be issued for this child. Please remove gorilla/chimp permits or adjust the guest list before generating a quotation.</div>
+      <button onclick="window.TRVE._removeRestrictedPermits()" style="font-size:11px;padding:4px 10px;background:#C0392B;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Remove Restricted Permits</button>`;
+
+    permitsSection.parentNode.insertBefore(banner, permitsSection.nextSibling);
+  }
+  window.TRVE._checkUwaAgeRestriction = _checkUwaAgeRestriction;
+
+  function _removeRestrictedPermits() {
+    _UWA_RESTRICTED_PERMITS.forEach(name => {
+      const cb = document.querySelector(`[name="${name}"]`);
+      if (cb) cb.checked = false;
+    });
+    _checkUwaAgeRestriction(); // Re-check — banner should disappear
+  }
+  window.TRVE._removeRestrictedPermits = _removeRestrictedPermits;
 
   // Count children globally with age < 5
   function _getYoungChildCount() {
@@ -7033,14 +7089,47 @@
       const total = (parseInt(adultsInput?.value) || 0) + (parseInt(childrenInput?.value) || 0);
       syncGuestRecords(total);
       renderChildAgeInputs();
+      _checkUwaAgeRestriction();
       _syncGuestPool();        // reconcile guest pool objects with new pax count
       _renderGuestAssignmentUI(); // refresh pool panel + room cards
       _checkCapacityMismatch();
     }
+    // F-03: Single supplement for solo travellers
+    function _updateSingleSupplementVisibility() {
+      const adultsEl = document.getElementById('pricingAdults');
+      const suppWrap = document.getElementById('singleSupplementWrap');
+      if (!suppWrap || !adultsEl) return;
+      const adults = parseInt(adultsEl.value) || 0;
+      suppWrap.style.display = adults === 1 ? '' : 'none';
+      if (adults !== 1) {
+        const cb = document.getElementById('singleSupplementToggle');
+        if (cb) cb.checked = false; // auto-uncheck when not 1 adult
+      }
+    }
+    window.TRVE._updateSingleSupplementVisibility = _updateSingleSupplementVisibility;
     if (adultsInput) adultsInput.addEventListener('change', _syncGuestsFromForm);
     if (adultsInput) adultsInput.addEventListener('input', _syncGuestsFromForm);
     if (childrenInput) childrenInput.addEventListener('change', _syncGuestsFromForm);
     if (childrenInput) childrenInput.addEventListener('input', _syncGuestsFromForm);
+
+    // F-03: Single supplement visibility toggle
+    if (adultsInput) adultsInput.addEventListener('input', _updateSingleSupplementVisibility);
+    if (adultsInput) adultsInput.addEventListener('change', _updateSingleSupplementVisibility);
+    // Set initial visibility
+    _updateSingleSupplementVisibility();
+    const suppToggle = document.getElementById('singleSupplementToggle');
+    if (suppToggle) {
+      suppToggle.addEventListener('change', () => {
+        const waivedNote = document.getElementById('singleSupplementWaivedNote');
+        if (waivedNote) waivedNote.style.display = suppToggle.checked ? 'none' : '';
+      });
+    }
+
+    // F-02: Wire UWA age restriction check on permit checkbox changes
+    _UWA_RESTRICTED_PERMITS.forEach(name => {
+      const cb = document.querySelector(`[name="${name}"]`);
+      if (cb) cb.addEventListener('change', _checkUwaAgeRestriction);
+    });
 
     // Initial label render
     updatePermitLabels();
