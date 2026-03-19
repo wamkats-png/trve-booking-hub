@@ -831,6 +831,14 @@
                       <label class="form-label" for="pricingAdults">Adults</label>
                       <input class="form-control" type="number" id="pricingAdults" min="1" value="2">
                       <span class="form-hint">Full permit &amp; room rate applies</span>
+                      <!-- F-03: Single supplement toggle (visible only when Adults=1) -->
+                      <div id="singleSupplementWrap" style="display:none;margin-top:6px;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-md)">
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;margin:0">
+                          <input type="checkbox" id="singleSupplementToggle" checked>
+                          <span>Apply single supplement <span style="color:var(--text-muted)">(75% of room rate/night for solo occupancy of double room)</span></span>
+                        </label>
+                        <div id="singleSupplementWaivedNote" style="display:none;font-size:11px;color:var(--text-muted);margin-top:3px;font-style:italic">Supplement waived by coordinator</div>
+                      </div>
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="pricingChildren">Children (under 15)</label>

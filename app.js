@@ -7583,6 +7583,42 @@
 
   function renderPricingResults(result, payload) {
     const panel = document.getElementById('pricingResultsPanel');
+
+    // F-03: Single supplement injection for solo travellers
+    const _f03Adults = result.adults || payload.adults || result.pax || 1;
+    const _f03SuppToggle = document.getElementById('singleSupplementToggle');
+    const _f03SuppEnabled = _f03Adults === 1 && _f03SuppToggle && _f03SuppToggle.checked;
+    if (_f03SuppEnabled) {
+      const _f03Nights = result.nights || (result.duration_days ? result.duration_days - 1 : 0);
+      const _f03AccomLines = (result.line_items || []).filter(li =>
+        li.item && (li.item.toLowerCase().includes('night') ||
+                    li.item.toLowerCase().includes('lodge') ||
+                    li.item.toLowerCase().includes('accommodation'))
+      );
+      const _f03AccomTotal = _f03AccomLines.reduce((s, li) => s + (li.total_usd || 0), 0);
+      const _f03NightlyRate = _f03Nights > 0 && _f03AccomTotal > 0 ? _f03AccomTotal / _f03Nights : 0;
+      const _f03SuppAmt = _f03NightlyRate * 0.75;
+      if (_f03SuppAmt > 0) {
+        result.line_items = [...(result.line_items || []), {
+          item: `Single Supplement (1 adult, ${_f03Nights} night${_f03Nights !== 1 ? 's' : ''} @ 75% of $${(_f03NightlyRate).toFixed(0)}/night)`,
+          total_usd: Math.round(_f03SuppAmt * 100) / 100,
+          note: 'Solo occupancy of double room'
+        }];
+        const _f03NewSubtotal = (result.subtotal_usd || 0) + _f03SuppAmt;
+        const _f03SvcPct = result.service_fee_pct != null ? result.service_fee_pct : 15;
+        const _f03NewSvcFee = _f03NewSubtotal * _f03SvcPct / 100;
+        const _f03NewTotal = _f03NewSubtotal + _f03NewSvcFee;
+        const _f03FxRate = result.fx_rate || 3575;
+        result.subtotal_usd = _f03NewSubtotal;
+        result.tmsf_usd = _f03NewSvcFee;
+        result.service_fee_usd = _f03NewSvcFee;
+        result.total_usd = _f03NewTotal;
+        result.total_ugx = _f03NewTotal * _f03FxRate;
+        const _f03TotalPax = _f03Adults + (result.children || payload.children || 0);
+        result.per_person_usd = _f03TotalPax > 0 ? _f03NewTotal / _f03TotalPax : _f03NewTotal;
+      }
+    }
+
     const lineItems = result.line_items || [];
     const fxRate = result.fx_rate || 3575; // 2026 avg per Exchange-Rates.org
     const fxTimestamp = result.fx_timestamp || null;
