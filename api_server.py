@@ -4422,7 +4422,10 @@ def calculate_price(body: PricingRequest):
         buf_label = f" + {vline['fuel_buffer_pct']}% fuel buffer" if vline["fuel_buffer_pct"] else ""
         line_items.append({"item": f"{vline['type']} ({vline['days']} days @ ${vline['rate']}/day{buf_label})", "total_usd": vline["total"]})
     for line in permit_lines:
-        line_items.append({"item": line["description"] + f" (×{line['qty']})", "total_usd": line["total"]})
+        if line.get("pax"):
+            line_items.append({"item": line["description"] + f" — ${line['price_per_unit']:.0f} × {line['pax']} pax", "total_usd": line["total"]})
+        else:
+            line_items.append({"item": line["description"] + f" (×{line['qty']})", "total_usd": line["total"]})
     if insurance_total > 0:
         guest_label = f"{adults} adults" + (f" + {children} children" if children else "")
         line_items.append({"item": f"Travel Insurance ({guest_label} × {days} days)", "total_usd": round(insurance_total, 2)})
