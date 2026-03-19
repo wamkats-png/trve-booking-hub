@@ -7032,6 +7032,14 @@
   }
 
   function initPricingForm() {
+    // U-03: Sync form displays with current state on each init
+    const adultsEl = document.getElementById('pricingAdults');
+    const childrenEl = document.getElementById('pricingChildren');
+    if (adultsEl && state.adults != null) adultsEl.value = state.adults;
+    if (childrenEl && state.children != null) childrenEl.value = state.children;
+    // Re-render child age inputs to match state
+    if (typeof renderChildAgeInputs === 'function') renderChildAgeInputs();
+
     // Per-invoice tracking state
     state.addedActivities = {};
     state.bufferApplied = false;
@@ -7184,6 +7192,9 @@
       const cb = document.querySelector(`[name="${name}"]`);
       if (cb) cb.addEventListener('change', _checkUwaAgeRestriction);
     });
+
+    // U-03: force state sync with current DOM values on init
+    _syncGuestsFromForm();
 
     // Initial label render
     updatePermitLabels();
