@@ -550,7 +550,8 @@
     sync:       'Sheets Sync',
     tasks:      'Tasks',
     manifests:  'Manifests',
-    fleet:      'Fleet',
+    fleet:        'Fleet',
+    quotemachine: 'Quote Machine',
   };
 
   function updateBottomNavActive(viewId) {
@@ -605,6 +606,7 @@
     if (viewId === 'tasks') loadTasksView();
     if (viewId === 'manifests') initManifestsView();
     if (viewId === 'fleet') initFleetView();
+    if (viewId === 'quotemachine') initQuoteMachineView();
   }
 
   // Expose for inline onclick use
@@ -10795,3 +10797,492 @@
 
 // deploy-test 2026-03-11 14:33
 // deploy-test 2026-03-11 14:35
+
+// ============================================================
+// QUOTE MACHINE — AI-powered enquiry-to-quote wizard
+// ============================================================
+(function () {
+  // Shared state for the wizard
+  const qm = {
+    currentStep: 1,
+    parsed: null,        // result from /intake/parse
+    advisory: null,      // result from /advisory
+    itinerary: null,     // result from /itinerary/generate
+    pricing: null,       // result from /pricing/calculate
+    narrative: null,     // result from /quote/narrative
+    upsells: null,       // result from /quote/upsells
+    children: [],        // parsed child ages
+  };
+
+  // ---- helpers ----
+  function qmGoTo(step) {
+    qm.currentStep = step;
+    // Show/hide panels
+    for (let s = 1; s <= 5; s++) {
+      const panel = document.getElementById('qmStep' + s);
+      if (panel) panel.style.display = s === step ? '' : 'none';
+    }
+    // Update stepper styles
+    document.querySelectorAll('.qm-step').forEach(el => {
+      const n = parseInt(el.dataset.step);
+      const done = n < step;
+      const active = n === step;
+      el.style.background = active ? 'var(--forest)' : done ? '#2d8c6f' : 'var(--mist)';
+      el.style.color = (active || done) ? '#fff' : 'var(--text-muted)';
+    });
+    // Scroll to top of view
+    const view = document.getElementById('view-quotemachine');
+    if (view) view.scrollTop = 0;
+  }
+
+  function qmField(label, value) {
+    if (!value && value !== 0) return '';
+    return `<div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:2px">${label}</div><div style="font-weight:500">${escapeHtml(String(value))}</div></div>`;
+  }
+
+  function qmSpin(spinnerId, btnId, on) {
+    const sp = document.getElementById(spinnerId);
+    const btn = document.getElementById(btnId);
+    if (sp) sp.style.display = on ? '' : 'none';
+    if (btn) btn.disabled = on;
+  }
+
+  // ---- Step 1: Parse ----
+  function bindStep1() {
+    const parseBtn = document.getElementById('qmParseBtn');
+    if (!parseBtn || parseBtn._qmBound) return;
+    parseBtn._qmBound = true;
+
+    parseBtn.addEventListener('click', async () => {
+      const raw = (document.getElementById('qmRawText').value || '').trim();
+      if (!raw) { toast('warning', 'Paste some text first'); return; }
+      qmSpin('qmParseSpinner', 'qmParseBtn', true);
+      try {
+        const res = await apiFetch('/intake/parse', { method: 'POST', body: { raw_text: raw } });
+        qm.parsed = res.brief || {};
+        renderParsedResult(qm.parsed);
+        document.getElementById('qmParseResult').style.display = '';
+        prefillStep2();
+        prefillStep3();
+      } catch (e) {
+        toast('error', 'Parse failed', e.message);
+      } finally {
+        qmSpin('qmParseSpinner', 'qmParseBtn', false);
+      }
+    });
+
+    document.getElementById('qmStep1Next').addEventListener('click', () => qmGoTo(2));
+    document.getElementById('qmEditParsed').addEventListener('click', () => {
+      document.getElementById('qmParseResult').style.display = 'none';
+    });
+  }
+
+  function renderParsedResult(brief) {
+    const grid = document.getElementById('qmParsedGrid');
+    if (!grid) return;
+    grid.innerHTML = [
+      qmField('Guest name', brief.guest_name),
+      qmField('Email', brief.email),
+      qmField('Phone', brief.phone),
+      qmField('Destination(s)', Array.isArray(brief.destinations) ? brief.destinations.join(', ') : brief.destinations),
+      qmField('Duration', brief.duration ? brief.duration + ' nights' : null),
+      qmField('Arrival', brief.arrival_date),
+      qmField('Adults', brief.adults),
+      qmField('Children', brief.children ? JSON.stringify(brief.children) : null),
+      qmField('Budget tier', brief.budget_tier),
+      qmField('Budget ppn', brief.budget_usd_ppn ? '$' + brief.budget_usd_ppn : null),
+      qmField('Trip type', brief.trip_type),
+      qmField('Interests', Array.isArray(brief.interests) ? brief.interests.join(', ') : brief.interests),
+    ].filter(Boolean).join('');
+  }
+
+  function prefillStep2() {
+    const p = qm.parsed || {};
+    const dests = Array.isArray(p.destinations) ? p.destinations[0] : (p.destinations || '');
+    const dest = document.getElementById('qmAdvDest');
+    if (dest && dests) dest.value = dests;
+    if (p.arrival_date) {
+      const arr = document.getElementById('qmAdvArrival');
+      if (arr) arr.value = p.arrival_date;
+      if (p.duration) {
+        const dep = document.getElementById('qmAdvDeparture');
+        if (dep) {
+          const d = new Date(p.arrival_date);
+          d.setDate(d.getDate() + parseInt(p.duration || 0));
+          dep.value = d.toISOString().slice(0, 10);
+        }
+      }
+    }
+  }
+
+  function prefillStep3() {
+    const p = qm.parsed || {};
+    if (p.adults) { const el = document.getElementById('qmItinAdults'); if (el) el.value = p.adults; }
+    if (p.duration) { const el = document.getElementById('qmItinNights'); if (el) el.value = p.duration; }
+    if (p.budget_tier) { const el = document.getElementById('qmItinBudget'); if (el) el.value = p.budget_tier; }
+    if (p.trip_type) { const el = document.getElementById('qmItinTripType'); if (el) el.value = p.trip_type; }
+    if (p.arrival_date) { const el = document.getElementById('qmItinArrival'); if (el) el.value = p.arrival_date; }
+    if (p.destinations) {
+      const el = document.getElementById('qmItinDests');
+      if (el) el.value = Array.isArray(p.destinations) ? p.destinations.join(', ') : p.destinations;
+    }
+    if (p.interests) {
+      const el = document.getElementById('qmItinInterests');
+      if (el) el.value = Array.isArray(p.interests) ? p.interests.join(', ') : p.interests;
+    }
+    if (p.children && Array.isArray(p.children)) {
+      const el = document.getElementById('qmItinChildren');
+      if (el) el.value = p.children.join(', ');
+    }
+    // prefill guest name for step 5
+    if (p.guest_name) {
+      const gn = document.getElementById('qmQuoteGuest');
+      if (gn) gn.value = p.guest_name.split(' ')[0]; // first name
+    }
+  }
+
+  // ---- Step 2: Advisory ----
+  function bindStep2() {
+    const btn = document.getElementById('qmAdvisoryBtn');
+    if (!btn || btn._qmBound) return;
+    btn._qmBound = true;
+
+    btn.addEventListener('click', async () => {
+      const dest = (document.getElementById('qmAdvDest').value || '').trim();
+      const arrival = document.getElementById('qmAdvArrival').value;
+      const departure = document.getElementById('qmAdvDeparture').value;
+      if (!dest || !arrival || !departure) { toast('warning', 'Fill in destination, arrival and departure'); return; }
+      qmSpin('qmAdvisorySpinner', 'qmAdvisoryBtn', true);
+      try {
+        const params = new URLSearchParams({ destination: dest, arrival, departure });
+        const res = await apiFetch('/advisory?' + params.toString());
+        qm.advisory = res;
+        renderAdvisory(res);
+        document.getElementById('qmAdvisoryResult').style.display = '';
+      } catch (e) {
+        toast('error', 'Advisory failed', e.message);
+      } finally {
+        qmSpin('qmAdvisorySpinner', 'qmAdvisoryBtn', false);
+      }
+    });
+
+    document.getElementById('qmStep2Next').addEventListener('click', () => qmGoTo(3));
+    document.getElementById('qmStep2Back').addEventListener('click', () => qmGoTo(1));
+  }
+
+  function renderAdvisory(adv) {
+    const grid = document.getElementById('qmAdvGrid');
+    if (!grid) return;
+    grid.innerHTML = [
+      qmField('Season', adv.season),
+      qmField('Rate period', adv.rate_period),
+      qmField('Weather', adv.weather_note),
+      qmField('Wildlife highlight', adv.wildlife_highlight),
+      adv.permit_warning ? `<div style="grid-column:1/-1"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:2px">Permit note</div><div style="font-weight:500;color:var(--warning)">${escapeHtml(adv.permit_warning)}</div></div>` : '',
+    ].filter(Boolean).join('');
+    const flag = document.getElementById('qmAdvFlag');
+    if (flag) flag.textContent = adv.flag || '';
+  }
+
+  // ---- Step 3: Itinerary ----
+  function bindStep3() {
+    const btn = document.getElementById('qmItinBtn');
+    if (!btn || btn._qmBound) return;
+    btn._qmBound = true;
+
+    btn.addEventListener('click', async () => {
+      const adults = parseInt(document.getElementById('qmItinAdults').value) || 2;
+      const nights = parseInt(document.getElementById('qmItinNights').value) || 7;
+      const budget_tier = document.getElementById('qmItinBudget').value;
+      const trip_type = document.getElementById('qmItinTripType').value;
+      const meal_plan = document.getElementById('qmItinMealPlan').value;
+      const arrival_date = document.getElementById('qmItinArrival').value || null;
+      const destsRaw = (document.getElementById('qmItinDests').value || '').trim();
+      const interestsRaw = (document.getElementById('qmItinInterests').value || '').trim();
+      const childrenRaw = (document.getElementById('qmItinChildren').value || '').trim();
+
+      const destinations = destsRaw ? destsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const interests = interestsRaw ? interestsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      qm.children = childrenRaw ? childrenRaw.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)) : [];
+
+      if (!destinations.length) { toast('warning', 'Enter at least one destination'); return; }
+      qmSpin('qmItinSpinner', 'qmItinBtn', true);
+      try {
+        const res = await apiFetch('/itinerary/generate', {
+          method: 'POST',
+          body: { adults, nights, destinations, interests, budget_tier, trip_type, meal_plan, arrival_date,
+                  children: qm.children.map(age => ({ age })) }
+        });
+        qm.itinerary = res.itinerary || res;
+        renderItinerary(qm.itinerary);
+        document.getElementById('qmItinResult').style.display = '';
+        // prefill step 5 title
+        const titleEl = document.getElementById('qmQuoteTitle');
+        if (titleEl && qm.itinerary.trip_title) titleEl.value = qm.itinerary.trip_title;
+      } catch (e) {
+        toast('error', 'Itinerary generation failed', e.message);
+      } finally {
+        qmSpin('qmItinSpinner', 'qmItinBtn', false);
+      }
+    });
+
+    document.getElementById('qmStep3Next').addEventListener('click', () => qmGoTo(4));
+    document.getElementById('qmStep3Back').addEventListener('click', () => qmGoTo(2));
+  }
+
+  function renderItinerary(itin) {
+    const titleEl = document.getElementById('qmItinTitle');
+    if (titleEl) titleEl.textContent = itin.trip_title || 'Itinerary';
+    const nightsLabel = document.getElementById('qmItinNightsLabel');
+    if (nightsLabel) nightsLabel.textContent = (itin.total_nights || '') + ' nights';
+
+    const daysEl = document.getElementById('qmItinDays');
+    if (!daysEl) return;
+    const days = itin.days || [];
+    daysEl.innerHTML = days.map((d, i) => `
+      <div style="border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:10px;position:relative">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+          <div style="flex:1">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:2px">
+              Day ${d.day_number}${d.date ? ' · ' + d.date : ''} — ${escapeHtml(d.location || '')}
+            </div>
+            <div style="font-weight:600;font-size:13px;margin-bottom:4px">${escapeHtml(d.property_name || '')} ${d.room_type_suggested ? '<span style="font-weight:400;color:var(--text-muted)">· ' + escapeHtml(d.room_type_suggested) + '</span>' : ''}</div>
+            <div id="qmDayDesc${i}" style="font-size:13px;line-height:1.6;color:var(--text)">${escapeHtml(d.guest_facing_description || '')}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm qm-regen-day" data-idx="${i}" title="Regenerate this day's description" style="white-space:nowrap;font-size:11px;padding:4px 8px">↻ Rewrite</button>
+        </div>
+      </div>`).join('');
+
+    // Bind regenerate buttons
+    daysEl.querySelectorAll('.qm-regen-day').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.dataset.idx);
+        const d = days[idx];
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+          const res = await apiFetch('/itinerary/regenerate-day', {
+            method: 'POST',
+            body: { day_number: d.day_number, property_name: d.property_name || '', location: d.location || '', activity: d.main_activity || '' }
+          });
+          if (res.description) {
+            d.guest_facing_description = res.description;
+            const descEl = document.getElementById('qmDayDesc' + idx);
+            if (descEl) descEl.textContent = res.description;
+            toast('success', 'Day ' + d.day_number + ' rewritten');
+          }
+        } catch (e) {
+          toast('error', 'Rewrite failed', e.message);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '↻ Rewrite';
+        }
+      });
+    });
+
+    const flagsEl = document.getElementById('qmItinFlags');
+    if (flagsEl && itin.logistics_flags && itin.logistics_flags.length) {
+      flagsEl.innerHTML = '<strong>Logistics notes:</strong> ' + itin.logistics_flags.map(f => escapeHtml(f)).join(' · ');
+    }
+  }
+
+  // ---- Step 4: Pricing ----
+  function bindStep4() {
+    const btn = document.getElementById('qmPricingBtn');
+    if (!btn || btn._qmBound) return;
+    btn._qmBound = true;
+
+    // Live markup label
+    const slider = document.getElementById('qmMarkupSlider');
+    const label = document.getElementById('qmMarkupLabel');
+    if (slider && label) {
+      slider.addEventListener('input', () => { label.textContent = slider.value + '%'; });
+    }
+
+    btn.addEventListener('click', async () => {
+      if (!qm.itinerary) { toast('warning', 'Generate an itinerary first (Step 3)'); return; }
+      const markup_pct = parseFloat(document.getElementById('qmMarkupSlider').value) || 20;
+      const adults = parseInt(document.getElementById('qmItinAdults').value) || 2;
+      qmSpin('qmPricingSpinner', 'qmPricingBtn', true);
+      try {
+        const res = await apiFetch('/pricing/calculate', {
+          method: 'POST',
+          body: {
+            itinerary_days: qm.itinerary.days || [],
+            adults,
+            children: qm.children.map(age => ({ age })),
+            markup_pct
+          }
+        });
+        qm.pricing = res.pricing || res;
+        renderPricing(qm.pricing);
+        document.getElementById('qmPricingResult').style.display = '';
+      } catch (e) {
+        toast('error', 'Pricing failed', e.message);
+      } finally {
+        qmSpin('qmPricingSpinner', 'qmPricingBtn', false);
+      }
+    });
+
+    document.getElementById('qmStep4Next').addEventListener('click', () => qmGoTo(5));
+    document.getElementById('qmStep4Back').addEventListener('click', () => qmGoTo(3));
+  }
+
+  function renderPricing(pricing) {
+    const linesEl = document.getElementById('qmPricingLines');
+    const totalsEl = document.getElementById('qmPricingTotals');
+    if (!linesEl || !totalsEl) return;
+
+    const allLines = [...(pricing.line_items || []), ...(pricing.activity_items || [])];
+    linesEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="border-bottom:2px solid var(--border)">
+        <th style="text-align:left;padding:6px 4px;color:var(--text-muted);font-size:11px;text-transform:uppercase">Item</th>
+        <th style="text-align:right;padding:6px 4px;color:var(--text-muted);font-size:11px;text-transform:uppercase">USD</th>
+      </tr></thead>
+      <tbody>${allLines.map(l => `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:7px 4px">${escapeHtml(l.description || l.label || '')}</td>
+        <td style="padding:7px 4px;text-align:right;font-variant-numeric:tabular-nums">$${Number(l.amount_usd || l.cost_usd || 0).toLocaleString()}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+
+    totalsEl.innerHTML = `
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
+        <span>Subtotal</span><span>$${Number(pricing.subtotal_usd || 0).toLocaleString()}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;color:var(--text-muted)">
+        <span>Markup (${pricing.markup_pct || 0}%)</span><span>$${Math.round((pricing.subtotal_usd || 0) * (pricing.markup_pct || 0) / 100).toLocaleString()}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:var(--forest)">
+        <span>Total per person</span><span>$${Number(pricing.total_per_person_usd || 0).toLocaleString()}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-top:4px;color:var(--text-muted)">
+        <span>Total for party</span><span>$${Number(pricing.total_party_usd || 0).toLocaleString()}</span>
+      </div>`;
+  }
+
+  // ---- Step 5: Narrative + Upsells ----
+  function bindStep5() {
+    const btn = document.getElementById('qmNarrativeBtn');
+    if (!btn || btn._qmBound) return;
+    btn._qmBound = true;
+
+    btn.addEventListener('click', async () => {
+      if (!qm.itinerary) { toast('warning', 'Generate an itinerary first (Step 3)'); return; }
+      const guest_name = (document.getElementById('qmQuoteGuest').value || '').trim() || 'Valued Guest';
+      const trip_title = (document.getElementById('qmQuoteTitle').value || '').trim() || (qm.itinerary.trip_title || 'Safari');
+      const total_usd_per_person = qm.pricing ? (qm.pricing.total_per_person_usd || 0) : 0;
+      const nights = parseInt(document.getElementById('qmItinNights').value) || (qm.itinerary.total_nights || 7);
+      const destinations = (qm.itinerary.days || []).map(d => d.location).filter((v, i, a) => v && a.indexOf(v) === i);
+      const lodge_names = (qm.itinerary.days || []).map(d => d.property_name).filter((v, i, a) => v && a.indexOf(v) === i);
+      const budget_tier = document.getElementById('qmItinBudget').value || 'mid';
+      const trip_type = document.getElementById('qmItinTripType').value || 'standard';
+      const adults = parseInt(document.getElementById('qmItinAdults').value) || 2;
+      const pax_type = adults === 1 ? 'solo' : (trip_type === 'honeymoon' ? 'couple' : trip_type === 'family' ? 'family' : adults >= 8 ? 'group' : 'couple');
+      const activities = [...new Set((qm.itinerary.days || []).map(d => d.main_activity).filter(Boolean))];
+
+      qmSpin('qmNarrativeSpinner', 'qmNarrativeBtn', true);
+      try {
+        // Run both calls in parallel
+        const [narRes, upsellRes] = await Promise.all([
+          apiFetch('/quote/narrative', { method: 'POST', body: {
+            trip_title, guest_name, nights, destinations, total_usd_per_person,
+            lodge_names, trip_type
+          }}),
+          apiFetch('/quote/upsells', { method: 'POST', body: {
+            destinations, pax_type, budget_tier,
+            activities_booked: activities, nights
+          }})
+        ]);
+
+        qm.narrative = narRes.narrative || narRes;
+        qm.upsells = (upsellRes.upsells || upsellRes) || [];
+        renderNarrative(qm.narrative);
+        renderUpsells(qm.upsells);
+        document.getElementById('qmNarrativeResult').style.display = '';
+      } catch (e) {
+        toast('error', 'Quote generation failed', e.message);
+      } finally {
+        qmSpin('qmNarrativeSpinner', 'qmNarrativeBtn', false);
+      }
+    });
+
+    document.getElementById('qmStep5Back').addEventListener('click', () => qmGoTo(4));
+
+    document.getElementById('qmCopyNarrative').addEventListener('click', () => {
+      if (!qm.narrative) return;
+      const n = qm.narrative;
+      const text = [
+        n.opening || '',
+        '',
+        (n.lodge_highlights || []).map(h => '• ' + h).join('\n'),
+        '',
+        n.investment_note || '',
+        '',
+        n.closing_cta || ''
+      ].join('\n').trim();
+      navigator.clipboard.writeText(text).then(() => toast('success', 'Copied to clipboard')).catch(() => toast('error', 'Copy failed'));
+    });
+  }
+
+  function renderNarrative(narr) {
+    const openEl = document.getElementById('qmNarrativeOpening');
+    if (openEl) openEl.textContent = narr.opening || '';
+
+    const lodgesEl = document.getElementById('qmNarrativeLodges');
+    if (lodgesEl && narr.lodge_highlights && narr.lodge_highlights.length) {
+      lodgesEl.innerHTML = narr.lodge_highlights.map(h => `<div style="display:flex;gap:8px;margin-bottom:6px;font-size:13px"><span style="color:var(--forest);font-weight:700">•</span><span>${escapeHtml(h)}</span></div>`).join('');
+    }
+
+    const invEl = document.getElementById('qmNarrativeInvestment');
+    if (invEl) invEl.textContent = narr.investment_note || '';
+
+    const ctaEl = document.getElementById('qmNarrativeCTA');
+    if (ctaEl) ctaEl.textContent = narr.closing_cta || '';
+  }
+
+  function renderUpsells(upsells) {
+    const el = document.getElementById('qmUpsells');
+    if (!el) return;
+    if (!upsells || !upsells.length) { el.innerHTML = '<p style="color:var(--text-muted);font-size:13px">No upsells suggested.</p>'; return; }
+    el.innerHTML = upsells.map(u => `
+      <div style="border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+          <div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:4px">${escapeHtml(u.title || '')}</div>
+            <div style="font-size:13px;color:var(--text-muted)">${escapeHtml(u.why_perfect || '')}</div>
+          </div>
+          <div style="text-align:right;white-space:nowrap">
+            <div style="font-weight:700;color:var(--forest);font-size:14px">from $${Number(u.price_usd_from || 0).toLocaleString()}</div>
+            ${u.add_to_day ? `<div style="font-size:11px;color:var(--text-muted)">Add to day ${escapeHtml(String(u.add_to_day))}</div>` : ''}
+          </div>
+        </div>
+      </div>`).join('');
+  }
+
+  // ---- Entry point ----
+  function initQuoteMachineView() {
+    // Only bind event listeners once
+    bindStep1();
+    bindStep2();
+    bindStep3();
+    bindStep4();
+    bindStep5();
+
+    // Stepper click navigation (only to already-completed steps)
+    document.querySelectorAll('.qm-step').forEach(el => {
+      if (!el._qmStepBound) {
+        el._qmStepBound = true;
+        el.addEventListener('click', () => {
+          const target = parseInt(el.dataset.step);
+          if (target < qm.currentStep) qmGoTo(target);
+        });
+      }
+    });
+
+    // Ensure correct panel visible
+    qmGoTo(qm.currentStep);
+  }
+
+  // Expose so navigate() can call it
+  window.initQuoteMachineView = initQuoteMachineView;
+})();

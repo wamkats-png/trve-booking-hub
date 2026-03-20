@@ -288,6 +288,17 @@
         <span class="nav-label">Reports</span>
       </div>
 
+      <div class="nav-section-label" style="margin-top: 8px;">AI Tools</div>
+      <div class="nav-item" data-view="quotemachine" role="button" tabindex="0">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M9 2l1.5 3.5L14 7l-3.5 1.5L9 12l-1.5-3.5L4 7l3.5-1.5L9 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M14 11l.8 1.8L16.5 13l-1.7.8L14 15.5l-.8-1.7L11.5 13l1.7-.8L14 11z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="nav-label">Quote Machine</span>
+      </div>
+
       <div class="nav-section-label" style="margin-top: 8px;">Integrations</div>
 
       <div class="nav-item" data-view="sync" role="button" tabindex="0">
@@ -1679,6 +1690,253 @@
           <button class="btn btn-secondary btn-sm" id="fleetNextWeek">Next week &gt;</button>
         </div>
         <div id="fleetCalendarWrap" style="overflow-x:auto"></div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- QUOTE MACHINE VIEW                                           -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-quotemachine" aria-label="AI Quote Machine">
+        <div class="view-header">
+          <h1 class="view-title">Quote Machine</h1>
+          <p class="view-subtitle">AI-powered: raw enquiry → itinerary → pricing → polished quote</p>
+        </div>
+
+        <!-- Step progress bar -->
+        <div id="qmStepper" style="display:flex;gap:0;margin-bottom:28px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+          <div class="qm-step active" data-step="1" style="flex:1;padding:10px 4px;text-align:center;font-size:12px;font-weight:600;background:var(--forest);color:#fff;cursor:pointer;transition:background .2s">1 · Parse</div>
+          <div class="qm-step" data-step="2" style="flex:1;padding:10px 4px;text-align:center;font-size:12px;font-weight:600;background:var(--mist);color:var(--text-muted);cursor:pointer;transition:background .2s;border-left:1px solid var(--border)">2 · Advisory</div>
+          <div class="qm-step" data-step="3" style="flex:1;padding:10px 4px;text-align:center;font-size:12px;font-weight:600;background:var(--mist);color:var(--text-muted);cursor:pointer;transition:background .2s;border-left:1px solid var(--border)">3 · Itinerary</div>
+          <div class="qm-step" data-step="4" style="flex:1;padding:10px 4px;text-align:center;font-size:12px;font-weight:600;background:var(--mist);color:var(--text-muted);cursor:pointer;transition:background .2s;border-left:1px solid var(--border)">4 · Pricing</div>
+          <div class="qm-step" data-step="5" style="flex:1;padding:10px 4px;text-align:center;font-size:12px;font-weight:600;background:var(--mist);color:var(--text-muted);cursor:pointer;transition:background .2s;border-left:1px solid var(--border)">5 · Quote</div>
+        </div>
+
+        <!-- Step panels -->
+        <div id="qmBody">
+
+          <!-- STEP 1: Parse raw enquiry -->
+          <div id="qmStep1" class="qm-panel">
+            <div class="card" style="max-width:720px">
+              <div class="card-header"><span class="card-title">Paste the raw enquiry</span></div>
+              <div class="card-body" style="padding:20px">
+                <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Paste the client's email, WhatsApp message, or web form submission. The AI will extract all the key details automatically.</p>
+                <textarea id="qmRawText" class="form-control" rows="8" placeholder="e.g. Hi, we're a couple celebrating our 10th anniversary in July. We'd love gorilla trekking in Uganda + a Maasai Mara safari, ideally staying in luxury lodges for 12 nights. Budget around $800 per person per night. Arriving Entebbe 12 July..."></textarea>
+                <div style="margin-top:16px;display:flex;align-items:center;gap:12px">
+                  <button class="btn btn-primary" id="qmParseBtn">Parse Enquiry</button>
+                  <span id="qmParseSpinner" style="display:none;font-size:13px;color:var(--text-muted)">⏳ Parsing…</span>
+                </div>
+              </div>
+            </div>
+            <div id="qmParseResult" style="margin-top:16px;max-width:720px;display:none">
+              <div class="card">
+                <div class="card-header"><span class="card-title">Extracted Details</span><button class="btn btn-secondary btn-sm" id="qmEditParsed" style="margin-left:auto">Edit</button></div>
+                <div class="card-body" style="padding:20px">
+                  <div id="qmParsedGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;font-size:13px"></div>
+                  <div style="margin-top:20px;text-align:right">
+                    <button class="btn btn-gold" id="qmStep1Next">Next: Destination Advisory →</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- STEP 2: Destination Advisory -->
+          <div id="qmStep2" class="qm-panel" style="display:none">
+            <div class="card" style="max-width:720px">
+              <div class="card-header"><span class="card-title">Destination Advisory</span></div>
+              <div class="card-body" style="padding:20px">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+                  <div class="form-group">
+                    <label class="form-label">Destination</label>
+                    <input type="text" class="form-control" id="qmAdvDest" placeholder="e.g. Bwindi, Mara">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Arrival</label>
+                    <input type="date" class="form-control" id="qmAdvArrival">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Departure</label>
+                    <input type="date" class="form-control" id="qmAdvDeparture">
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px">
+                  <button class="btn btn-primary" id="qmAdvisoryBtn">Get Advisory</button>
+                  <span id="qmAdvisorySpinner" style="display:none;font-size:13px;color:var(--text-muted)">⏳ Checking…</span>
+                  <button class="btn btn-secondary btn-sm" style="margin-left:auto" id="qmStep2Back">← Back</button>
+                </div>
+              </div>
+            </div>
+            <div id="qmAdvisoryResult" style="margin-top:16px;max-width:720px;display:none">
+              <div class="card">
+                <div class="card-header"><span class="card-title">Advisory Report</span><span id="qmAdvFlag" style="margin-left:8px;font-size:18px"></span></div>
+                <div class="card-body" style="padding:20px">
+                  <div id="qmAdvGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 24px;font-size:13px"></div>
+                  <div style="margin-top:20px;text-align:right">
+                    <button class="btn btn-gold" id="qmStep2Next">Next: Generate Itinerary →</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- STEP 3: Generate Itinerary -->
+          <div id="qmStep3" class="qm-panel" style="display:none">
+            <div class="card" style="max-width:720px">
+              <div class="card-header"><span class="card-title">Itinerary Parameters</span></div>
+              <div class="card-body" style="padding:20px">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                  <div class="form-group">
+                    <label class="form-label">Adults</label>
+                    <input type="number" class="form-control" id="qmItinAdults" value="2" min="1" max="20">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Nights</label>
+                    <input type="number" class="form-control" id="qmItinNights" value="7" min="1" max="30">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Budget tier</label>
+                    <select class="form-control" id="qmItinBudget">
+                      <option value="budget">Budget (&lt;$200 ppn)</option>
+                      <option value="mid" selected>Mid ($200–400 ppn)</option>
+                      <option value="luxury">Luxury ($400–800 ppn)</option>
+                      <option value="ultra">Ultra ($800+ ppn)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Trip type</label>
+                    <select class="form-control" id="qmItinTripType">
+                      <option value="standard" selected>Standard</option>
+                      <option value="honeymoon">Honeymoon</option>
+                      <option value="family">Family</option>
+                      <option value="group">Group</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Meal plan</label>
+                    <select class="form-control" id="qmItinMealPlan">
+                      <option value="FB" selected>Full Board</option>
+                      <option value="HB">Half Board</option>
+                      <option value="BB">Bed &amp; Breakfast</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Arrival date</label>
+                    <input type="date" class="form-control" id="qmItinArrival">
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Destinations (comma-separated)</label>
+                  <input type="text" class="form-control" id="qmItinDests" placeholder="e.g. Bwindi, Maasai Mara, Amboseli">
+                </div>
+                <div class="form-group" style="margin-top:10px">
+                  <label class="form-label">Interests (comma-separated)</label>
+                  <input type="text" class="form-control" id="qmItinInterests" placeholder="e.g. gorilla trekking, hot air balloon, photography">
+                </div>
+                <div class="form-group" style="margin-top:10px">
+                  <label class="form-label">Children ages (comma-separated, leave blank if none)</label>
+                  <input type="text" class="form-control" id="qmItinChildren" placeholder="e.g. 8, 12">
+                </div>
+                <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+                  <button class="btn btn-primary" id="qmItinBtn">Generate Itinerary</button>
+                  <span id="qmItinSpinner" style="display:none;font-size:13px;color:var(--text-muted)">⏳ Generating… (this may take ~15s)</span>
+                  <button class="btn btn-secondary btn-sm" style="margin-left:auto" id="qmStep3Back">← Back</button>
+                </div>
+              </div>
+            </div>
+            <div id="qmItinResult" style="margin-top:16px;max-width:720px;display:none">
+              <div class="card">
+                <div class="card-header">
+                  <span class="card-title" id="qmItinTitle"></span>
+                  <span id="qmItinNightsLabel" style="margin-left:8px;font-size:12px;color:var(--text-muted)"></span>
+                </div>
+                <div class="card-body" style="padding:20px">
+                  <div id="qmItinDays"></div>
+                  <div id="qmItinFlags" style="margin-top:12px;font-size:12px;color:var(--text-muted)"></div>
+                  <div style="margin-top:20px;text-align:right">
+                    <button class="btn btn-gold" id="qmStep3Next">Next: Calculate Pricing →</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- STEP 4: Pricing -->
+          <div id="qmStep4" class="qm-panel" style="display:none">
+            <div class="card" style="max-width:720px">
+              <div class="card-header"><span class="card-title">Pricing</span></div>
+              <div class="card-body" style="padding:20px">
+                <div class="form-group" style="max-width:260px">
+                  <label class="form-label">Markup % <span id="qmMarkupLabel">20%</span></label>
+                  <input type="range" id="qmMarkupSlider" min="5" max="50" value="20" step="1" style="width:100%">
+                </div>
+                <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+                  <button class="btn btn-primary" id="qmPricingBtn">Calculate Pricing</button>
+                  <span id="qmPricingSpinner" style="display:none;font-size:13px;color:var(--text-muted)">⏳ Calculating…</span>
+                  <button class="btn btn-secondary btn-sm" style="margin-left:auto" id="qmStep4Back">← Back</button>
+                </div>
+              </div>
+            </div>
+            <div id="qmPricingResult" style="margin-top:16px;max-width:720px;display:none">
+              <div class="card">
+                <div class="card-header"><span class="card-title">Pricing Breakdown</span></div>
+                <div class="card-body" style="padding:20px">
+                  <div id="qmPricingLines"></div>
+                  <div id="qmPricingTotals" style="margin-top:16px;padding-top:16px;border-top:2px solid var(--border)"></div>
+                  <div style="margin-top:20px;text-align:right">
+                    <button class="btn btn-gold" id="qmStep4Next">Next: Generate Quote →</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- STEP 5: Narrative + Upsells -->
+          <div id="qmStep5" class="qm-panel" style="display:none">
+            <div class="card" style="max-width:720px">
+              <div class="card-header"><span class="card-title">Quote Details</span></div>
+              <div class="card-body" style="padding:20px">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                  <div class="form-group">
+                    <label class="form-label">Guest name</label>
+                    <input type="text" class="form-control" id="qmQuoteGuest" placeholder="e.g. Sarah">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">Trip title</label>
+                    <input type="text" class="form-control" id="qmQuoteTitle" placeholder="e.g. Uganda &amp; Kenya Safari">
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px;margin-top:8px">
+                  <button class="btn btn-primary" id="qmNarrativeBtn">Generate Quote</button>
+                  <span id="qmNarrativeSpinner" style="display:none;font-size:13px;color:var(--text-muted)">⏳ Writing quote… (~10s)</span>
+                  <button class="btn btn-secondary btn-sm" style="margin-left:auto" id="qmStep5Back">← Back</button>
+                </div>
+              </div>
+            </div>
+            <div id="qmNarrativeResult" style="margin-top:16px;max-width:720px;display:none">
+              <div class="card">
+                <div class="card-header">
+                  <span class="card-title">Quote Narrative</span>
+                  <button class="btn btn-secondary btn-sm" id="qmCopyNarrative" style="margin-left:auto">Copy</button>
+                </div>
+                <div class="card-body" style="padding:20px">
+                  <div id="qmNarrativeOpening" style="margin-bottom:16px;font-size:14px;line-height:1.7;color:var(--text)"></div>
+                  <div id="qmNarrativeLodges" style="margin-bottom:16px"></div>
+                  <div id="qmNarrativeInvestment" style="margin-bottom:12px;font-size:13px;color:var(--text-muted);font-style:italic"></div>
+                  <div id="qmNarrativeCTA" style="font-size:13px;font-weight:600;color:var(--forest)"></div>
+                </div>
+              </div>
+              <div class="card" style="margin-top:16px">
+                <div class="card-header"><span class="card-title">Suggested Upsells</span></div>
+                <div class="card-body" style="padding:20px">
+                  <div id="qmUpsells"></div>
+                </div>
+              </div>
+              <div style="margin-top:20px;padding:16px;background:var(--mist);border-radius:8px;text-align:center;font-size:13px;color:var(--text-muted)">
+                Quote Machine complete. Use the <strong>Pricing Calculator</strong> and <strong>Quotations</strong> views to save and send this quote.
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /qmBody -->
       </section>
 
     </main>
