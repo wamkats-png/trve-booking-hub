@@ -615,6 +615,8 @@
     _updateGuestName, _updateLodgeRowDates, _toggleGuestRoom, _syncLodgeGuestAssignments,
     _renderGuestAssignmentUI: () => _renderGuestAssignmentUI?.(),
     _syncGuestPool: () => _syncGuestPool?.(),
+    // Exposed for outer IIFEs (Quote Machine, contextual AI assist)
+    apiFetch, toast, escapeHtml, state,
   };
 
   /* ============================================================
@@ -10802,6 +10804,10 @@
 // QUOTE MACHINE — AI-powered enquiry-to-quote wizard
 // ============================================================
 (function () {
+  const apiFetch   = (...args) => window.TRVE.apiFetch(...args);
+  const toast      = (...args) => window.TRVE.toast(...args);
+  const escapeHtml = (s) => window.TRVE.escapeHtml(s);
+
   // Shared state for the wizard
   const qm = {
     currentStep: 1,
@@ -11285,4 +11291,539 @@
 
   // Expose so navigate() can call it
   window.initQuoteMachineView = initQuoteMachineView;
+})();
+
+// ============================================================
+// CONTEXTUAL AI ASSIST — embedded in each booking view
+// ============================================================
+(function () {
+  'use strict';
+
+  // Lazy-load shortcuts (window.TRVE is set by main IIFE)
+  const $ = (id) => document.getElementById(id);
+  const apiFetch   = (...args) => window.TRVE.apiFetch(...args);
+  const toast      = (...args) => window.TRVE.toast(...args);
+  const escapeHtml = (s) => window.TRVE.escapeHtml(s);
+
+  // In-memory audit log
+  const aiLog = [];
+  function logAi(endpoint, action) {
+    aiLog.push({
+      ts: new Date().toISOString(),
+      endpoint,
+      action,
+      coordinator: ($('coordinatorSelector') || {}).value || '',
+    });
+  }
+
+  // ── Shared: render a collapsible advisory strip ─────────────────────────
+  async function runAdvisory(destination, arrival, departure, contentId, stripId, spinnerId, btnId) {
+    if (!destination || !arrival || !departure) {
+      toast('warning', 'Fill destination and travel dates first');
+      return;
+    }
+    const btn  = $(btnId);
+    const spin = $(spinnerId);
+    if (btn)  btn.disabled = true;
+    if (spin) spin.style.display = '';
+    try {
+      const params = new URLSearchParams({ destination, arrival, departure });
+      const adv = await apiFetch('/advisory?' + params.toString());
+      const strip = $(stripId);
+      const content = $(contentId);
+      if (!strip || !content) return;
+      const flagMap = { caution: '⚠️', urgent: '🚨', none: '' };
+      const flag = flagMap[adv.flag] || '';
+      const parts = [
+        flag ? `<strong>${flag} ${escapeHtml(adv.season || '')}</strong>` : `<strong>${escapeHtml(adv.season || '')}</strong>`,
+        adv.weather_note ? escapeHtml(adv.weather_note) : '',
+        adv.wildlife_highlight ? `🦍 ${escapeHtml(adv.wildlife_highlight)}` : '',
+        adv.permit_warning ? `<span style="color:var(--warning);font-weight:600">Permit: ${escapeHtml(adv.permit_warning)}</span>` : '',
+        adv.rate_period ? `Rate period: <strong>${escapeHtml(adv.rate_period)}</strong>` : '',
+      ].filter(Boolean).join(' · ');
+      content.innerHTML = parts;
+      strip.style.display = '';
+      logAi('/advisory', 'viewed');
+    } catch (e) {
+      toast('error', 'Advisory failed', e.message);
+    } finally {
+      if (btn)  btn.disabled = false;
+      if (spin) spin.style.display = 'none';
+    }
+  }
+
+  // ── 1. Enquiry: AI Quick-Fill ───────────────────────────────────────────
+  function initAiEnquiryAssist() {
+    const toggle = $('aiEnqQuickFillToggle');
+    const panel  = $('aiEnqQuickFillPanel');
+    if (!toggle || !panel) return;
+
+    toggle.addEventListener('click', () => {
+      const open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : '';
+      toggle.textContent = open ? '✨ AI Quick-Fill from email or message'
+                                : '✕ Close AI Quick-Fill';
+    });
+
+    $('aiEnqParseBtn').addEventListener('click', async () => {
+      const raw = ($('aiEnqRawText').value || '').trim();
+      if (!raw) { toast('warning', 'Paste some text first'); return; }
+      const btn = $('aiEnqParseBtn');
+      btn.disabled = true;
+      $('aiEnqParseSpinner').style.display = '';
+      $('aiEnqParseResult').style.display = 'none';
+      try {
+        const res = await apiFetch('/intake/parse', { method: 'POST', body: { raw_text: raw } });
+        const brief = res.brief || {};
+        renderQuickFillResult(brief);
+        $('aiEnqParseResult').style.display = '';
+        logAi('/intake/parse', 'parsed');
+      } catch (e) {
+        toast('error', 'Parse failed', e.message);
+      } finally {
+        btn.disabled = false;
+        $('aiEnqParseSpinner').style.display = 'none';
+      }
+    });
+  }
+
+  function renderQuickFillResult(brief) {
+    const fieldMap = [
+      { label: 'Name',         id: 'clientName',           value: brief.guest_name },
+      { label: 'Email',        id: 'clientEmail',           value: brief.email },
+      { label: 'Phone',        id: 'clientPhone',           value: brief.phone },
+      { label: 'Start date',   id: 'travelStartDate',       value: brief.arrival_date },
+      { label: 'End date',     id: 'travelEndDate',         value: brief.departure_date || brief.arrival_date },
+      { label: 'Duration',     id: 'durationDays',          value: brief.nights },
+      { label: 'Pax',          id: 'pax',                   value: brief.adults },
+      { label: 'Special reqs', id: 'specialRequests',       value: brief.special_requests },
+    ];
+
+    const budgetMap = { budget: 'budget', mid: 'mid_range', luxury: 'luxury', ultra: 'luxury' };
+
+    const rows = fieldMap.filter(f => f.value).map(f => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:11px;color:var(--text-muted);width:80px;flex-shrink:0">${escapeHtml(f.label)}</span>
+        <span style="font-size:13px;flex:1">${escapeHtml(String(f.value))}</span>
+        <button type="button" class="btn btn-ghost btn-sm ai-apply-field" data-field="${f.id}" data-value="${escapeHtml(String(f.value))}"
+                style="font-size:11px;padding:2px 8px">Apply</button>
+      </div>`).join('');
+
+    const destRow = brief.destinations && brief.destinations.length
+      ? `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:11px;color:var(--text-muted);width:80px;flex-shrink:0">Destinations</span>
+          <span style="font-size:13px;flex:1">${escapeHtml(brief.destinations.join(', '))}</span>
+          <button type="button" class="btn btn-ghost btn-sm" id="aiApplyDests" data-dests="${escapeHtml(JSON.stringify(brief.destinations))}"
+                  style="font-size:11px;padding:2px 8px">Apply</button>
+        </div>` : '';
+
+    const container = $('aiEnqParseResult');
+    container.innerHTML = `
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        ${rows}${destRow}
+        <div style="padding:10px;text-align:right;background:var(--mist)">
+          <button type="button" class="btn btn-primary btn-sm" id="aiApplyAll">Apply All</button>
+        </div>
+      </div>`;
+
+    // Per-field apply
+    container.querySelectorAll('.ai-apply-field').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const el = $(btn.dataset.field);
+        if (el) { el.value = btn.dataset.value; btn.textContent = '✓'; btn.disabled = true; }
+        logAi('/intake/parse', 'field-applied:' + btn.dataset.field);
+      });
+    });
+
+    // Destinations apply
+    const applyDests = $('aiApplyDests');
+    if (applyDests) {
+      applyDests.addEventListener('click', () => {
+        try {
+          const dests = JSON.parse(applyDests.dataset.dests);
+          // Use existing tag system: set hidden field + fire input event to sync tags
+          const hidden = $('destinationsRequested');
+          if (hidden) {
+            hidden.value = dests.join(',');
+            // Clear existing tags and re-render via input simulation
+            const tagWrap = $('destinationsTags');
+            if (tagWrap) tagWrap.innerHTML = '';
+            dests.forEach(d => {
+              const input = $('destinationsInput');
+              if (input) {
+                input.value = d;
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+              }
+            });
+            applyDests.textContent = '✓';
+            applyDests.disabled = true;
+          }
+        } catch (_) {}
+        logAi('/intake/parse', 'destinations-applied');
+      });
+    }
+
+    // Budget apply (special mapping)
+    if (brief.budget_tier) {
+      const budgetEl = $('budgetRange');
+      if (budgetEl) {
+        const mapped = budgetMap[brief.budget_tier] || '';
+        if (mapped) budgetEl.value = mapped;
+      }
+    }
+
+    // Apply All
+    $('aiApplyAll').addEventListener('click', () => {
+      container.querySelectorAll('.ai-apply-field:not(:disabled)').forEach(b => b.click());
+      const da = $('aiApplyDests');
+      if (da && !da.disabled) da.click();
+      logAi('/intake/parse', 'apply-all');
+      toast('success', 'Fields filled — review and submit when ready');
+    });
+  }
+
+  // ── 2. Enquiry: Advisory strip ──────────────────────────────────────────
+  function initAiEnquiryAdvisory() {
+    const btn = $('aiEnqAdvisoryBtn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const dest     = ($('destinationsRequested').value || '').split(',')[0].trim();
+      const arrival  = $('travelStartDate').value;
+      const depart   = $('travelEndDate').value;
+      runAdvisory(dest, arrival, depart, 'aiEnqAdvisoryContent', 'aiEnqAdvisoryStrip', null, 'aiEnqAdvisoryBtn');
+    });
+    const close = $('aiEnqAdvisoryClose');
+    if (close) close.addEventListener('click', () => { $('aiEnqAdvisoryStrip').style.display = 'none'; });
+  }
+
+  // ── 3. Curation: AI Itinerary suggestion ────────────────────────────────
+  let _aiCurItinerary = null; // last generated itinerary (for draft notes)
+
+  function initAiCurationAssist() {
+    const btn = $('aiCurItinBtn');
+    if (!btn || btn._aiCurBound) return;
+    btn._aiCurBound = true;
+
+    btn.addEventListener('click', async () => {
+      // Gather params: prefer selected enquiry, fall back to manual fields
+      let adults = 2, nights = 7, destinations = [], interests = [], budget_tier = 'mid', trip_type = 'standard', arrival_date = null;
+
+      const enquirySelect = $('curationEnquirySelect');
+      const enquiryId = enquirySelect && enquirySelect.value ? parseInt(enquirySelect.value) : null;
+
+      if (enquiryId) {
+        try {
+          const enq = await apiFetch(`/api/enquiries/${enquiryId}`);
+          adults = enq.pax || 2;
+          nights = enq.duration_days ? enq.duration_days - 1 : 7;
+          destinations = enq.destinations_requested ? enq.destinations_requested.split(',').map(s => s.trim()).filter(Boolean) : [];
+          interests = enq.interests ? JSON.parse(enq.interests) : [];
+          budget_tier = (enq.budget_range || 'mid').replace('_range', '').replace('premium', 'luxury');
+          arrival_date = enq.travel_start_date || null;
+        } catch (_) { /* fall through to manual */ }
+      }
+
+      // Fall back to manual fields if no enquiry data
+      if (!destinations.length) {
+        const destRaw = ($('curDestinations') || {}).value || '';
+        destinations = destRaw.split(',').map(s => s.trim()).filter(Boolean);
+        nights = parseInt(($('curDuration') || {}).value) || 7;
+        adults = parseInt(($('curPax') || {}).value) || 2;
+      }
+
+      if (!destinations.length) { toast('warning', 'Enter or select destinations first'); return; }
+
+      btn.disabled = true;
+      $('aiCurItinSpinner').style.display = '';
+
+      // Remove any previous AI suggestion card
+      const prev = document.getElementById('aiCurItinCard');
+      if (prev) prev.remove();
+
+      try {
+        const res = await apiFetch('/itinerary/generate', {
+          method: 'POST',
+          body: { adults, nights, destinations, interests, budget_tier, trip_type, arrival_date,
+                  children: [] }
+        });
+        _aiCurItinerary = res.itinerary || res;
+        renderCurItinCard(_aiCurItinerary);
+        logAi('/itinerary/generate', 'generated');
+      } catch (e) {
+        toast('error', 'AI itinerary failed', e.message);
+      } finally {
+        btn.disabled = false;
+        $('aiCurItinSpinner').style.display = 'none';
+      }
+    });
+  }
+
+  function renderCurItinCard(itin) {
+    const results = $('curationResults');
+    if (!results) return;
+    const days = (itin.days || []);
+    const card = document.createElement('div');
+    card.id = 'aiCurItinCard';
+    card.style.cssText = 'border:2px dashed var(--forest);border-radius:8px;padding:16px;margin-bottom:16px;background:var(--mist)';
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div>
+          <span style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--forest);font-weight:700">✨ AI Suggestion</span>
+          <div style="font-weight:600;font-size:14px">${escapeHtml(itin.trip_title || 'AI Itinerary')}</div>
+          <div style="font-size:12px;color:var(--text-muted)">${itin.total_nights || ''} nights</div>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="aiCurAddNotes">Add to Notes</button>
+      </div>
+      <div id="aiCurDayList">
+        ${days.map((d, i) => `
+          <div style="border-bottom:1px solid var(--border);padding:8px 0;display:flex;gap:8px;align-items:flex-start">
+            <div style="width:52px;flex-shrink:0;font-size:11px;color:var(--text-muted);padding-top:2px">Day ${d.day_number}</div>
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:13px">${escapeHtml(d.property_name || '')} <span style="font-weight:400;color:var(--text-muted);font-size:12px">${escapeHtml(d.location || '')}</span></div>
+              <div id="aiCurDayDesc${i}" style="font-size:12px;color:var(--text);line-height:1.5">${escapeHtml(d.guest_facing_description || '')}</div>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm ai-cur-regen" data-idx="${i}" style="font-size:11px;padding:2px 6px;flex-shrink:0">↻</button>
+          </div>`).join('')}
+      </div>
+      ${itin.logistics_flags && itin.logistics_flags.length
+        ? `<div style="margin-top:10px;font-size:11px;color:var(--text-muted)">📌 ${itin.logistics_flags.map(f => escapeHtml(f)).join(' · ')}</div>` : ''}`;
+
+    // Insert at top of results
+    results.insertBefore(card, results.firstChild);
+
+    // Rewrite buttons
+    card.querySelectorAll('.ai-cur-regen').forEach(rb => {
+      rb.addEventListener('click', async () => {
+        const idx = parseInt(rb.dataset.idx);
+        const d = days[idx];
+        rb.disabled = true; rb.textContent = '…';
+        try {
+          const res = await apiFetch('/itinerary/regenerate-day', {
+            method: 'POST',
+            body: { day_number: d.day_number, property_name: d.property_name || '', location: d.location || '', activity: d.main_activity || '' }
+          });
+          if (res.description) {
+            d.guest_facing_description = res.description;
+            const el = document.getElementById('aiCurDayDesc' + idx);
+            if (el) el.textContent = res.description;
+            logAi('/itinerary/regenerate-day', 'day-rewritten');
+          }
+        } catch (e) { toast('error', 'Rewrite failed', e.message); }
+        finally { rb.disabled = false; rb.textContent = '↻'; }
+      });
+    });
+
+    // Add to Notes
+    document.getElementById('aiCurAddNotes').addEventListener('click', () => {
+      const notes = $('approvalNotes');
+      if (!notes) return;
+      const text = (itin.days || []).map(d =>
+        `Day ${d.day_number} — ${d.location}: ${d.property_name}. ${d.guest_facing_description || ''}`
+      ).join('\n');
+      notes.value = text;
+      toast('success', 'Notes drafted — review before approving');
+      logAi('/itinerary/generate', 'notes-applied');
+    });
+  }
+
+  // ── 4. Curation: AI Draft Notes button ──────────────────────────────────
+  function initAiCurationDraftNotes() {
+    const btn = $('aiCurDraftNotesBtn');
+    if (!btn || btn._aiDraftBound) return;
+    btn._aiDraftBound = true;
+
+    btn.addEventListener('click', () => {
+      if (!_aiCurItinerary) {
+        toast('info', 'Generate an AI itinerary first (click "✨ Generate AI Itinerary")');
+        return;
+      }
+      const notes = $('approvalNotes');
+      if (!notes) return;
+      const text = (_aiCurItinerary.days || []).map(d =>
+        `Day ${d.day_number} — ${d.location}: ${d.property_name}. ${d.guest_facing_description || ''}`
+      ).join('\n');
+      notes.value = text;
+      toast('success', 'Notes drafted — review and edit before approving');
+      logAi('/itinerary/generate', 'draft-notes-applied');
+    });
+  }
+
+  // ── 5. Pricing: Advisory strip ───────────────────────────────────────────
+  function initAiPricingAdvisory() {
+    const btn = $('aiPricingAdvisoryBtn');
+    if (!btn || btn._aiPricBound) return;
+    btn._aiPricBound = true;
+
+    btn.addEventListener('click', () => {
+      // Read first lodge name as destination
+      const lodgeEl = document.querySelector('[name^="lodge_name_"]');
+      const dest     = lodgeEl ? lodgeEl.value : '';
+      const arrival  = ($('pricingTravelStartDate') || {}).value || '';
+      const depart   = ($('pricingTravelEndDate') || {}).value || '';
+      if (!dest) { toast('warning', 'Add a lodge first so the destination is known'); return; }
+      runAdvisory(dest, arrival, depart, 'aiPricingAdvisoryContent', 'aiPricingAdvisoryStrip', null, 'aiPricingAdvisoryBtn');
+    });
+    const close = $('aiPricingAdvisoryClose');
+    if (close) close.addEventListener('click', () => { $('aiPricingAdvisoryStrip').style.display = 'none'; });
+  }
+
+  // ── 6. Quotation modal: Narrative + Upsells ──────────────────────────────
+  function bindQuotationModalAi() {
+    const btn = $('aiQmNarrativeBtn');
+    if (!btn || btn._aiQmBound) return;
+    btn._aiQmBound = true;
+
+    async function runNarrative() {
+      const guest_name = ($('qmClientName').value || '').trim().split(' ')[0] || 'Guest';
+      // Lodge names from pricing form
+      const lodgeEls = document.querySelectorAll('[name^="lodge_name_"]');
+      const lodge_names = [...new Set([...lodgeEls].map(e => e.value).filter(Boolean))];
+      const destinations = lodge_names.length ? lodge_names : ['East Africa'];
+      // Nights from dates
+      const s = ($('pricingTravelStartDate') || {}).value;
+      const e = ($('pricingTravelEndDate') || {}).value;
+      const nights = (s && e) ? Math.max(1, Math.round((new Date(e) - new Date(s)) / 86400000)) : 7;
+      // Adults + children → pax_type
+      const adults = parseInt(($('pricingAdults') || {}).value) || 2;
+      const childCount = parseInt(($('pricingChildren') || {}).value) || 0;
+      const pax_type = childCount > 0 ? 'family' : adults >= 8 ? 'group' : adults === 1 ? 'solo' : 'couple';
+      // Budget tier from budget range (enquiry) or default
+      const budgetEl = $('budgetRange');
+      const budget_tier = budgetEl ? (budgetEl.value || 'mid').replace('_range','').replace('premium','luxury') : 'mid';
+      // Total ppn from results panel
+      const ppnEl = $('priceSummaryPerPerson');
+      const total_usd_per_person = ppnEl ? parseFloat(ppnEl.textContent.replace(/[^0-9.]/g, '')) || 0 : 0;
+      // Trip title from pricing itinerary selector
+      const itinEl = $('pricingItinerary');
+      const trip_title = itinEl && itinEl.selectedIndex > 0 ? itinEl.options[itinEl.selectedIndex].text : 'Safari Adventure';
+
+      $('aiQmNarrativeBtn').disabled = true;
+      $('aiQmNarrativeSpinner').style.display = '';
+      $('aiQmNarrativePanel').style.display = 'none';
+
+      try {
+        const [narRes, upsellRes] = await Promise.all([
+          apiFetch('/quote/narrative', { method: 'POST', body: {
+            trip_title, guest_name, nights, destinations, total_usd_per_person,
+            lodge_names, trip_type: pax_type === 'family' ? 'family' : pax_type === 'group' ? 'group' : 'standard'
+          }}),
+          apiFetch('/quote/upsells', { method: 'POST', body: {
+            destinations, pax_type, budget_tier,
+            activities_booked: [], nights
+          }})
+        ]);
+
+        const narr = narRes.narrative || narRes;
+        const upsells = upsellRes.upsells || upsellRes || [];
+
+        // Format narrative text
+        const narrativeText = [
+          narr.opening || '',
+          '',
+          (narr.lodge_highlights || []).map(h => {
+            if (typeof h === 'string') return '• ' + h;
+            return '• ' + (h.highlight || h.property || '');
+          }).join('\n'),
+          '',
+          narr.investment_note || '',
+          '',
+          narr.closing_cta || '',
+        ].join('\n').trim();
+
+        $('aiQmNarrativePreview').textContent = narrativeText;
+        $('aiQmNarrativePanel').style.display = '';
+
+        // Render upsells
+        const upsellsPanel = $('aiQmUpsellsPanel');
+        const upsellsList  = $('aiQmUpsellsList');
+        if (upsells.length && upsellsList) {
+          upsellsList.innerHTML = upsells.map(u => `
+            <div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px">
+              <div>
+                <div style="font-weight:600;font-size:13px">${escapeHtml(u.title || '')}</div>
+                <div style="font-size:12px;color:var(--text-muted)">${escapeHtml(u.why_perfect || '')}</div>
+              </div>
+              <div style="text-align:right;white-space:nowrap;font-size:13px;font-weight:600;color:var(--forest)">
+                from $${Number(u.price_usd_from || 0).toLocaleString()}
+              </div>
+            </div>`).join('');
+          upsellsPanel.style.display = '';
+        }
+        logAi('/quote/narrative', 'generated');
+      } catch (err) {
+        toast('error', 'Narrative generation failed', err.message);
+      } finally {
+        $('aiQmNarrativeBtn').disabled = false;
+        $('aiQmNarrativeSpinner').style.display = 'none';
+      }
+    }
+
+    btn.addEventListener('click', runNarrative);
+
+    // Accept: copy preview to editable textarea
+    $('aiQmNarrativeAccept').addEventListener('click', () => {
+      const preview = $('aiQmNarrativePreview');
+      const field   = $('aiQmNarrativeField');
+      if (field && preview) field.value = preview.textContent;
+      $('aiQmNarrativePanel').style.display = 'none';
+      logAi('/quote/narrative', 'accepted');
+      toast('success', 'Narrative accepted — edit freely in the text area below');
+    });
+
+    $('aiQmNarrativeRegen').addEventListener('click', runNarrative);
+
+    $('aiQmNarrativeDiscard').addEventListener('click', () => {
+      $('aiQmNarrativePanel').style.display = 'none';
+      $('aiQmUpsellsPanel').style.display = 'none';
+      logAi('/quote/narrative', 'discarded');
+    });
+  }
+
+  // ── Hook into navigate() via MutationObserver on quotation modal ─────────
+  function observeQuotationModal() {
+    const modal = $('quotationModal');
+    if (!modal) return;
+    new MutationObserver(() => {
+      if (!modal.classList.contains('hidden')) {
+        bindQuotationModalAi();
+      }
+    }).observe(modal, { attributes: true, attributeFilter: ['class'] });
+  }
+
+  // ── Hook navigate() to re-bind curation + pricing on each visit ─────────
+  function patchNavigate() {
+    const orig = window.TRVE.navigate;
+    window.TRVE.navigate = function (viewId, ...rest) {
+      const result = orig.call(this, viewId, ...rest);
+      if (viewId === 'curation') {
+        // Short delay so the view's own init runs first
+        setTimeout(() => { initAiCurationAssist(); initAiCurationDraftNotes(); }, 100);
+      }
+      if (viewId === 'pricing') {
+        setTimeout(() => { initAiPricingAdvisory(); }, 100);
+      }
+      return result;
+    };
+  }
+
+  // ── Entry ────────────────────────────────────────────────────────────────
+  function init() {
+    initAiEnquiryAssist();
+    initAiEnquiryAdvisory();
+    observeQuotationModal();
+    patchNavigate();
+    // Also init for whichever view is active at load time
+    setTimeout(() => {
+      initAiCurationAssist();
+      initAiCurationDraftNotes();
+      initAiPricingAdvisory();
+    }, 500);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
 })();
