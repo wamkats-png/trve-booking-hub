@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TRVE Quote Machine — AI Endpoint Guide</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230D5E4F'/><text y='22' x='6' font-size='18' font-family='serif' fill='%23C8963E'>T</text></svg>">
+  <style>
+    :root {
+      --forest: #0D5E4F;
+      --gold: #C8963E;
+      --sand: #F5EDD8;
+      --bark: #3B2A1A;
+      --mist: #E8F4F1;
+      --radius: 8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--sand);
+      color: var(--bark);
+      line-height: 1.6;
+    }
+    header {
+      background: var(--forest);
+      color: #fff;
+      padding: 2rem;
+      border-bottom: 4px solid var(--gold);
+    }
+    header h1 { font-size: 1.8rem; letter-spacing: 0.04em; }
+    header p  { opacity: 0.75; margin-top: 0.25rem; font-size: 0.95rem; }
+    .badge {
+      display: inline-block;
+      background: var(--gold);
+      color: var(--bark);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.15rem 0.55rem;
+      border-radius: 3px;
+      vertical-align: middle;
+      margin-left: 0.5rem;
+    }
+
+    main { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+
+    section { margin-bottom: 2.5rem; }
+    h2 {
+      font-size: 1.2rem;
+      color: var(--forest);
+      border-left: 4px solid var(--gold);
+      padding-left: 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+    h3 { font-size: 1rem; margin-bottom: 0.5rem; color: var(--bark); }
+
+    .endpoint-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: var(--radius);
+      border: 1px solid #ddd;
+      padding: 1.25rem;
+      transition: box-shadow 0.15s;
+    }
+    .card:hover { box-shadow: 0 4px 14px rgba(13,94,79,0.12); }
+    .card .method {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      padding: 0.15rem 0.5rem;
+      border-radius: 3px;
+      margin-right: 0.4rem;
+    }
+    .method.post { background: #D4EDDA; color: #155724; }
+    .method.get  { background: #CCE5FF; color: #004085; }
+    .card .path {
+      font-family: monospace;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--forest);
+    }
+    .card p { font-size: 0.88rem; margin-top: 0.6rem; color: #555; }
+
+    .ref-block {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      font-family: "Fira Code", "Cascadia Code", monospace;
+      font-size: 0.82rem;
+      line-height: 1.7;
+      overflow-x: auto;
+      white-space: pre;
+      margin-bottom: 1.25rem;
+    }
+    .ref-block .kw  { color: #569CD6; }
+    .ref-block .str { color: #CE9178; }
+    .ref-block .cmt { color: #6A9955; }
+    .ref-block .key { color: #9CDCFE; }
+    .ref-block .num { color: #B5CEA8; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      background: #fff;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid #ddd;
+    }
+    th {
+      background: var(--forest);
+      color: #fff;
+      text-align: left;
+      padding: 0.65rem 1rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+    td { padding: 0.6rem 1rem; border-bottom: 1px solid #eee; }
+    tr:last-child td { border-bottom: none; }
+    tr:nth-child(even) td { background: var(--mist); }
+    code {
+      font-family: monospace;
+      background: #f0f0f0;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      font-size: 0.82rem;
+    }
+
+    .tip {
+      background: var(--mist);
+      border-left: 4px solid var(--forest);
+      padding: 0.85rem 1.1rem;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      font-size: 0.88rem;
+      margin-bottom: 1rem;
+    }
+    .warn {
+      background: #FFF8E1;
+      border-left: 4px solid var(--gold);
+      padding: 0.85rem 1.1rem;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      font-size: 0.88rem;
+      margin-bottom: 1rem;
+    }
+
+    footer {
+      text-align: center;
+      font-size: 0.8rem;
+      color: #999;
+      padding: 2rem;
+      border-top: 1px solid #ddd;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>TRVE Quote Machine <span class="badge">AI</span></h1>
+  <p>AI-powered endpoint reference — Safari Operations Platform</p>
+</header>
+
+<main>
+
+  <!-- ── Overview ─────────────────────────────────────────── -->
+  <section>
+    <h2>Overview</h2>
+    <p style="font-size:0.95rem;margin-bottom:1rem;">
+      The Quote Machine is a suite of seven AI-powered API endpoints that automate the most
+      time-consuming parts of a safari enquiry workflow — from parsing raw email text all the
+      way through to writing a polished, personalised quotation narrative.
+    </p>
+    <div class="tip">
+      All endpoints require a valid <code>Authorization: Bearer &lt;token&gt;</code> header
+      and return <code>application/json</code> unless otherwise noted.
+    </div>
+  </section>
+
+  <!-- ── Endpoint Cards ────────────────────────────────────── -->
+  <section>
+    <h2>Endpoints at a Glance</h2>
+    <div class="endpoint-grid">
+
+      <div class="card">
+        <span class="method post">POST</span><span class="path">/intake/parse</span>
+        <p>Parses raw enquiry text (email, WhatsApp, form) into a structured JSON record and creates an enquiry in the database.</p>
+      </div>
+
+      <div class="card">
+        <span class="method get">GET</span><span class="path">/advisory</span>
+        <p>Returns season, weather, and permit advisories for a destination + date range. Responses cached for 24 hours.</p>
+      </div>
+
+      <div class="card">
+        <span class="method post">POST</span><span class="path">/itinerary/generate</span>
+        <p>Generates a complete day-by-day itinerary from a client brief including destinations, lodge names, and duration.</p>
+      </div>
+
+      <div class="card">
+        <span class="method post">POST</span><span class="path">/itinerary/regenerate-day</span>
+        <p>Rewrites a single day's guest-facing description without touching the rest of the itinerary.</p>
+      </div>
+
+      <div class="card">
+        <span class="method post">POST</span><span class="path">/pricing/calculate</span>
+        <p>Calculates itemised trip pricing with child banding, seasonal rates, and configurable markup.</p>
+      </div>
+
+      <div class="card">
+        <span class="method post">POST</span><span class="path">/quote/narrative</span>
+        <p>Writes a professional quotation narrative: opening, lodge highlights, investment note, and call-to-action.</p>
+      </div>
+
+      <div class="card">
+        <span class="method post">POST</span><span class="path">/quote/upsells</span>
+        <p>Suggests three geographically-relevant, budget-appropriate add-ons to include in the quote.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── Typical Workflow ──────────────────────────────────── -->
+  <section>
+    <h2>Typical Workflow</h2>
+    <table>
+      <thead>
+        <tr><th>Step</th><th>Endpoint</th><th>Input</th><th>Output</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td><code>POST /intake/parse</code></td><td>Raw enquiry text</td><td>Structured enquiry JSON + DB record</td></tr>
+        <tr><td>2</td><td><code>GET /advisory</code></td><td>Destination + dates</td><td>Season / weather / permit notes</td></tr>
+        <tr><td>3</td><td><code>POST /itinerary/generate</code></td><td>Client brief</td><td>Day-by-day itinerary</td></tr>
+        <tr><td>4</td><td><code>POST /pricing/calculate</code></td><td>Itinerary + pax</td><td>Itemised cost breakdown</td></tr>
+        <tr><td>5</td><td><code>POST /quote/narrative</code></td><td>Itinerary + pricing</td><td>Polished quote text</td></tr>
+        <tr><td>6</td><td><code>POST /quote/upsells</code></td><td>Brief + budget</td><td>3 upsell suggestions</td></tr>
+      </tbody>
+    </table>
+    <div class="tip" style="margin-top:1rem;">
+      Step 3d — <code>POST /itinerary/regenerate-day</code> — can be called any number of times
+      between steps 3 and 4 to refine individual days.
+    </div>
+  </section>
+
+  <!-- ── Request / Response Examples ─────────────────────── -->
+  <section>
+    <h2>Request &amp; Response Examples</h2>
+
+    <h3>POST /intake/parse</h3>
+    <div class="ref-block"><span class="cmt">// Request body</span>
+{
+  <span class="key">"raw_text"</span>: <span class="str">"Hi, we're a family of 4 (2 adults, kids aged 8 &amp; 11) looking for\n10 nights in Tanzania around July 2026. Budget ~$25,000. Keen on\nSerengeti migration and Zanzibar beach at the end."</span>
+}
+
+<span class="cmt">// Response</span>
+{
+  <span class="key">"enquiry_id"</span>: <span class="str">"enq_01J8KXYZ"</span>,
+  <span class="key">"destination"</span>: <span class="str">"Tanzania"</span>,
+  <span class="key">"duration_nights"</span>: <span class="num">10</span>,
+  <span class="key">"adults"</span>: <span class="num">2</span>,
+  <span class="key">"children"</span>: [<span class="num">8</span>, <span class="num">11</span>],
+  <span class="key">"budget_usd"</span>: <span class="num">25000</span>,
+  <span class="key">"highlights"</span>: [<span class="str">"Serengeti migration"</span>, <span class="str">"Zanzibar beach"</span>],
+  <span class="key">"travel_month"</span>: <span class="str">"July 2026"</span>
+}</div>
+
+    <h3>GET /advisory?destination=Serengeti&amp;start=2026-07-01&amp;end=2026-07-14</h3>
+    <div class="ref-block"><span class="cmt">// Response (24h cached)</span>
+{
+  <span class="key">"season"</span>: <span class="str">"Dry season — peak wildlife viewing"</span>,
+  <span class="key">"weather"</span>: <span class="str">"Cool mornings, warm afternoons. Minimal rain expected."</span>,
+  <span class="key">"permits"</span>: <span class="str">"Ngorongoro Crater permit required ($200 pp). Book 60 days ahead."</span>,
+  <span class="key">"notes"</span>: <span class="str">"Great Migration river crossings likely in northern Serengeti."</span>,
+  <span class="key">"cached"</span>: <span class="kw">false</span>
+}</div>
+
+    <h3>POST /itinerary/generate</h3>
+    <div class="ref-block"><span class="cmt">// Request body</span>
+{
+  <span class="key">"enquiry_id"</span>: <span class="str">"enq_01J8KXYZ"</span>,
+  <span class="key">"destinations"</span>: [<span class="str">"Serengeti"</span>, <span class="str">"Zanzibar"</span>],
+  <span class="key">"lodges"</span>: [<span class="str">"Four Seasons Serengeti"</span>, <span class="str">"Zanzibar White Sand Luxury Villas"</span>],
+  <span class="key">"duration_nights"</span>: <span class="num">10</span>,
+  <span class="key">"adults"</span>: <span class="num">2</span>,
+  <span class="key">"children"</span>: [<span class="num">8</span>, <span class="num">11</span>]
+}</div>
+
+    <h3>POST /pricing/calculate</h3>
+    <div class="ref-block"><span class="cmt">// Request body</span>
+{
+  <span class="key">"enquiry_id"</span>: <span class="str">"enq_01J8KXYZ"</span>,
+  <span class="key">"itinerary_id"</span>: <span class="str">"itin_abc123"</span>,
+  <span class="key">"markup_pct"</span>: <span class="num">15</span>,
+  <span class="key">"currency"</span>: <span class="str">"USD"</span>
+}
+
+<span class="cmt">// Response</span>
+{
+  <span class="key">"total_usd"</span>: <span class="num">22850</span>,
+  <span class="key">"per_person"</span>: <span class="num">11425</span>,
+  <span class="key">"line_items"</span>: [
+    { <span class="key">"description"</span>: <span class="str">"Four Seasons Serengeti — 6 nights (2 adults)"</span>, <span class="key">"amount"</span>: <span class="num">14400</span> },
+    { <span class="key">"description"</span>: <span class="str">"Children reduction (8 &amp; 11 yrs)"</span>, <span class="key">"amount"</span>: <span class="num">-2880</span> },
+    { <span class="key">"description"</span>: <span class="str">"Zanzibar White Sand — 4 nights"</span>, <span class="key">"amount"</span>: <span class="num">7200</span> },
+    { <span class="key">"description"</span>: <span class="str">"Park fees &amp; permits"</span>, <span class="key">"amount"</span>: <span class="num">1600</span> },
+    { <span class="key">"description"</span>: <span class="str">"Internal flights"</span>, <span class="key">"amount"</span>: <span class="num">2530</span> }
+  ]
+}</div>
+
+    <h3>POST /quote/upsells</h3>
+    <div class="ref-block"><span class="cmt">// Response</span>
+{
+  <span class="key">"upsells"</span>: [
+    {
+      <span class="key">"title"</span>: <span class="str">"Hot Air Balloon over the Serengeti"</span>,
+      <span class="key">"description"</span>: <span class="str">"Dawn flight over the plains with champagne breakfast on landing."</span>,
+      <span class="key">"price_from_usd"</span>: <span class="num">680</span>,
+      <span class="key">"per"</span>: <span class="str">"adult"</span>
+    },
+    {
+      <span class="key">"title"</span>: <span class="str">"Spice Farm Tour, Zanzibar"</span>,
+      <span class="key">"description"</span>: <span class="str">"Half-day guided tour of a traditional clove and vanilla farm."</span>,
+      <span class="key">"price_from_usd"</span>: <span class="num">75</span>,
+      <span class="key">"per"</span>: <span class="str">"person"</span>
+    },
+    {
+      <span class="key">"title"</span>: <span class="str">"Maasai Village Cultural Visit"</span>,
+      <span class="key">"description"</span>: <span class="str">"Private afternoon with a Maasai community near the Serengeti border."</span>,
+      <span class="key">"price_from_usd"</span>: <span class="num">120</span>,
+      <span class="key">"per"</span>: <span class="str">"group"</span>
+    }
+  ]
+}</div>
+
+  </section>
+
+  <!-- ── Parameters Reference ─────────────────────────────── -->
+  <section>
+    <h2>Query Parameters — GET /advisory</h2>
+    <table>
+      <thead>
+        <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>destination</code></td><td>string</td><td>Yes</td><td>Park, region, or country name</td></tr>
+        <tr><td><code>start</code></td><td>YYYY-MM-DD</td><td>Yes</td><td>First day of travel</td></tr>
+        <tr><td><code>end</code></td><td>YYYY-MM-DD</td><td>Yes</td><td>Last day of travel</td></tr>
+        <tr><td><code>refresh</code></td><td>boolean</td><td>No</td><td>Pass <code>true</code> to bypass the 24h cache</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── Caching ───────────────────────────────────────────── -->
+  <section>
+    <h2>Caching</h2>
+    <div class="warn">
+      Advisory responses are stored in the <code>ai_cache</code> database table and reused for
+      24 hours. If the underlying data changes (e.g. a permit policy update), append
+      <code>?refresh=true</code> to force a fresh AI call.
+    </div>
+    <p style="font-size:0.88rem;">
+      The <code>ai_cache</code> table is created automatically on server startup via
+      <code>_ensure_ai_cache_table()</code> — no manual migration required.
+    </p>
+  </section>
+
+  <!-- ── Error Codes ──────────────────────────────────────── -->
+  <section>
+    <h2>Error Codes</h2>
+    <table>
+      <thead>
+        <tr><th>HTTP Status</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>400</code></td><td>Missing or invalid request body / parameters</td></tr>
+        <tr><td><code>401</code></td><td>Missing or invalid Bearer token</td></tr>
+        <tr><td><code>422</code></td><td>Validation error — see <code>detail</code> field</td></tr>
+        <tr><td><code>500</code></td><td>AI provider error or internal server fault</td></tr>
+        <tr><td><code>503</code></td><td>AI service temporarily unavailable</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</main>
+
+<footer>
+  TRVE Booking Hub · Safari Operations Platform · Quote Machine v1.0
+</footer>
+
+</body>
+</html>
