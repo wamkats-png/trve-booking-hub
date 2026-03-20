@@ -7520,6 +7520,396 @@ def download_driver_briefing_pdf(enquiry_id: str):
     )
 
 
+# ---------------------------------------------------------------------------
+# AI FEATURE ENDPOINTS — 2-Hour Quote Machine
+# ---------------------------------------------------------------------------
+
+# ── PYDANTIC MODELS ──────────────────────────────────────────────────────────
+
+class IntakeParseRequest(BaseModel):
+    raw_text: str
+
+class AdvisoryRequest(BaseModel):
+    destination: str
+    arrival: str
+    departure: str
+
+class ItineraryGenerateRequest(BaseModel):
+    adults: int = 2
+    children: list = []
+    nights: int
+    destinations: list
+    interests: list = []
+    budget_tier: str = "mid"
+    budget_usd_ppn: float | None = None
+    arrival_date: str | None = None
+    trip_type: str = "standard"  # standard|honeymoon|family|group
+    meal_plan: str = "FB"
+
+class RegenerateDayRequest(BaseModel):
+    day_number: int
+    property_name: str
+    location: str
+    activity: str
+    context: str = ""
+
+class PricingCalculateRequest(BaseModel):
+    itinerary_days: list
+    adults: int = 2
+    children: list = []
+    markup_pct: float = 20.0
+
+class NarrativeRequest(BaseModel):
+    trip_title: str
+    guest_name: str
+    nights: int
+    destinations: list
+    total_usd_per_person: float
+    inclusions: list = []
+    exclusions: list = []
+    lodge_names: list = []
+    trip_type: str = "standard"
+
+class UpsellRequest(BaseModel):
+    destinations: list
+    pax_type: str = "couple"  # couple|honeymoon|family|group|solo
+    budget_tier: str = "mid"
+    activities_booked: list = []
+    nights: int = 7
+
+# ── INTAKE PARSER ─────────────────────────────────────────────────────────────
+
+_INTAKE_SYSTEM = """You are a safari booking intake assistant for The Rift Valley Explorer (TRVE), a DMC operating in Uganda, Rwanda, Kenya, and Tanzania. Parse the raw enquiry and return ONLY a JSON object:
+{
+  "guest_name": "",
+  "email": null,
+  "phone": null,
+  "adults": 0,
+  "children": [],
+  "arrival_date": null,
+  "departure_date": null,
+  "nights": null,
+  "destinations_mentioned": [],
+  "interests": [],
+  "budget_tier": "mid",
+  "budget_usd_ppn": null,
+  "meal_plan": "unspecified",
+  "special_requests": "",
+  "urgency": "standard",
+  "source": "web"
+}
+Rules: adults field = number of adult travellers (default 2 if couple implied). children = array of {age: N} objects. budget_tier must be budget|mid|luxury|ultra. urgency must be standard|urgent|last_minute. source must be whatsapp|email|web|referral. Use null for unknown fields. Return JSON ONLY — no commentary, no markdown fences."""
+
+@app.post("/intake/parse")
+def intake_parse(body: IntakeParseRequest):
+    if not body.raw_text or not body.raw_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"error": True, "code": "EMPTY_INPUT", "message": "raw_text must not be empty", "data": None}
+        )
+    result = _call_claude(_INTAKE_SYSTEM, body.raw_text.strip(), temperature=0, endpoint_label="intake_parse", max_tokens=1000)
+    if not result["ok"]:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": True, "code": "AI_UNAVAILABLE", "message": result["error"], "data": None}
+        )
+    parsed = _parse_claude_json(result["content"])
+    if not parsed:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": True, "code": "AI_PARSE_ERROR", "message": "Could not parse AI response as JSON", "data": None}
+        )
+    # Save as enquiry record
+    enquiry_id = str(uuid.uuid4())
+    try:
+        with db_session() as conn:
+            conn.execute(
+                """INSERT INTO enquiries (id, guest_name, email, phone, status, source, created_at, parsed_brief_json)
+                   VALUES (?, ?, ?, ?, 'new', ?, datetime('now'), ?)
+                   ON CONFLICT DO NOTHING""",
+                (enquiry_id,
+                 parsed.get("guest_name", ""),
+                 parsed.get("email", ""),
+                 parsed.get("phone", ""),
+                 parsed.get("source", "web"),
+                 json.dumps(parsed))
+            )
+    except Exception:
+        pass  # Don't fail if schema doesn't have parsed_brief_json yet
+    return {"ok": True, "enquiry_id": enquiry_id, "brief": parsed}
+
+
+# ── SEASON / PERMIT ADVISORY ─────────────────────────────────────────────────
+
+_ADVISORY_SYSTEM = """You are a safari seasons expert for Uganda, Rwanda, Kenya, and Tanzania. Given destination(s) and dates, return ONLY this JSON:
+{
+  "season": "peak",
+  "weather_note": "Short weather note under 12 words",
+  "wildlife_highlight": "Key wildlife event or highlight under 15 words",
+  "permit_warning": null,
+  "rate_period": "high",
+  "flag": "none"
+}
+season values: peak|high|shoulder|green. rate_period: high|mid|low. flag: none|caution|urgent.
+permit_warning: if Bwindi/Volcanoes in destination, note gorilla permit lead time (4-6 months for peak dates).
+Return JSON ONLY."""
+
+@app.get("/advisory")
+def get_advisory(destination: str, arrival: str, departure: str):
+    if not destination or not arrival:
+        raise HTTPException(status_code=400, detail={"error": True, "code": "MISSING_PARAMS", "message": "destination and arrival required", "data": None})
+    # Cache key: destination+arrival+departure (advisory is deterministic, cache 24h)
+    cache_key = f"advisory:{destination}:{arrival}:{departure}"
+    try:
+        with db_session() as conn:
+            row = conn.execute(
+                "SELECT value, created_at FROM ai_cache WHERE key = ? AND datetime(created_at, '+24 hours') > datetime('now')",
+                (cache_key,)
+            ).fetchone()
+            if row:
+                return json.loads(row["value"])
+    except Exception:
+        pass
+    user_prompt = f"Destination(s): {destination}\nArrival: {arrival}\nDeparture: {departure}"
+    result = _call_claude(_ADVISORY_SYSTEM, user_prompt, temperature=0, endpoint_label="advisory", max_tokens=400)
+    if not result["ok"]:
+        raise HTTPException(status_code=503, detail={"error": True, "code": "AI_UNAVAILABLE", "message": result["error"], "data": None})
+    parsed = _parse_claude_json(result["content"])
+    if not parsed:
+        raise HTTPException(status_code=502, detail={"error": True, "code": "AI_PARSE_ERROR", "message": "Could not parse advisory JSON", "data": None})
+    # Cache result
+    try:
+        with db_session() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO ai_cache (key, value, created_at) VALUES (?, ?, datetime('now'))",
+                (cache_key, json.dumps(parsed))
+            )
+    except Exception:
+        pass
+    return parsed
+
+
+# ── ITINERARY GENERATOR ───────────────────────────────────────────────────────
+
+_ITINERARY_SYSTEM = """You are a senior safari consultant for The Rift Valley Explorer (TRVE). Given a client brief, generate a geographically logical day-by-day itinerary. Return ONLY this JSON structure:
+{
+  "trip_title": "Evocative 6-word trip title",
+  "total_nights": 0,
+  "days": [
+    {
+      "day_number": 1,
+      "date": "YYYY-MM-DD or null",
+      "location": "",
+      "property_name": "",
+      "property_tier": "budget|mid|luxury|ultra",
+      "room_type_suggested": "",
+      "meal_plan": "FB",
+      "main_activity": "",
+      "transit_day": false,
+      "transfer_from_previous": "none|road|charter_flight|scheduled_flight",
+      "transfer_duration_hours": null,
+      "guest_facing_description": "2 vivid sentences in present tense, no pricing"
+    }
+  ],
+  "logistics_flags": [],
+  "upsell_suggestions": []
+}
+Rules:
+1. No geographic backtracking — sequence destinations efficiently
+2. Bwindi/Volcanoes: always flag gorilla permit in logistics_flags
+3. honeymoon trip_type: suggest one property one tier above stated budget on at least one leg
+4. Transit days: transit_day=true, property_name="" (no accommodation charge)
+5. FB is default meal plan unless client states otherwise
+6. guest_facing_description must be vivid and professional, usable directly in quotation
+7. total_nights = count of accommodation nights only (not transit days)
+Return JSON ONLY."""
+
+@app.post("/itinerary/generate")
+def itinerary_generate(body: ItineraryGenerateRequest):
+    user_prompt = f"""Client brief:
+- Adults: {body.adults}
+- Children: {json.dumps(body.children)}
+- Nights: {body.nights}
+- Destinations: {', '.join(body.destinations)}
+- Interests: {', '.join(body.interests)}
+- Budget tier: {body.budget_tier}
+- Budget USD/person/night: {body.budget_usd_ppn or 'not specified'}
+- Arrival date: {body.arrival_date or 'flexible'}
+- Trip type: {body.trip_type}
+- Meal plan preference: {body.meal_plan}
+
+Generate a {body.nights}-night itinerary."""
+    result = _call_claude(_ITINERARY_SYSTEM, user_prompt, temperature=0, endpoint_label="itinerary_generate", max_tokens=4000)
+    if not result["ok"]:
+        raise HTTPException(status_code=503, detail={"error": True, "code": "AI_UNAVAILABLE", "message": result["error"], "data": None})
+    parsed = _parse_claude_json(result["content"])
+    if not parsed:
+        raise HTTPException(status_code=502, detail={"error": True, "code": "AI_PARSE_ERROR", "message": "Could not parse itinerary JSON", "data": None})
+    return {"ok": True, "itinerary": parsed}
+
+
+# ── SINGLE DAY DESCRIPTION REGENERATOR ───────────────────────────────────────
+
+@app.post("/itinerary/regenerate-day")
+def regenerate_day(body: RegenerateDayRequest):
+    system = "You write vivid, warm safari day descriptions for client quotation documents. Return 2 sentences only — present tense, no pricing, no jargon. Nothing else."
+    user_prompt = f"Day {body.day_number} at {body.property_name}, {body.location}. Main activity: {body.activity}. {f'Context: {body.context}' if body.context else ''}"
+    result = _call_claude(system, user_prompt, temperature=0.7, endpoint_label="regenerate_day", max_tokens=200)
+    if not result["ok"]:
+        raise HTTPException(status_code=503, detail={"error": True, "code": "AI_UNAVAILABLE", "message": result["error"], "data": None})
+    return {"ok": True, "description": result["content"].strip()}
+
+
+# ── PRICING CALCULATOR (AI-ASSISTED) ─────────────────────────────────────────
+
+_PRICING_SYSTEM = """You are a safari pricing specialist for TRVE. Given an itinerary and guest config, calculate the full trip cost.
+
+Child age banding:
+- Under 3: FOC (free), no meal charge, add cot_request=true
+- Age 3-11: 50% of adult room rate + 50% of adult meal rate (sharing parents' room)
+- Age 12-15: 75% of adult room rate + 75% of adult meal rate
+- Age 16+: full adult rate
+
+Room allocation:
+- Solo in double room: single_supplement_usd = 75% of twin-share adult room rate
+- Family (2A + 2C): check for Family Room first; if unavailable use Double + Twin (charge both)
+- Gorilla permit (Bwindi/Volcanoes NP): $800 USD per person per trek, separate line item
+- Transit days: NO accommodation or meal charge
+
+Return ONLY JSON:
+{
+  "line_items": [
+    {
+      "day": 1,
+      "property": "",
+      "room_type": "",
+      "room_rate_usd": 0,
+      "meal_plan": "FB",
+      "meal_rate_usd": 0,
+      "pax_config": "",
+      "single_supplement_usd": 0,
+      "child_rate_usd": 0,
+      "extra_bed_usd": 0,
+      "night_total_usd": 0,
+      "notes": ""
+    }
+  ],
+  "activity_items": [],
+  "subtotal_usd": 0,
+  "markup_pct": 0,
+  "total_per_person_usd": 0,
+  "total_party_usd": 0
+}"""
+
+@app.post("/pricing/calculate")
+def pricing_calculate(body: PricingCalculateRequest):
+    user_prompt = f"""Itinerary days: {json.dumps(body.itinerary_days, indent=2)}
+Adults: {body.adults}
+Children: {json.dumps(body.children)}
+Markup %: {body.markup_pct}
+
+Calculate full itemised pricing."""
+    result = _call_claude(_PRICING_SYSTEM, user_prompt, temperature=0, endpoint_label="pricing_calculate", max_tokens=4000)
+    if not result["ok"]:
+        raise HTTPException(status_code=503, detail={"error": True, "code": "AI_UNAVAILABLE", "message": result["error"], "data": None})
+    parsed = _parse_claude_json(result["content"])
+    if not parsed:
+        raise HTTPException(status_code=502, detail={"error": True, "code": "AI_PARSE_ERROR", "message": "Could not parse pricing JSON", "data": None})
+    return {"ok": True, "pricing": parsed}
+
+
+# ── PROPOSAL NARRATIVE WRITER ─────────────────────────────────────────────────
+
+_NARRATIVE_SYSTEM = """You write safari quotation proposals for The Rift Valley Explorer (TRVE). Return ONLY this JSON:
+{
+  "opening": "120 words max. Address guest by first name. Vivid, specific. No pricing.",
+  "lodge_highlights": [{"property": "", "highlight": "18 words max. What makes it special."}],
+  "investment_note": "60 words max. State per-person and party total confidently. List 3 key inclusions. List 2 exclusions. Never apologetic.",
+  "closing_cta": "40 words max. Clear next step to confirm. Sign off as The TRVE Team."
+}
+Tone: expert, warm, vivid. Like a knowledgeable friend. Never corporate. Never salesy. Do not use 'journey' more than once total. Return JSON ONLY."""
+
+@app.post("/quote/narrative")
+def quote_narrative(body: NarrativeRequest):
+    user_prompt = f"""Trip: {body.trip_title}
+Guest name: {body.guest_name}
+Nights: {body.nights}
+Destinations: {', '.join(body.destinations)}
+Total per person: USD {body.total_usd_per_person:,.0f}
+Lodges: {', '.join(body.lodge_names) if body.lodge_names else 'luxury safari properties'}
+Inclusions: {', '.join(body.inclusions) if body.inclusions else 'all meals, park fees, transfers'}
+Exclusions: {', '.join(body.exclusions) if body.exclusions else 'international flights, travel insurance'}
+Trip type: {body.trip_type}
+
+Write the quotation narrative."""
+    result = _call_claude(_NARRATIVE_SYSTEM, user_prompt, temperature=0.7, endpoint_label="quote_narrative", max_tokens=1200)
+    if not result["ok"]:
+        raise HTTPException(status_code=503, detail={"error": True, "code": "AI_UNAVAILABLE", "message": result["error"], "data": None})
+    parsed = _parse_claude_json(result["content"])
+    if not parsed:
+        raise HTTPException(status_code=502, detail={"error": True, "code": "AI_PARSE_ERROR", "message": "Could not parse narrative JSON", "data": None})
+    return {"ok": True, "narrative": parsed}
+
+
+# ── UPSELL ENGINE ─────────────────────────────────────────────────────────────
+
+_UPSELL_SYSTEM = """You are a TRVE upsell specialist. Suggest exactly 3 add-ons for this specific safari trip. Rules: (1) Each must be geographically feasible for the exact destinations. (2) Price fits within ±30% of stated budget tier. (3) Be specific — no generic suggestions. (4) Personalise why_perfect to the guest type.
+
+Budget tiers: budget=<$200ppn, mid=$200-400ppn, luxury=$400-800ppn, ultra=$800+ppn
+
+Return ONLY JSON array:
+[{
+  "title": "",
+  "why_perfect": "1 sentence personalised to this guest and trip",
+  "price_usd_from": 0,
+  "add_to_day": 1
+}]"""
+
+@app.post("/quote/upsells")
+def quote_upsells(body: UpsellRequest):
+    user_prompt = f"""Destinations: {', '.join(body.destinations)}
+Guest type: {body.pax_type}
+Budget tier: {body.budget_tier}
+Activities already booked: {', '.join(body.activities_booked) if body.activities_booked else 'game drives only'}
+Trip length: {body.nights} nights
+
+Suggest 3 specific, relevant add-ons."""
+    result = _call_claude(_UPSELL_SYSTEM, user_prompt, temperature=0.3, endpoint_label="quote_upsells", max_tokens=600)
+    if not result["ok"]:
+        raise HTTPException(status_code=503, detail={"error": True, "code": "AI_UNAVAILABLE", "message": result["error"], "data": None})
+    parsed = _parse_claude_json(result["content"])
+    if not parsed:
+        raise HTTPException(status_code=502, detail={"error": True, "code": "AI_PARSE_ERROR", "message": "Could not parse upsells JSON", "data": None})
+    return {"ok": True, "upsells": parsed}
+
+
+# ── QUOTE MACHINE GUIDE ───────────────────────────────────────────────────────
+
+@app.get("/quote-machine", response_class=HTMLResponse)
+def serve_quote_machine():
+    guide_path = BASE_DIR / "quote-machine-guide.html"
+    if guide_path.exists():
+        return FileResponse(guide_path, media_type="text/html")
+    # Fallback if file not present
+    return HTMLResponse("<html><body><h1>Quote Machine Guide</h1><p>File not found. Place quote-machine-guide.html in the project root.</p></body></html>", status_code=200)
+
+
+# ── AI CACHE TABLE MIGRATION ──────────────────────────────────────────────────
+# (Called at startup to ensure ai_cache table exists for advisory caching)
+def _ensure_ai_cache_table():
+    try:
+        with db_session() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS ai_cache (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""")
+    except Exception:
+        pass
+
+_ensure_ai_cache_table()
+
+
 STATIC_DIR = BASE_DIR
 
 @app.get("/styles.css")
