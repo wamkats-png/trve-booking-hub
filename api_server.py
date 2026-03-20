@@ -20,13 +20,109 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Any
 
+import hashlib as _hashlib_mod
 import smtplib
 import threading
+import time as _time_mod
 import email as email_lib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+
+# ---------------------------------------------------------------------------
+# Claude AI helper — wraps anthropic SDK; degrades gracefully if key missing
+# ---------------------------------------------------------------------------
+_ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_ANTHROPIC_AVAILABLE = False
+
+try:
+    import anthropic as _anthropic_sdk
+    if _ANTHROPIC_API_KEY:
+        _anthropic_client = _anthropic_sdk.Anthropic(api_key=_ANTHROPIC_API_KEY)
+        _ANTHROPIC_AVAILABLE = True
+    else:
+        _anthropic_client = None
+except ImportError:
+    _anthropic_sdk = None
+    _anthropic_client = None
+
+
+def _call_claude(system_prompt: str, user_prompt: str, temperature: float = 0,
+                 endpoint_label: str = "unknown", max_tokens: int = 4096) -> dict:
+    """
+    Call Claude claude-sonnet-4-6. Returns {"ok": True, "content": str} or {"ok": False, "error": str}.
+    Logs every call to ai_call_log table. Retries once on invalid JSON if temperature=0.
+    """
+    if not _ANTHROPIC_AVAILABLE:
+        return {"ok": False, "error": "AI features require ANTHROPIC_API_KEY environment variable"}
+
+    prompt_hash = _hashlib_mod.md5((system_prompt + user_prompt).encode()).hexdigest()[:16]
+    t_start = _time_mod.time()
+    try:
+        msg = _anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            timeout=30,
+        )
+        elapsed_ms = int((_time_mod.time() - t_start) * 1000)
+        content = msg.content[0].text if msg.content else ""
+        tokens_used = msg.usage.input_tokens + msg.usage.output_tokens if hasattr(msg, "usage") else 0
+        _log_ai_call(endpoint_label, prompt_hash, elapsed_ms, tokens_used)
+        return {"ok": True, "content": content}
+    except Exception as e:
+        elapsed_ms = int((_time_mod.time() - t_start) * 1000)
+        _log_ai_call(endpoint_label, prompt_hash, elapsed_ms, 0)
+        return {"ok": False, "error": str(e)}
+
+
+def _log_ai_call(endpoint: str, prompt_hash: str, response_time_ms: int, tokens_used: int):
+    """Log an AI call to the ai_call_log table (best-effort)."""
+    try:
+        with db_session() as conn:
+            conn.execute(
+                """INSERT INTO ai_call_log (id, endpoint, prompt_hash, response_time_ms, tokens_used, created_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+                (str(uuid.uuid4()), endpoint, prompt_hash, response_time_ms, tokens_used)
+            )
+    except Exception:
+        pass  # Never block main flow due to logging failure
+
+
+def _parse_claude_json(content: str) -> dict | list | None:
+    """Extract JSON from Claude response — strips markdown fences if present."""
+    if not content:
+        return None
+    text = content.strip()
+    # Strip ```json ... ``` fences
+    if text.startswith("```"):
+        lines = text.split("\n")
+        inner = []
+        in_block = False
+        for line in lines:
+            if line.startswith("```") and not in_block:
+                in_block = True
+                continue
+            if line.startswith("```") and in_block:
+                break
+            if in_block:
+                inner.append(line)
+        text = "\n".join(inner).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try to find first { or [ and parse from there
+        for start_char, end_char in [('{', '}'), ('[', ']')]:
+            idx = text.find(start_char)
+            if idx >= 0:
+                try:
+                    return json.loads(text[idx:])
+                except json.JSONDecodeError:
+                    pass
+        return None
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1667,6 +1763,71 @@ def init_db():
         )""")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_itn_versions_enquiry ON itinerary_versions(enquiry_id)"
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+    # Phase 4 migrations — AI workflow columns on enquiries
+    for _col, _ctype, _cdefault in [
+        ("itinerary_json", "TEXT", "NULL"),
+        ("pricing_json", "TEXT", "NULL"),
+        ("quote_short_code", "TEXT", "NULL"),
+        ("status_history", "TEXT", "NULL"),
+        ("parsed_brief_json", "TEXT", "NULL"),
+        ("season_advisory_json", "TEXT", "NULL"),
+        ("b2b_rate", "INTEGER", "0"),
+        ("last_minute_flag", "INTEGER", "0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE enquiries ADD COLUMN {_col} {_ctype} DEFAULT {_cdefault}")
+            conn.commit()
+        except Exception:
+            pass
+
+    # Phase 4 migrations — new tables for AI feature tracking
+    for _ddl in [
+        """CREATE TABLE IF NOT EXISTS quote_views (
+            id TEXT PRIMARY KEY,
+            booking_ref TEXT NOT NULL,
+            ip_hash TEXT DEFAULT '',
+            viewed_at TEXT DEFAULT (datetime('now')),
+            user_agent TEXT DEFAULT '',
+            quote_short_code TEXT DEFAULT ''
+        )""",
+        """CREATE TABLE IF NOT EXISTS ai_call_log (
+            id TEXT PRIMARY KEY,
+            endpoint TEXT DEFAULT '',
+            prompt_hash TEXT DEFAULT '',
+            response_time_ms INTEGER DEFAULT 0,
+            tokens_used INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )""",
+        """CREATE TABLE IF NOT EXISTS bookings (
+            id TEXT PRIMARY KEY,
+            enquiry_id TEXT NOT NULL,
+            booking_ref TEXT NOT NULL,
+            itinerary_json TEXT DEFAULT '{}',
+            pricing_json TEXT DEFAULT '{}',
+            quote_url TEXT DEFAULT '',
+            quote_short_code TEXT UNIQUE,
+            status TEXT DEFAULT 'quoted',
+            status_history TEXT DEFAULT '[]',
+            b2b_rate INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )""",
+    ]:
+        try:
+            conn.execute(_ddl)
+            conn.commit()
+        except Exception:
+            pass
+
+    # Add composite index for lodge lookups
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lodges_name_room ON lodges(lodge_name, room_type)"
         )
         conn.commit()
     except Exception:
