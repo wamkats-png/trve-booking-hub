@@ -414,6 +414,20 @@
             <span class="text-sm text-muted" id="enquiryRefPreview"></span>
           </div>
           <div class="card-body">
+            <!-- AI QUICK-FILL -->
+            <div id="aiEnqQuickFill" style="margin-bottom:20px">
+              <button type="button" class="btn btn-ghost btn-sm" id="aiEnqQuickFillToggle" style="font-size:12px;color:var(--forest)">✨ AI Quick-Fill from email or message</button>
+              <div id="aiEnqQuickFillPanel" style="display:none;margin-top:10px;padding:16px;background:var(--mist);border-radius:8px;border:1px solid var(--border)">
+                <label class="form-label">Paste client email, WhatsApp, or web form</label>
+                <textarea id="aiEnqRawText" class="form-control" rows="5" placeholder="e.g. Hi, we're a honeymoon couple arriving July 12…"></textarea>
+                <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+                  <button type="button" class="btn btn-primary btn-sm" id="aiEnqParseBtn">Parse with AI</button>
+                  <span id="aiEnqParseSpinner" style="display:none;font-size:12px;color:var(--text-muted)">⏳ Parsing…</span>
+                </div>
+                <div id="aiEnqParseResult" style="display:none;margin-top:12px"></div>
+              </div>
+            </div>
+
             <form id="enquiryForm" novalidate>
 
               <!-- Client Info -->
@@ -539,6 +553,13 @@
                     <label class="form-label" for="travelEndDate">Travel End Date</label>
                     <input class="form-control" type="date" id="travelEndDate" name="travel_end_date">
                     <span class="form-error hidden" id="dateRangeError">End date must be after start date</span>
+                  </div>
+                  <div class="form-group" style="grid-column:1/-1">
+                    <button type="button" class="btn btn-ghost btn-sm" id="aiEnqAdvisoryBtn" style="font-size:11px;color:var(--forest);padding:4px 8px">✨ Check destination advisory</button>
+                    <div id="aiEnqAdvisoryStrip" style="display:none;margin-top:8px;padding:10px 14px;background:var(--mist);border-radius:6px;border:1px solid var(--border);font-size:12px">
+                      <span id="aiEnqAdvisoryContent"></span>
+                      <button type="button" class="btn btn-ghost btn-sm" id="aiEnqAdvisoryClose" style="float:right;font-size:11px;padding:2px 6px">✕</button>
+                    </div>
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="durationDays">Duration (days)</label>
@@ -752,6 +773,12 @@
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.5l1.8 5.2H15l-4.4 3.2 1.7 5.2L8 12.2l-4.3 2.9 1.7-5.2L1 6.7h5.2L8 1.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                   Find Matching Itineraries
                 </button>
+                <!-- AI Itinerary suggestion -->
+                <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+                  <div class="form-section-title" style="margin-bottom:8px;font-size:11px">AI Suggestion</div>
+                  <button type="button" class="btn btn-secondary btn-sm w-full" id="aiCurItinBtn">✨ Generate AI Itinerary</button>
+                  <div id="aiCurItinSpinner" style="display:none;font-size:11px;color:var(--text-muted);margin-top:6px;text-align:center">⏳ Generating… (~15s)</div>
+                </div>
               </div>
             </div>
           </div>
@@ -789,7 +816,10 @@
                 </select>
               </div>
               <div class="form-group mb-4">
-                <label class="form-label" for="approvalNotes">Notes</label>
+                <label class="form-label" for="approvalNotes" style="display:flex;justify-content:space-between;align-items:center">
+                  Notes
+                  <button type="button" class="btn btn-ghost btn-sm" id="aiCurDraftNotesBtn" style="font-size:11px;padding:2px 6px">✨ AI Draft</button>
+                </label>
                 <textarea class="form-control" id="approvalNotes" rows="3" placeholder="Any notes about the selected itinerary…"></textarea>
               </div>
               <button class="btn btn-gold w-full btn-lg" id="btnApproveItinerary">
@@ -892,6 +922,13 @@
                       <label class="form-label" for="pricingTravelEndDate">Travel End Date</label>
                       <input class="form-control" type="date" id="pricingTravelEndDate">
                       <span class="form-hint" id="pricingDateRangeHint" style="display:none"></span>
+                    </div>
+                    <div class="form-group" style="grid-column:1/-1">
+                      <button type="button" class="btn btn-ghost btn-sm" id="aiPricingAdvisoryBtn" style="font-size:11px;color:var(--forest);padding:4px 8px">✨ Check destination advisory</button>
+                      <div id="aiPricingAdvisoryStrip" style="display:none;margin-top:8px;padding:10px 14px;background:var(--mist);border-radius:6px;border:1px solid var(--border);font-size:12px">
+                        <span id="aiPricingAdvisoryContent"></span>
+                        <button type="button" class="btn btn-ghost btn-sm" id="aiPricingAdvisoryClose" style="float:right;font-size:11px;padding:2px 6px">✕</button>
+                      </div>
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="pricingCommissionType">Commission Type</label>
@@ -1995,6 +2032,28 @@
         </select>
         <div style="font-size:var(--text-xs);color:var(--text-muted);margin-top:4px">When "Yes": invoice shows charges and total to send. Transfer amount is always stored internally.</div>
       </div>
+      <!-- AI NARRATIVE & UPSELLS -->
+      <div style="border-top:1px solid var(--border);padding-top:16px;margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span class="form-label" style="margin:0">Quote Narrative</span>
+          <button type="button" class="btn btn-ghost btn-sm" id="aiQmNarrativeBtn" style="font-size:11px;color:var(--forest)">✨ Generate with AI</button>
+        </div>
+        <span id="aiQmNarrativeSpinner" style="display:none;font-size:12px;color:var(--text-muted)">⏳ Writing quote…</span>
+        <div id="aiQmNarrativePanel" style="display:none">
+          <div id="aiQmNarrativePreview" style="font-size:13px;line-height:1.7;background:var(--mist);padding:12px;border-radius:6px;border:1px solid var(--border);white-space:pre-wrap;margin-bottom:8px"></div>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="btn btn-primary btn-sm" id="aiQmNarrativeAccept">Accept</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="aiQmNarrativeRegen">↻ Regenerate</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="aiQmNarrativeDiscard">Discard</button>
+          </div>
+        </div>
+        <textarea id="aiQmNarrativeField" class="form-control" rows="4" placeholder="Client-facing narrative (optional — copy into email or proposal)" style="margin-top:10px"></textarea>
+      </div>
+      <div id="aiQmUpsellsPanel" style="display:none;margin-bottom:16px;padding:12px;background:var(--mist);border-radius:6px;border:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;color:var(--forest)">AI Upsell Suggestions</div>
+        <div id="aiQmUpsellsList"></div>
+      </div>
+
       <button class="btn btn-gold w-full" id="qmSubmitBtn">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v9M3 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Generate Quotation PDF
