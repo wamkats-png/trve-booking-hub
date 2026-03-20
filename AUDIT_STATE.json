@@ -1,8 +1,8 @@
 {
   "audit_started": "2026-03-20T00:00:00Z",
   "branch": "claude/review-reference-docs-j0bPB",
-  "phases_completed": [],
-  "current_phase": "0",
+  "phases_completed": ["0", "1", "2"],
+  "current_phase": "3",
   "test_baseline": {
     "total_tests": 130,
     "passed": 130,
@@ -20,6 +20,7 @@
     "render.yaml",
     "tests/test_api.py",
     "tests/conftest.py",
+    "AUDIT.md",
     "docs/MASTER_REFERENCE.md"
   ],
   "critical_findings": [
@@ -27,7 +28,6 @@
     "GET /advisory — MISSING (no season advisory endpoint)",
     "POST /itinerary/generate — MISSING (no AI itinerary generator)",
     "POST /itinerary/regenerate-day — MISSING (no day regenerator)",
-    "POST /pricing/calculate — MISSING (separate from /api/calculate-price)",
     "POST /quote/narrative — MISSING (no AI proposal writer)",
     "GET /bookings/{id}/quote — MISSING (no HTML quote template)",
     "GET /bookings/{id}/quote.pdf — MISSING",
@@ -36,25 +36,39 @@
     "quote_views table — MISSING",
     "ai_call_log table — MISSING",
     "anthropic SDK not in requirements.txt",
-    "weasyprint not in requirements.txt (PDF)",
-    "itinerary_json / pricing_json columns missing from enquiries",
-    "quote_short_code column missing from enquiries",
-    "status_history column missing from enquiries",
+    "itinerary_json / pricing_json / quote_short_code / status_history columns missing from enquiries",
     "GET /quote-machine — MISSING (reference doc page)"
   ],
   "existing_features": [
     "POST /api/enquiries (enquiry CRUD)",
     "GET /api/itineraries (18 itinerary library)",
     "POST /api/curate-itinerary (matching/scoring, no AI)",
-    "POST /api/calculate-price (pricing engine — partial, no child bands in AI form)",
+    "POST /api/calculate-price (pricing engine with child bands)",
     "POST /api/generate-quotation",
     "GET /api/quotations/{id}/pdf (PDF export)",
     "POST /api/share/{booking_ref} (share link creation)",
-    "GET /api/share/{token} (view tracking exists)",
+    "GET /api/share/{token} (view tracking)",
     "POST /api/quotations/{id}/email (email delivery)",
     "GET /api/config + PATCH /api/config",
     "GET /api/health",
     "GET /api/market-data/fx",
     "All 130 existing tests PASS"
+  ],
+  "fixes_applied": [
+    "Added DB migrations for quote_views, ai_call_log tables",
+    "Added itinerary_json, pricing_json, quote_short_code, status_history columns to enquiries",
+    "Added POST /intake/parse with Claude AI",
+    "Added GET /advisory with Claude AI",
+    "Added POST /itinerary/generate with Claude AI",
+    "Added POST /itinerary/regenerate-day with Claude AI",
+    "Added POST /pricing/calculate (alias with child rates)",
+    "Added POST /quote/narrative with Claude AI",
+    "Added POST /quote/upsells with Claude AI",
+    "Added GET /bookings/{id}/quote (HTML quotation)",
+    "Added GET /bookings/{id}/quote.pdf",
+    "Added GET /q/{code} public quote link",
+    "Added GET /quote-machine reference guide",
+    "Added anthropic to requirements.txt",
+    "Consistent error shape on AI endpoints"
   ]
 }
