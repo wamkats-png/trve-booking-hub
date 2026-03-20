@@ -1,0 +1,60 @@
+{
+  "audit_started": "2026-03-20T00:00:00Z",
+  "branch": "claude/review-reference-docs-j0bPB",
+  "phases_completed": [],
+  "current_phase": "0",
+  "test_baseline": {
+    "total_tests": 130,
+    "passed": 130,
+    "failed": 0,
+    "timestamp": "2026-03-20T00:00:00Z"
+  },
+  "files_read": [
+    "api_server.py",
+    "index.html",
+    "app.js",
+    "styles.css",
+    "share.html",
+    "guest-form.html",
+    "requirements.txt",
+    "render.yaml",
+    "tests/test_api.py",
+    "tests/conftest.py",
+    "docs/MASTER_REFERENCE.md"
+  ],
+  "critical_findings": [
+    "POST /intake/parse — MISSING (no AI intake parser)",
+    "GET /advisory — MISSING (no season advisory endpoint)",
+    "POST /itinerary/generate — MISSING (no AI itinerary generator)",
+    "POST /itinerary/regenerate-day — MISSING (no day regenerator)",
+    "POST /pricing/calculate — MISSING (separate from /api/calculate-price)",
+    "POST /quote/narrative — MISSING (no AI proposal writer)",
+    "GET /bookings/{id}/quote — MISSING (no HTML quote template)",
+    "GET /bookings/{id}/quote.pdf — MISSING",
+    "GET /q/{code} — MISSING (public quote link)",
+    "POST /quote/upsells — MISSING",
+    "quote_views table — MISSING",
+    "ai_call_log table — MISSING",
+    "anthropic SDK not in requirements.txt",
+    "weasyprint not in requirements.txt (PDF)",
+    "itinerary_json / pricing_json columns missing from enquiries",
+    "quote_short_code column missing from enquiries",
+    "status_history column missing from enquiries",
+    "GET /quote-machine — MISSING (reference doc page)"
+  ],
+  "existing_features": [
+    "POST /api/enquiries (enquiry CRUD)",
+    "GET /api/itineraries (18 itinerary library)",
+    "POST /api/curate-itinerary (matching/scoring, no AI)",
+    "POST /api/calculate-price (pricing engine — partial, no child bands in AI form)",
+    "POST /api/generate-quotation",
+    "GET /api/quotations/{id}/pdf (PDF export)",
+    "POST /api/share/{booking_ref} (share link creation)",
+    "GET /api/share/{token} (view tracking exists)",
+    "POST /api/quotations/{id}/email (email delivery)",
+    "GET /api/config + PATCH /api/config",
+    "GET /api/health",
+    "GET /api/market-data/fx",
+    "All 130 existing tests PASS"
+  ]
+}
